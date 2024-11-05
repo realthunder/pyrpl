@@ -244,7 +244,7 @@ class NetworkAnalyzer(AcquisitionModule, SignalModule):
             The complex open loop transfer function of the module.
         """
         module_delay = self._delay
-        frequencies = np.array(np.array(frequencies, dtype=np.float),
+        frequencies = np.array(np.array(frequencies, dtype=float),
                                dtype=complex)
         tf = np.array(frequencies*0, dtype=complex) + 1.0
         # input filter modelisation
