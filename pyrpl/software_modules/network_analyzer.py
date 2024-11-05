@@ -311,10 +311,10 @@ class NetworkAnalyzer(AcquisitionModule, SignalModule):
                 self._current_bandwidth*=2
                 self.iq.bandwidth = [self._current_bandwidth, self._current_bandwidth]
 
-                new_sleep_cycles = np.int(
+                new_sleep_cycles = int(
                     np.round(125e6 / self._current_bandwidth * self.sleeptimes))
                 self.iq._na_sleepcycles = new_sleep_cycles
-                new_na_averages = np.int(np.round(125e6 / self._current_bandwidth *
+                new_na_averages = int(np.round(125e6 / self._current_bandwidth *
                                                        self.average_per_point))
                 self.iq._na_averages = new_na_averages
                 self._cached_na_averages = new_na_averages
@@ -446,10 +446,10 @@ class NetworkAnalyzer(AcquisitionModule, SignalModule):
         self._current_bandwidth = self.iq.bandwidth[0]
 
         # setup averaging
-        self.iq._na_averages = np.int(np.round(125e6 / self._current_bandwidth *
+        self.iq._na_averages = int(np.round(125e6 / self._current_bandwidth *
                                                self.average_per_point))
         self._cached_na_averages = self.iq._na_averages
-        self.iq._na_sleepcycles = np.int(
+        self.iq._na_sleepcycles = int(
             np.round(125e6 / self._current_bandwidth * self.sleeptimes))
         # time_per_point is calculated at setup for speed reasons
         self.time_per_point = self._time_per_point()
