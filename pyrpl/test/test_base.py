@@ -7,6 +7,7 @@ from .. import Pyrpl, APP, user_config_dir, global_config
 from ..pyrpl_utils import time
 from ..async_utils import sleep
 from ..errors import UnexpectedPyrplError, ExpectedPyrplError
+import pytest
 
 # I don't know why, in nosetests, the logger goes to UNSET...
 logger_quamash = logging.getLogger(name='quamash')
@@ -85,7 +86,7 @@ class TestPyrpl(object):
             "your Red Pitaya device. " % (self.write_time, maxtime)
 
     @classmethod
-    def teardown_classl(cls):
+    def teardown_class(cls):
         print("=======TEARING DOWN %s===========" % cls.__name__)
         # delete the curves fabricated in the test
         if hasattr(cls, 'curves'):
