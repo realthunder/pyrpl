@@ -30,7 +30,7 @@ class TestNA(TestPyrpl):
         """
         assert(self.na.running_state=='stopped')
 
-    def teardown(self):
+    def teardown_class(self):
         self.na.stop()
 
     def test_na_running_states(self):

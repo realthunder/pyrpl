@@ -20,7 +20,7 @@ class TestAttributeWidgets(TestPyrpl):
     # individual name for this test:
     # tmp_config_file = "nosetests_config_scope.yml"
 
-    def teardown(self):
+    def teardown_class(self):
         pass
 
     def test_spin_box(self):

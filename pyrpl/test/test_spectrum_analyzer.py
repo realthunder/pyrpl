@@ -14,7 +14,7 @@ from pyrpl import APP
 
 class TestClass(TestPyrpl):
 
-    def teardown(self):
+    def teardown_class(self):
         """ make 100% sure that specan has stopped """
         self.pyrpl.spectrumanalyzer.stop()
 
