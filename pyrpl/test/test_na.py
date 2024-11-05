@@ -17,7 +17,7 @@ except:
 
 
 class TestNA(TestPyrpl):
-    def setup(self):
+    def setup_class(self):
         self.na = self.pyrpl.networkanalyzer
         # stop all other instruments since something seems to read from fpga all the time
         #self.pyrpl.hide_gui()
