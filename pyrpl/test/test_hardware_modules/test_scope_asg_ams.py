@@ -7,7 +7,7 @@ from pyrpl.test.test_base import TestPyrpl
 
 
 class TestScopeAsgAms(TestPyrpl):
-    def setup_class(self):
+    def setup(self):
         self.extradelay = 0.6 * 8e-9  # no idea where this comes from
 
     def test_asg(self):

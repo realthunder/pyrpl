@@ -8,14 +8,14 @@ from pyrpl import Pyrpl, RedPitaya, user_config_dir
 
 class TestRedpitaya(object):
     @classmethod
-    def setup_class(cls):
+    def setUpAll(cls):
         print("=======SETTING UP TestRedpitaya===========")
         cls.hostname = os.environ.get('REDPITAYA_HOSTNAME')
         cls.password = os.environ.get('REDPITAYA_PASSWORD')
         cls.r = RedPitaya()
 
     @classmethod
-    def teardown_class(cls):
+    def tearDownAll(cls):
         print("=======TEARING DOWN TestRedpitaya===========")
         cls.r.end_all()
 
