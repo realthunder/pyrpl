@@ -16,7 +16,7 @@ class TestYmlEditor(TestPyrpl):
     # individual name for this test:
     # tmp_config_file = "nosetests_config_scope.yml"
 
-    def teardown_class(self):
+    def teardown(self):
         pass
 
     def test_yml_editor(self):

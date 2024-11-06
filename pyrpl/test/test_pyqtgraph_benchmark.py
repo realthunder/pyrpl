@@ -7,7 +7,6 @@ from qtpy import QtCore
 from .test_redpitaya import TestRedpitaya
 from .. import APP
 from ..async_utils import sleep
-import functools
 
 
 class TestPyqtgraph(TestRedpitaya):
@@ -32,8 +31,7 @@ class TestPyqtgraph(TestRedpitaya):
             self.r.scope.setup(trigger_source='immediately', duration=self.duration)
         self.timer = QtCore.QTimer()
         self.timer.setInterval(int(1000*self.dt))
-        timerCallback = functools.partial(self.update_plot, self)
-        self.timer.timeout.connect(timerCallback)
+        self.timer.timeout.connect(self.update_plot)
         self.timer.start()
 
     def teardown_class(self):
