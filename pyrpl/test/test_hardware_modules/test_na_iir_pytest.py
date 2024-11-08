@@ -98,9 +98,8 @@ class TestIir(TestPyrpl):
             #                  error_threshold=error_threshold,
             #                  extradelay=extradelay,
             #                  relative=True)
-            yield self.na_assertion, \
-                  setting, iir, error_threshold, extradelay, True
-
+            self.na_assertion(setting, iir, error_threshold, extradelay, True)
+                  
     def test_iircomplicated_na_generator(self):
         """
         This test defines a number of complicated IIR transfer functions
@@ -237,7 +236,7 @@ class TestIir(TestPyrpl):
             z, p, g, loops, naset, name, maxerror, kinds = param
             self.pyrpl.na.setup(**naset)
             iir.setup(zeros=z, poles=p, gain=g, loops=loops, input=na.iq, output_direct='off')
-            yield self.na_assertion, name, iir, maxerror, 0, True, True, kinds
+            self.na_assertion(name, iir, maxerror, 0, True, True, kinds)
             # default arguments of na_assertion:
             # setting, module, error_threshold=0.1,
             # extradelay=0, relative=False, mean=False, kinds=[]

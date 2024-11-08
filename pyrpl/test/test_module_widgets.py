@@ -10,7 +10,7 @@ from .test_base import TestPyrpl
 
 class TestModuleWidgets(TestPyrpl):
     @classmethod
-    def setup_class(self):
+    def setup(self):
         ## these tests currently do not run on travis.
         ## our workaround is this: detect from environment variable
         ## if tests are executed on travis and refuse the gui tests

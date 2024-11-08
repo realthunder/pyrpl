@@ -20,7 +20,7 @@ class TestAttributeWidgets(TestPyrpl):
     # individual name for this test:
     # tmp_config_file = "nosetests_config_scope.yml"
 
-    def teardown_class(self):
+    def teardown(self):
         pass
 
     def test_spin_box(self):
@@ -31,6 +31,15 @@ class TestAttributeWidgets(TestPyrpl):
                 for name, aw in widget.attribute_widgets.items():
                     if isinstance(aw, NumberAttributeWidget):
                         yield self.assert_spin_box, mod, widget, name, aw
+    
+    def test_spin_box_pytest(self):
+        for mod in self.pyrpl.modules:
+            if not isinstance(mod, (IIR, NetworkAnalyzer)): # TODO:
+                # understand what freezes with Na and IIR...
+                widget = mod._create_widget()
+                for name, aw in widget.attribute_widgets.items():
+                    if isinstance(aw, NumberAttributeWidget):
+                        self.assert_spin_box(mod, widget, name, aw)
 
     _TEST_SPINBOX_BUTTON_DOWN_TIME = 0.05
 

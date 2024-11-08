@@ -7,7 +7,6 @@ from qtpy import QtCore
 from .test_redpitaya import TestRedpitaya
 from .. import APP
 from ..async_utils import sleep
-import functools
 
 
 class TestPyqtgraph(TestRedpitaya):
@@ -23,7 +22,7 @@ class TestPyqtgraph(TestRedpitaya):
     REDPITAYA = False  # REDPITAYA=True tests the speed with Red Pitaya Scope
     timeout = 10.0  # timeout if the gui never plots anything
 
-    def setup_class(self):
+    def setup(self):
         self.t0 = np.linspace(0, self.duration, self.N)
         self.plotWidget = pg.plot(title="Realtime plotting benchmark")
         self.cycle = 0
@@ -32,11 +31,10 @@ class TestPyqtgraph(TestRedpitaya):
             self.r.scope.setup(trigger_source='immediately', duration=self.duration)
         self.timer = QtCore.QTimer()
         self.timer.setInterval(int(1000*self.dt))
-        timerCallback = functools.partial(self.update_plot, self)
-        self.timer.timeout.connect(timerCallback)
+        self.timer.timeout.connect(self.update_plot)
         self.timer.start()
 
-    def teardown_class(self):
+    def teardown(self):
         self.timer.stop()
         APP.processEvents()
         self.plotWidget.close()
