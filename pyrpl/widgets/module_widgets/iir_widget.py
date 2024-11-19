@@ -11,7 +11,7 @@ from ... import APP
 
 class MyGraphicsWindow(pg.GraphicsLayoutWidget):
     def __init__(self, title, parent):
-        super().__init__(title)
+        super().__init__(title=title)
         self.parent = parent
         self.setToolTip("-----plot legend---------------\n"
                         "yellow: theoretical IIR transfer function\n"
