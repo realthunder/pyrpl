@@ -144,7 +144,7 @@ def unique_list(nonunique_list):
     unique_list = []
     for attr in reversed(nonunique_list):
         # remove all previous occurences
-        if attr not in unique_list:
+        if attr == '\n' or attr not in unique_list:
             unique_list.insert(0, attr)
     return unique_list
 
