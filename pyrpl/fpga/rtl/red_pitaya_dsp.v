@@ -67,6 +67,8 @@ module red_pitaya_dsp #(
    output     [ 14-1: 0] scope2_o,
    input      [ 14-1: 0] asg1_i,
    input      [ 14-1: 0] asg2_i,
+   input      [ 14-1: 0] asg3_i,
+   input      [ 14-1: 0] asg4_i,
    input      [ 14-1: 0] asg1phase_i,
 
    // pwm outputs
@@ -89,10 +91,10 @@ module red_pitaya_dsp #(
    output reg            sys_ack            //!< bus acknowledge signal
 );
 
-localparam EXTRAMODULES = 2; //need two extra control registers for scope/asg
-localparam EXTRAINPUTS = 4; //four extra input signals for dac(2)/adc(2)
-localparam EXTRAOUTPUTS = 2; //two extra output signals for pwm channels
-localparam LOG_MODULES = 4;// ceil(log2(EXTRAINPUTS+EXTRAOUTPUTS+MODULES))
+localparam EXTRAMODULES = 4; //need two extra control registers for scope/asg
+localparam EXTRAINPUTS = 5; //four extra input signals for dac(2)/adc(2) + iq2_2
+localparam EXTRAOUTPUTS = 2; //four extra output signals for pwm channels
+localparam LOG_MODULES = 5;// ceil(log2(EXTRAINPUTS+EXTRMODULES+MODULES))
 
 //Module numbers
 localparam PID0  = 'd0; //formerly PID11
@@ -107,21 +109,24 @@ localparam IQ2   = 'd7; //for PFD error signal
 //localparam CUSTOM1 = 'd8; //available slots
 localparam NONE = 2**LOG_MODULES-1; //code for no module; only used to switch off PWM outputs
 
-//EXTRAMODULE numbers
+//EXTRAMODULES numbers
 localparam ASG1   = MODULES; //scope and asg can have the same number
 localparam ASG2   = MODULES+1; //because one only has outputs, the other only inputs
 localparam SCOPE1 = MODULES;
 localparam SCOPE2 = MODULES+1;
-//EXTRAINPUT numbers
-localparam ADC1  = MODULES+2;
-localparam ADC2  = MODULES+3;
-localparam DAC1  = MODULES+4;
-localparam DAC2  = MODULES+5;
-//EXTRAOUTPUT numbers
+localparam ASG3  = MODULES+2;
+localparam ASG4  = MODULES+3;
 localparam PWM0  = MODULES+2;
 localparam PWM1  = MODULES+3;
-localparam PWM3  = MODULES+4;
-localparam PWM4  = MODULES+5;
+//EXTRAINPUTS numbers
+localparam ADC1  = MODULES+4;
+localparam ADC2  = MODULES+5;
+localparam DAC1  = MODULES+6;
+localparam DAC2  = MODULES+7;
+localparam IQ2_2 = MODULES+8;
+//EXTRAOUTPUTS numbers
+localparam PWM2  = MODULES+4;
+localparam PWM3  = MODULES+5;
 
 //output states
 localparam BOTH = 2'b11;
@@ -158,8 +163,12 @@ assign scope2_o = input_signal[SCOPE2];
 //connect asg output
 assign output_signal[ASG1] = asg1_i;
 assign output_signal[ASG2] = asg2_i;
+assign output_signal[ASG3] = asg3_i;
+assign output_signal[ASG4] = asg4_i;
 assign output_direct[ASG1] = asg1_i;
 assign output_direct[ASG2] = asg2_i;
+assign output_direct[ASG3] = asg3_i;
+assign output_direct[ASG4] = asg4_i;
 
 //connect dac/adc to internal signals
 assign output_signal[ADC1] = dat_a_i;
@@ -167,11 +176,10 @@ assign output_signal[ADC2] = dat_b_i;
 assign output_signal[DAC1] = dat_a_o;
 assign output_signal[DAC2] = dat_b_o;
 
-//connect only two pwm to internal signals (should be enough)
 assign pwm0 = (input_select[PWM0] == NONE) ? 14'h0 : output_signal[input_select[PWM0]];
 assign pwm1 = (input_select[PWM1] == NONE) ? 14'h0 : output_signal[input_select[PWM1]];
-assign pwm2 = 14'b0;
-assign pwm3 = 14'b0;
+assign pwm2 = (input_select[PWM2] == NONE) ? 14'h0 : output_signal[input_select[PWM2]];
+assign pwm3 = (input_select[PWM3] == NONE) ? 14'h0 : output_signal[input_select[PWM3]];
 
 reg  signed [   14+LOG_MODULES-1: 0] sum1; 
 reg  signed [   14+LOG_MODULES-1: 0] sum2; 
@@ -201,7 +209,7 @@ reg  signed [   14+LOG_MODULES-1: 0] presum2 [CHANNELS-1-1:0];
 
 always @(posedge clk_i) begin
    if (rstn_i == 1'b0) begin
-     for (i=0;i<CHANNELS;i=i+1) begin
+     for (i=0;i<CHANNELS-1;i=i+1) begin
         presum1[i] <= {14+LOG_MODULES{1'b0}};
         presum2[i] <= {14+LOG_MODULES{1'b0}};
      end
@@ -216,8 +224,8 @@ always @(posedge clk_i) begin
      end
      //then sum the sums of pairs to go up the tree
      for (i=0;i<CHANNELS/2-1;i=i+1) begin
-        presum1[8+i] <= presum1[2*i]+presum1[2*i+1];
-        presum2[8+i] <= presum2[2*i]+presum2[2*i+1];
+        presum1[CHANNELS/2+i] <= presum1[2*i]+presum1[2*i+1];
+        presum2[CHANNELS/2+i] <= presum2[2*i]+presum2[2*i+1];
      end
      //finally add some (probably unnecessary) delay
      sum1 <= presum1[CHANNELS-1-1];
@@ -268,9 +276,13 @@ always @(posedge clk_i) begin
       input_select [SCOPE2] <= ADC2;
       output_select[ASG1] <= OFF;
       output_select[ASG2] <= OFF;
+      output_select[ASG3] <= OFF;
+      output_select[ASG4] <= OFF;
       
       input_select [PWM0] <= NONE;
       input_select [PWM1] <= NONE;
+      input_select [PWM2] <= NONE;
+      input_select [PWM3] <= NONE;
       
       sync <= {MODULES{1'b1}} ;  // all modules on by default
    end
@@ -317,7 +329,7 @@ assign diff_input_signal[0] = diff_output_signal[1]; // difference input of PID0
 assign diff_input_signal[1] = diff_output_signal[0]; // difference input of PID1 is PID0
 assign diff_input_signal[2] = {14{1'b0}};      // difference input of PID2 is zero
 
-generate for (j = 0; j < 3; j = j+1) begin
+generate for (j = PID0; j <= PID2; j = j+1) begin
    red_pitaya_pid_block i_pid (
      // data
      .clk_i        (  clk_i          ),  // clock
@@ -330,8 +342,8 @@ generate for (j = 0; j < 3; j = j+1) begin
 
 	 //communincation with PS
 	 .addr ( sys_addr[16-1:0] ),
-	 .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
-	 .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
+	 .wen  ( sys_wen & (sys_addr[21-1:16]==j) ),
+	 .ren  ( sys_ren & (sys_addr[21-1:16]==j) ),
 	 .ack  ( module_ack[j] ),
 	 .rdata (module_rdata[j]),
      .wdata (sys_wdata)
@@ -342,7 +354,7 @@ endgenerate
 
 wire trig_signal;
 //TRIG
-generate for (j = 3; j < 4; j = j+1) begin
+generate for (j = TRIG; j < TRIG+1; j = j+1) begin
    red_pitaya_trigger_block i_trigger (
      // data
      .clk_i        (  clk_i          ),  // clock
@@ -355,8 +367,8 @@ generate for (j = 3; j < 4; j = j+1) begin
 
 	 //communincation with PS
 	 .addr ( sys_addr[16-1:0] ),
-	 .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
-	 .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
+	 .wen  ( sys_wen & (sys_addr[21-1:16]==j) ),
+	 .ren  ( sys_ren & (sys_addr[21-1:16]==j) ),
 	 .ack  ( module_ack[j] ),
 	 .rdata (module_rdata[j]),
      .wdata (sys_wdata)
@@ -366,7 +378,7 @@ endgenerate
 assign trig_o = trig_signal;
 
 //IIR module 
-generate for (j = 4; j < 5; j = j+1) begin
+generate for (j = IIR; j < IIR+1; j = j+1) begin
     red_pitaya_iir_block iir (
 	     // data
 	     .clk_i        (  clk_i          ),  // clock
@@ -376,8 +388,8 @@ generate for (j = 4; j < 5; j = j+1) begin
 
 		 //communincation with PS
 		 .addr ( sys_addr[16-1:0] ),
-		 .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
-		 .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
+		 .wen  ( sys_wen & (sys_addr[21-1:16]==j) ),
+		 .ren  ( sys_ren & (sys_addr[21-1:16]==j) ),
 		 .ack  ( module_ack[j] ),
 		 .rdata (module_rdata[j]),
 	     .wdata (sys_wdata)
@@ -386,8 +398,8 @@ generate for (j = 4; j < 5; j = j+1) begin
 end endgenerate
 
 
-//IQ modules
-generate for (j = 5; j < 7; j = j+1) begin
+//IQ modules iq0, iq1
+generate for (j = IQ0; j < IQ2; j = j+1) begin
     red_pitaya_iq_block 
       iq
       (
@@ -405,36 +417,34 @@ generate for (j = 5; j < 7; j = j+1) begin
 
 		 //communincation with PS
 		 .addr ( sys_addr[16-1:0] ),
-		 .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
-		 .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
+		 .wen  ( sys_wen & (sys_addr[21-1:16]==j) ),
+		 .ren  ( sys_ren & (sys_addr[21-1:16]==j) ),
 		 .ack  ( module_ack[j] ),
 		 .rdata (module_rdata[j]),
 	     .wdata (sys_wdata)
       );
 end endgenerate
 
-// IQ with two outputs
-generate for (j = 7; j < 8; j = j+1) begin
-    red_pitaya_iq_block   #( .QUADRATUREFILTERSTAGES(4) )
-      iq_2_outputs
-      (
-         // data
-         .clk_i        (  clk_i          ),  // clock
-         .rstn_i       (  rstn_i         ),  // reset - active low
-         .sync_i       (  sync[j]        ),  // syncronization of different dsp modules
-         .dat_i        (  input_signal [j] ),  // input data
-         .dat_o        (  output_direct[j]),  // output data
-         .signal_o     (  output_signal[j]),  // output signal
-         .signal2_o    (  output_signal[j*2]),  // output signal 2
+// IQ with two outputs iq2
+red_pitaya_iq_block   #( .QUADRATUREFILTERSTAGES(4) )
+    iq_2_outputs
+    (
+        // data
+        .clk_i        (  clk_i          ),  // clock
+        .rstn_i       (  rstn_i         ),  // reset - active low
+        .sync_i       (  sync[IQ2]        ),  // syncronization of different dsp modules
+        .dat_i        (  input_signal [IQ2] ),  // input data
+        .dat_o        (  output_direct[IQ2]),  // output data
+        .signal_o     (  output_signal[IQ2]),  // output signal
+        .signal2_o    (  output_signal[IQ2_2]),  // output signal 2
 
-         //communincation with PS
-         .addr ( sys_addr[16-1:0] ),
-         .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
-         .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
-         .ack  ( module_ack[j] ),
-         .rdata (module_rdata[j]),
-         .wdata (sys_wdata)
-      );
-end endgenerate
+        //communincation with PS
+        .addr ( sys_addr[16-1:0] ),
+        .wen  ( sys_wen & (sys_addr[21-1:16]==IQ2) ),
+        .ren  ( sys_ren & (sys_addr[21-1:16]==IQ2) ),
+        .ack  ( module_ack[IQ2] ),
+        .rdata (module_rdata[IQ2]),
+        .wdata (sys_wdata)
+    );
 
 endmodule

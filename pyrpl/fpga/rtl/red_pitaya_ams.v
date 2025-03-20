@@ -50,6 +50,8 @@ module red_pitaya_ams (
    input      [ 14-1: 0] pwm0_i          ,  // 14 bit inputs for compatibility and future upgrades;
   								  	        // right now only 12 bits are used  
    input      [ 14-1: 0] pwm1_i          ,  
+   input      [ 14-1: 0] pwm2_i          ,  
+   input      [ 14-1: 0] pwm3_i          ,  
    
    // system bus
    input      [ 32-1: 0] sys_addr        ,  // bus address
@@ -66,21 +68,44 @@ module red_pitaya_ams (
 //
 //  System bus connection
 
+reg manual_a;
+reg manual_b;
+reg manual_c;
+reg manual_d;
+reg [24-1:0] cfg;
+reg [24-1:0] cfg_b;
+reg [24-1:0] cfg_c;
+reg [24-1:0] cfg_d;
+
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
    dac_a_o     <= 24'h000000 ;
    dac_b_o     <= 24'h000000 ;
    dac_c_o     <= 24'h000000 ;
    dac_d_o     <= 24'h000000 ;
+   manual_a    <= 1'b0       ;
+   manual_b    <= 1'b0       ;
+   // Default manual configuration for DAC c & d for backward compatibility
+   manual_c    <= 1'b1       ;
+   manual_d    <= 1'b1       ;
 end else begin
-   dac_a_o <= cfg;
-   dac_b_o <= cfg_b;
    if (sys_wen) begin
-      // if (sys_addr[19:0]==16'h20)   dac_a_o <= sys_wdata[24-1: 0] ;
-      // if (sys_addr[19:0]==16'h24)   dac_b_o <= sys_wdata[24-1: 0] ;
-      if (sys_addr[19:0]==16'h28)   dac_c_o <= sys_wdata[24-1: 0] ;
-      if (sys_addr[19:0]==16'h2C)   dac_d_o <= sys_wdata[24-1: 0] ;
-   end
+      if (manual_a && sys_addr[19:0]==16'h20)   dac_a_o <= sys_wdata[24-1: 0] ;
+      if (manual_b && sys_addr[19:0]==16'h24)   dac_b_o <= sys_wdata[24-1: 0] ;
+      if (manual_c && sys_addr[19:0]==16'h28)   dac_c_o <= sys_wdata[24-1: 0] ;
+      if (manual_d && sys_addr[19:0]==16'h2C)   dac_d_o <= sys_wdata[24-1: 0] ;
+      if (sys_addr[19:0] == 16'h30) begin
+          manual_a <= sys_wdata[0];
+          manual_b <= sys_wdata[1];
+          manual_c <= sys_wdata[2];
+          manual_d <= sys_wdata[3];
+      end
+   end else begin
+      if (!manual_a) dac_a_o <= cfg;
+      if (!manual_b) dac_b_o <= cfg_b;
+      if (!manual_c) dac_c_o <= cfg_c;
+      if (!manual_d) dac_d_o <= cfg_d;
+    end
 end
 
 wire sys_en;
@@ -97,6 +122,7 @@ end else begin
      20'h00024 : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_b_o}          ; end
      20'h00028 : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_c_o}          ; end
      20'h0002C : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_d_o}          ; end
+     20'h00030 : begin sys_ack <= sys_en;         sys_rdata <= {{32-4{1'b0}}, manual_d, manual_c, manual_b, manual_a}; end
        default : begin sys_ack <= sys_en;         sys_rdata <=   32'h0                           ; end
    endcase
 end
@@ -142,7 +168,6 @@ end
 
 localparam CCW = 24; // configuration bitwidth for pwm module
 
-reg [24-1:0] cfg;
 wire bit3;
 wire bit2;
 wire bit1;
@@ -155,7 +180,6 @@ end else begin
    cfg  <= {~pwm0_i[13],pwm0_i[13-1:6],1'b0,bit3,bit2,bit3,bit1,bit3,bit2,bit3,bit0,bit3,bit2,bit3,bit1,bit3,bit2,bit3};
 end
 
-reg [24-1:0] cfg_b;
 wire bit3_b;
 wire bit2_b;
 wire bit1_b;
@@ -166,6 +190,30 @@ if (rstn_i == 1'b0) begin
    cfg_b   <=  {CCW{1'b0}};
 end else begin
    cfg_b  <= {~pwm1_i[13],pwm1_i[13-1:6],1'b0,bit3_b,bit2_b,bit3_b,bit1_b,bit3_b,bit2_b,bit3_b,bit0_b,bit3_b,bit2_b,bit3_b,bit1_b,bit3_b,bit2_b,bit3_b};
+end
+
+wire bit3_c;
+wire bit2_c;
+wire bit1_c;
+wire bit0_c;
+assign {bit3_c,bit2_c,bit1_c,bit0_c} = pwm2_i[5:2];
+always @(posedge clk_i)
+if (rstn_i == 1'b0) begin
+   cfg_c   <=  {CCW{1'b0}};
+end else begin
+   cfg_c  <= {~pwm2_i[13],pwm2_i[13-1:6],1'b0,bit3_c,bit2_c,bit3_c,bit1_c,bit3_c,bit2_c,bit3_c,bit0_c,bit3_c,bit2_c,bit3_c,bit1_c,bit3_c,bit2_c,bit3_c};
+end
+
+wire bit3_d;
+wire bit2_d;
+wire bit1_d;
+wire bit0_d;
+assign {bit3_d,bit2_d,bit1_d,bit0_d} = pwm3_i[5:2];
+always @(posedge clk_i)
+if (rstn_i == 1'b0) begin
+   cfg_d   <=  {CCW{1'b0}};
+end else begin
+   cfg_d  <= {~pwm3_i[13],pwm3_i[13-1:6],1'b0,bit3_d,bit2_d,bit3_d,bit1_d,bit3_d,bit2_d,bit3_d,bit0_d,bit3_d,bit2_d,bit3_d,bit1_d,bit3_d,bit2_d,bit3_d};
 end
 
 endmodule

@@ -118,13 +118,27 @@ class AsgOffsetAttribute(FloatProperty):
 # ugly workaround, but realized too late that descriptors have this limit
 def make_asg(channel=0):
     if channel == 0:
+        set_START_OFFSET = 0
         set_BIT_OFFSET = 0
         set_VALUE_OFFSET = 0x00
         set_DATA_OFFSET = 0x10000
         set_default_output_direct = 'off'
-    else:
+    elif channel == 1:
         set_DATA_OFFSET = 0x20000
         set_VALUE_OFFSET = 0x20
+        set_START_OFFSET = 0
+        set_BIT_OFFSET = 16
+        set_default_output_direct = 'off'
+    elif channel == 2:
+        set_DATA_OFFSET = 0x30000
+        set_VALUE_OFFSET = 0x50
+        set_START_OFFSET = 0x50
+        set_BIT_OFFSET = 0
+        set_default_output_direct = 'off'
+    else:
+        set_DATA_OFFSET = 0x40000
+        set_VALUE_OFFSET = 0x70
+        set_START_OFFSET = 0x50
         set_BIT_OFFSET = 16
         set_default_output_direct = 'off'
 
@@ -141,6 +155,8 @@ def make_asg(channel=0):
 
         _DATA_OFFSET = set_DATA_OFFSET
         _VALUE_OFFSET = set_VALUE_OFFSET
+        _START_OFFSET = set_START_OFFSET
+        _CHANNEL = channel
         _BIT_OFFSET = set_BIT_OFFSET
         default_output_direct = set_default_output_direct
 
@@ -149,7 +165,7 @@ def make_asg(channel=0):
         _default_counter_wrap = 2 ** 16 * (2 ** 14) - 1
 
         output_directs = None
-        addr_base = 0x40200000
+        addr_base = 0x40400000
 
         def __init__(self, parent, name=None):
             super(Asg, self).__init__(parent, name=name)
@@ -161,25 +177,25 @@ def make_asg(channel=0):
             return all_output_directs(self).keys()
 
         output_direct = SelectRegister(
-            - addr_base + dsp_addr_base('asg0' if _BIT_OFFSET == 0 else 'asg1') + 0x4,
+            - addr_base + dsp_addr_base(f'asg{_CHANNEL}') + 0x4,
                     options=all_output_directs,
                     doc="selects the direct output of the module")
 
         data_length = 2 ** 14
 
         # register set_a_zero
-        on = BoolRegister(0x0, 7 + _BIT_OFFSET, doc='turns the output on or off', invert=True)
+        on = BoolRegister(_START_OFFSET, 7 + _BIT_OFFSET, doc='turns the output on or off', invert=True)
 
         # register set_a_rst
-        sm_reset = BoolRegister(0x0, 6 + _BIT_OFFSET, doc='resets the state machine')
+        sm_reset = BoolRegister(_START_OFFSET, 6 + _BIT_OFFSET, doc='resets the state machine')
 
         # register set_a/b_once
         # deprecated since redpitaya v0.94
-        periodic = BoolRegister(0x0, 5 + _BIT_OFFSET, invert=True,
+        periodic = BoolRegister(_START_OFFSET, 5 + _BIT_OFFSET, invert=True,
                                 doc='if False, fgen stops after performing one full waveform at its last value.')
 
         # register set_a/b_wrap
-        _sm_wrappointer = BoolRegister(0x0, 4 + _BIT_OFFSET,
+        _sm_wrappointer = BoolRegister(_START_OFFSET, 4 + _BIT_OFFSET,
                                        doc='If False, fgen starts from data[0] value after each cycle. If True, assumes that data is periodic and jumps to the naturally next index after full cycle.')
 
         # register set_a_rgate
@@ -198,7 +214,7 @@ def make_asg(channel=0):
             ])
         trigger_sources = _trigger_sources.keys()
 
-        trigger_source = SelectRegister(0x0, bitmask=0x0007 << _BIT_OFFSET,
+        trigger_source = SelectRegister(_START_OFFSET, bitmask=0x0007 << _BIT_OFFSET,
                                         default='off',
                                         options=_trigger_sources,
                                         doc="trigger source for triggered "
@@ -253,7 +269,7 @@ def make_asg(channel=0):
         delay_between_bursts = IntRegister(0x20 + _VALUE_OFFSET,
                                            doc="Delay between repetitions [us]. Granularity=1us")
 
-        random_phase = BoolRegister(0x0, 12 + _BIT_OFFSET,
+        random_phase = BoolRegister(_START_OFFSET, 12 + _BIT_OFFSET,
                                     doc='If True, the phase of the asg will be '
                                         'pseudo-random with a period of 2**31-1 '
                                         'cycles. This is used for the generation of '
@@ -336,11 +352,11 @@ def make_asg(channel=0):
                                           doc="phase of ASG ch1 at the moment when the last scope "
                                               "trigger occured [degrees]")
 
-        advanced_trigger_reset = BoolRegister(0x0, 9 + _BIT_OFFSET,
+        advanced_trigger_reset = BoolRegister(_START_OFFSET, 9 + _BIT_OFFSET,
                                               doc='resets the fgen advanced trigger')
-        advanced_trigger_autorearm = BoolRegister(0x0, 11 + _BIT_OFFSET,
+        advanced_trigger_autorearm = BoolRegister(_START_OFFSET, 11 + _BIT_OFFSET,
                                                   doc='autorearm the fgen advanced trigger after a trigger event? If False, trigger needs to be reset with a sequence advanced_trigger_reset=True...advanced_trigger_reset=False after each trigger event.')
-        advanced_trigger_invert = BoolRegister(0x0, 10 + _BIT_OFFSET,
+        advanced_trigger_invert = BoolRegister(_START_OFFSET, 10 + _BIT_OFFSET,
                                                doc='inverts the trigger signal for the advanced trigger if True')
 
         advanced_trigger_delay = LongRegister(0x118 + _VALUE_OFFSET, bits=64,
@@ -378,3 +394,5 @@ def make_asg(channel=0):
 
 Asg0 = make_asg(channel=0)
 Asg1 = make_asg(channel=1)
+Asg2 = make_asg(channel=2)
+Asg3 = make_asg(channel=3)

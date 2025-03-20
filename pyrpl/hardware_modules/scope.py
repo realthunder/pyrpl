@@ -204,7 +204,7 @@ class SamplingTimeProperty(SelectProperty):
 
 class Scope(HardwareModule, AcquisitionModule):
     MIN_DELAY_CONTINUOUS_ROLLING_MS = 20
-    addr_base = 0x40100000
+    addr_base = 0x40200000
     name = 'scope'
     _widget_class = ScopeWidget
     # run = ModuleProperty(ScopeAcquisitionManager)
@@ -272,6 +272,8 @@ class Scope(HardwareModule, AcquisitionModule):
                                     "ext_negative_edge": 7,  # DIO0_P pin
                                     "asg0": 8,
                                     "asg1": 9,
+                                    "asg2": 11,
+                                    "asg3": 12,
                                     "dsp": 10}, #dsp trig module trigger
                                     sort_by_values=True)
 

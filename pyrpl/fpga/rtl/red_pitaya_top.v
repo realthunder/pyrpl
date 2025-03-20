@@ -237,12 +237,12 @@ wire  [8* 1-1: 0] sys_err   ;
 wire  [8* 1-1: 0] sys_ack   ;
 wire  [8   -1: 0] sys_cs    ;
 
-assign sys_cs = 8'h01 << sys_addr[22:20];
+assign sys_cs = 8'h01 << sys_addr[23:21];
 
 assign sys_wen = sys_cs & {8{ps_sys_wen}};
 assign sys_ren = sys_cs & {8{ps_sys_ren}};
 
-assign ps_sys_rdata = sys_rdata[sys_addr[22:20]*32+:32];
+assign ps_sys_rdata = sys_rdata[sys_addr[23:21]*32+:32];
 
 assign ps_sys_err   = |(sys_cs & sys_err);
 assign ps_sys_ack   = |(sys_cs & sys_ack);
@@ -297,7 +297,7 @@ reg          [14-1:0] dac_dat_a, dac_dat_b;
 wire         [14-1:0] dac_a    , dac_b    ;
 
 // ASG
-wire  signed [14-1:0] asg_a    , asg_b    ;
+wire  signed [14-1:0] asg_a    , asg_b    , asg_c    , asg_d    ;
 
 // configuration
 wire                  digital_loop;
@@ -424,7 +424,7 @@ IOBUF i_iobufn [8-1:0] (.O(exp_n_in), .IO(exp_n_io), .I(exp_n_out), .T(~exp_n_di
 //---------------------------------------------------------------------------------
 //  Oscilloscope application
 
-wire    [  2-1:0] trig_asg_out;
+wire    [  4-1:0] trig_asg_out;
 wire trig_scope_out;
 wire    [14-1: 0] to_scope_a;
 wire    [14-1: 0] to_scope_b;
@@ -475,10 +475,14 @@ red_pitaya_asg i_asg (
    // DAC
   .dac_a_o         (  asg_a                      ),  // CH 1
   .dac_b_o         (  asg_b                      ),  // CH 2
+  .dac_c_o         (  asg_c                      ),  // CH 3
+  .dac_d_o         (  asg_d                      ),  // CH 4
   .dac_clk_i       (  adc_clk                    ),  // clock
   .dac_rstn_i      (  adc_rstn                   ),  // reset - active low
   .trig_a_i        (  exp_p_in[0]                ),
   .trig_b_i        (  exp_p_in[0]                ),
+  .trig_c_i        (  exp_p_in[0]                ),
+  .trig_d_i        (  exp_p_in[0]                ),
   .trig_out_o      (  trig_asg_out               ),
   .trig_scope_i    (  trig_scope_out             ),
   .asg1phase_o     (  asg1phase_o                ),
@@ -508,6 +512,8 @@ red_pitaya_dsp i_dsp (
   
   .asg1_i          (  asg_a                  ),
   .asg2_i          (  asg_b                  ),
+  .asg3_i          (  asg_c                  ),
+  .asg4_i          (  asg_d                  ),
   .scope1_o        (  to_scope_a             ),
   .scope2_o        (  to_scope_b             ),
   .asg1phase_i     (  asg1phase_o            ),
@@ -554,6 +560,8 @@ red_pitaya_ams i_ams (
   .dac_d_o         (  pwm_cfg_d                  ),
   .pwm0_i 		   (  pwm_signals[0]             ),
   .pwm1_i 		   (  pwm_signals[1]             ),
+  .pwm2_i 		   (  pwm_signals[2]             ),
+  .pwm3_i 		   (  pwm_signals[3]             ),
    // System bus
   .sys_addr        (  sys_addr                   ),  // address
   .sys_wdata       (  sys_wdata                  ),  // write data

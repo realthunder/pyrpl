@@ -77,7 +77,7 @@ module red_pitaya_scope #(
    input      [ 14-1: 0] adc_b_i         ,  // ADC data CHB
    // trigger sources
    input                 trig_ext_i      ,  // external trigger
-   input      [  2-1: 0] trig_asg_i      ,  // ASG trigger
+   input      [  4-1: 0] trig_asg_i      ,  // ASG trigger
    input                 trig_dsp_i      ,  // DSP module trigger
    output                trig_scope_o    ,  // copy of scope trigger
 
@@ -604,6 +604,8 @@ wire              ext_trig_p       ;
 wire              ext_trig_n       ;
 wire              asg_trig_p       ;
 wire              asg_trig_n       ;
+wire              asg_trig2_p      ;
+wire              asg_trig2_n      ;
 
 always @(posedge adc_clk_i)
 if (adc_rstn_i == 1'b0) begin
@@ -630,9 +632,11 @@ end else begin
        4'd5 : adc_trig <= adc_trig_bn   ; // B ch falling edge
        4'd6 : adc_trig <= ext_trig_p    ; // external - rising edge
        4'd7 : adc_trig <= ext_trig_n    ; // external - falling edge
-       4'd8 : adc_trig <= asg_trig_p    ; // ASG - rising edge
-       4'd9 : adc_trig <= asg_trig_n    ; // ASG - falling edge
+       4'd8 : adc_trig <= asg_trig_p    ; // ASG 1 - rising edge
+       4'd9 : adc_trig <= asg_trig_n    ; // ASG 2 - rising edge
        4'd10: adc_trig <= trig_dsp_i    ; // dsp trigger input
+       4'd11: adc_trig <= asg_trig2_p   ; // ASG 3 - rising edge
+       4'd12: adc_trig <= asg_trig2_n   ; // ASG 4 - rising edge
     default : adc_trig <= 1'b0          ;
    endcase
 end
@@ -702,10 +706,16 @@ reg  [ 20-1: 0] ext_trig_debp  ;
 reg  [ 20-1: 0] ext_trig_debn  ;
 reg  [  3-1: 0] asg_trig_in_ch1;
 reg  [  3-1: 0] asg_trig_in_ch2;
+reg  [  3-1: 0] asg_trig_in_ch3;
+reg  [  3-1: 0] asg_trig_in_ch4;
 reg  [  2-1: 0] asg_trig_dp    ;
 reg  [  2-1: 0] asg_trig_dn    ;
+reg  [  2-1: 0] asg_trig2_dp   ;
+reg  [  2-1: 0] asg_trig2_dn   ;
 reg  [ 20-1: 0] asg_trig_debp  ;
 reg  [ 20-1: 0] asg_trig_debn  ;
+reg  [ 20-1: 0] asg_trig2_debp ;
+reg  [ 20-1: 0] asg_trig2_debn ;
 
 always @(posedge adc_clk_i)
 if (adc_rstn_i == 1'b0) begin
@@ -716,10 +726,16 @@ if (adc_rstn_i == 1'b0) begin
    ext_trig_debn <= 20'h0 ;
    asg_trig_in_ch1 <=  3'h0 ;
    asg_trig_in_ch2 <=  3'h0 ;
+   asg_trig_in_ch3 <=  3'h0 ;
+   asg_trig_in_ch4 <=  3'h0 ;
    asg_trig_dp   <=  2'h0 ;
    asg_trig_dn   <=  2'h0 ;
+   asg_trig2_dp  <=  2'h0 ;
+   asg_trig2_dn  <=  2'h0 ;
    asg_trig_debp <= 20'h0 ;
    asg_trig_debn <= 20'h0 ;
+   asg_trig2_debp<= 20'h0 ;
+   asg_trig2_debn<= 20'h0 ;
 end else begin
    //----------- External trigger
    // synchronize FFs
@@ -749,6 +765,8 @@ end else begin
    // synchronize FFs
    asg_trig_in_ch1 <= {asg_trig_in_ch1[1:0],trig_asg_i[0]} ;
    asg_trig_in_ch2 <= {asg_trig_in_ch2[1:0],trig_asg_i[1]} ;
+   asg_trig_in_ch3 <= {asg_trig_in_ch3[1:0],trig_asg_i[2]} ;
+   asg_trig_in_ch4 <= {asg_trig_in_ch4[1:0],trig_asg_i[3]} ;
 
    // look for input changes -ch1
    if ((asg_trig_debp == 20'h0) && (asg_trig_in_ch1[1] && !asg_trig_in_ch1[2]))
@@ -762,6 +780,18 @@ end else begin
    else if (asg_trig_debn != 20'h0)
       asg_trig_debn <= asg_trig_debn - 20'd1 ;
 
+   // look for input changes - ch3
+   if ((asg_trig2_debp == 20'h0) && (asg_trig_in_ch3[1] && !asg_trig_in_ch3[2]))
+      asg_trig2_debp <= set_deb_len ; // ~0.5ms
+   else if (asg_trig2_debp != 20'h0)
+      asg_trig2_debp <= asg_trig2_debp - 20'd1 ;
+
+   // look for input changes - ch4
+   if ((asg_trig2_debn == 20'h0) && (asg_trig_in_ch4[1] && !asg_trig_in_ch4[2]))
+      asg_trig2_debn <= set_deb_len ; // ~0.5ms
+   else if (asg_trig2_debn != 20'h0)
+      asg_trig2_debn <= asg_trig2_debn - 20'd1 ;
+
    // update output values
    asg_trig_dp[1] <= asg_trig_dp[0] ;
    if (asg_trig_debp == 20'h0)
@@ -770,12 +800,22 @@ end else begin
    asg_trig_dn[1] <= asg_trig_dn[0] ;
    if (asg_trig_debn == 20'h0)
       asg_trig_dn[0] <= asg_trig_in_ch2[1] ;
+
+   asg_trig2_dp[1] <= asg_trig2_dp[0] ;
+   if (asg_trig2_debp == 20'h0)
+      asg_trig2_dp[0] <= asg_trig_in_ch3[1] ;
+
+   asg_trig2_dn[1] <= asg_trig2_dn[0] ;
+   if (asg_trig2_debn == 20'h0)
+      asg_trig2_dn[0] <= asg_trig_in_ch4[1] ;
 end
 
 assign ext_trig_p = (ext_trig_dp == 2'b01) ;
 assign ext_trig_n = (ext_trig_dn == 2'b10) ;
 assign asg_trig_p = (asg_trig_dp == 2'b01) ;
 assign asg_trig_n = (asg_trig_dn == 2'b01) ;
+assign asg_trig2_p= (asg_trig2_dp == 2'b01) ;
+assign asg_trig2_n= (asg_trig2_dn == 2'b01) ;
 
 //---------------------------------------------------------------------------------
 //  System bus connection
