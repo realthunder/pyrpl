@@ -6,24 +6,26 @@ from ..errors import ExpectedPyrplError
 
 # order here determines the order in the GUI etc.
 DSP_INPUTS = OrderedDict([
-    ('in1', 10), #same as asg
-    ('in2', 11),
-    ('out1', 12),
-    ('out2', 13),
+    ('in1', 12),
+    ('in2', 13),
+    ('out1', 14),
+    ('out2', 15),
     ('iq0', 5),
     ('iq1', 6),
     ('iq2', 7),
-    ('iq2_2', 14),
+    ('iq2_2', 16),
     ('pid0', 0),
     ('pid1', 1),
     ('pid2', 2),
     ('asg0', 8),
     ('asg1', 9),
+    ('asg2', 10),
+    ('asg3', 11),
     ('trig', 3),
     ('iir', 4),
     # ('scope0', 8), #same as asg0 by design
     # ('scope1', 9), #same as asg1 by design
-    ('off', 15)])
+    ('off', 17)])
 
 def all_inputs_keys(instance):
     """ collects all available logical inputs, composed of all
@@ -133,7 +135,7 @@ def all_output_directs(instance):
 def dsp_addr_base(name):
     # find address from name
     number = DSP_INPUTS[name]
-    return 0x40300000 + number * 0x10000
+    return 0x40600000 + number * 0x10000
 
 
 class PauseRegister(BoolRegister):
