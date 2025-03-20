@@ -3,6 +3,7 @@
 @RD /S /Q .srcs
 @RD /S /Q sdk
 
-c:/Xilinx/Vivado/2015.4/bin/vivado.bat -nolog -nojournal -mode tcl -source red_pitaya_vivado.tcl
+REM  d:/Xilinx/Vivado/2020.1/bin/vivado.bat -nolog -nojournal -mode tcl -source red_pitaya_vivado_project.tcl
+d:/Xilinx/Vivado/2020.1/bin/vivado.bat -nolog -nojournal -mode tcl -source red_pitaya_vivado.tcl
 
 echo compilation finished

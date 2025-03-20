@@ -23,7 +23,8 @@ file mkdir $path_sdk
 # setup an in memory project
 ################################################################################
 
-set part xc7z010clg400-1
+# set part xc7z010clg400-1
+set part xc7z020clg400-1
 
 create_project -in_memory -part $part
 
@@ -153,7 +154,7 @@ write_bitstream -force $path_out/red_pitaya.bit
 
 set_property BITSTREAM.GENERAL.COMPRESS FALSE [current_design]
 write_bitstream -force $path_out/red_pitaya_uncompressed.bit
-write_cfgmem -force -format BIN -size 2 -interface SMAPx32 -disablebitswap -loadbit "up 0x0 $path_out/red_pitaya_uncompressed.bit" red_pitaya.bin
+write_cfgmem -force -format BIN -size 4 -interface SMAPx32 -disablebitswap -loadbit "up 0x0 $path_out/red_pitaya_uncompressed.bit" red_pitaya.bin
 
 ################################################################################
 # generate system definition
