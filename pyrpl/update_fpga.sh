@@ -7,7 +7,8 @@ FPGAS=/opt/redpitaya/fpga
 MODEL=$(/opt/redpitaya/bin/monitor -f)
 
 # Assume serverbinfilename or use $2 for the serverbinfilename
-CUSTOMFPGA=/opt/pyrpl/fpga.bin
+# CUSTOMFPGA=/opt/pyrpl/fpga.bin
+CUSTOMFPGA=$2
 
 if [ "$?" = "0" ]
 then
@@ -20,10 +21,11 @@ sleep 0.5s
 echo -n "Commit "
 awk 'NR==2 {print $2}' $FPGAS/$MODEL/$1/git_info.txt
 
-FPGATOINSTALL=$FPGAS/$MODEL/$1/fpga.bit.bin
-# FPGATOINSTALL=$CUSTOMFPGA
+# FPGATOINSTALL=$FPGAS/$MODEL/$1/fpga.bit.bin
+FPGATOINSTALL=$CUSTOMFPGA
 
 /opt/redpitaya/bin/fpgautil -b $FPGATOINSTALL -o $FPGAS/$MODEL/$1/fpga.dtbo -n Full > /tmp/update_fpga.txt 2>&1
+# /opt/redpitaya/bin/fpgautil -b $FPGATOINSTALL
 # TODO replace the following and implement overlay and get device tree for custom fpga
 # /opt/redpitaya/bin/fpgautil -b $FPGATOINSTALL -f Full > /tmp/update_fpga.txt 2>&1
 

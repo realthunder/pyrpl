@@ -23,11 +23,10 @@ import numpy as np
 import time
 from qtpy import QtCore
 from . import default_config_dir, user_config_dir
-from .pyrpl_utils import time
+from .pyrpl_utils import time, verbose
 
 import logging
 logger = logging.getLogger(name=__name__)
-
 
 class UnexpectedSaveError(RuntimeError):
     pass
@@ -559,14 +558,14 @@ class MemoryTree(MemoryBranch):
         if time() > self._lastreload + self._loadsavedeadtime:
             # prepare next timeout
             self._lastreload = time()
-            logger.debug("Checking change time of config file...")
+            verbose(logger, "Checking change time of config file...")
             filetime = os.path.getmtime(self._filename)
             if self._mtime != filetime:
-                logger.debug('Loading because mtime {} != filetime {}'.format(
+                logger.debug('Reload config file because mtime {} != filetime {}'.format(
                     self._mtime, filetime))
                 self._load()
             else:
-                logger.debug("... no reloading required")
+                verbose(logger, "... no reloading required")
 
     def _write_to_file(self):
         """

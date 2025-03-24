@@ -57,11 +57,16 @@ class SshShell(object):
             self.channel = self.ssh.invoke_shell()
         self.startscp()
 
+    def scp_put(self, src, dst, *args, **kargs):
+        self._logger.debug(f'scp "{src}" -> "{dst}"')
+        return self.scp.put(src, dst, *args, **kargs)
+
     def startscp(self):
         self.scp = SCPClient(self.ssh.get_transport())
 
     def write(self, text):
         if self.channel.send_ready() and not text == "":
+            self._logger.debug(f'< {text}')
             return self.channel.send(text)
         else:
             return -1
@@ -87,8 +92,27 @@ class SshShell(object):
         sleep(self.delay)
         return self.read()
 
-    def ask(self, question=""):
+    def ask(self, question="", block=False):
         return self.askraw(question + '\n')
+
+    def run(self, cmd):
+        self._logger.debug(f'< {cmd}')
+        stdin_, stdout_, stderr_ = self.ssh.exec_command(cmd)
+        channel = stdout_.channel
+        channel.set_combine_stderr(True)
+        exited = False
+        lines = []
+        while True:
+            exited = channel.exit_status_ready()
+            while channel.recv_ready():
+                line = stdout_.readline(1024)
+                self._logger.debug(f'> {line}')
+                lines.append(line)
+            if exited:
+                ret = channel.recv_exit_status()
+                channel.close()
+                break
+        return ret, '\n'.join(lines)
 
     def __del__(self):
         self.endapp()
