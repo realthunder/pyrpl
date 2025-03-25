@@ -46,6 +46,7 @@ module red_pitaya_asg_ch #(
    input                 trig_sw_i       ,  //!< software trigger
    input                 trig_ext_i      ,  //!< external trigger
    input      [  3-1: 0] trig_src_i      ,  //!< trigger source selector
+   input                 trig_slave_i    ,  //!< slave trigger
    output                trig_done_o     ,  //!< trigger event
    
    // buffer ctrl
@@ -70,6 +71,7 @@ module red_pitaya_asg_ch #(
    input     [  32-1: 0] set_rdly_i      ,  //!< set delay between repetitions
    input                 set_rgate_i     ,  //!< set external gated repetition
 
+   input                 reverse_on_i  ,  //!< enable reverse play on each repetition
 
    input                 rand_on_i     , // random number generator on
    input     [RSZ-1:0]   rand_pnt_i      // random pointer for output data
@@ -86,7 +88,11 @@ reg   [  14-1: 0] dac_rdat  ;
 reg   [ RSZ-1: 0] dac_rp    ;
 reg   [RSZ+16-1: 0] dac_pnt   ; // read pointer
 reg   [RSZ+16-1: 0] dac_pntp  ; // previous read pointer
-wire  [RSZ+17-1: 0] dac_npnt  ; // next read pointer
+reg   [RSZ+17-1: 0] dac_npnt  ; // next read pointer
+
+wire  [RSZ+16-1: 0] dac_npnt2 ; // next read pointer without sign bit
+assign dac_npnt2 = dac_npnt[RSZ+16-1: 0];
+
 wire  [RSZ+17-1: 0] dac_npnt_sub ;
 wire              dac_npnt_sub_neg;
 
@@ -138,6 +144,9 @@ reg              dac_do       ;
 reg              dac_rep      ;
 wire             dac_trig     ;
 reg              dac_trigr    ;
+
+reg              reverse_run  ;
+reg              reverse_prev ;
 
 // state machine
 always @(posedge dac_clk_i) begin
@@ -211,21 +220,55 @@ assign dac_trig = (!dac_rep && trig_in) || (dac_rep && |rep_cnt && (dly_cnt == 3
 assign dac_npnt_sub = dac_npnt - {1'b0,set_size_i} - 1;
 assign dac_npnt_sub_neg = dac_npnt_sub[RSZ+16];
 
+reg trig_done_prev ;
+wire trig_done     ;
+assign trig_done = (!dac_rep && trig_in) | (~dac_npnt_sub_neg) | (reverse_run != reverse_prev && reverse_on_i);
+assign trig_done_o = (trig_done && !trig_done_prev);
+
 // read pointer logic
 always @(posedge dac_clk_i)
 if (dac_rstn_i == 1'b0) begin
    dac_pnt  <= {RSZ+16{1'b0}};
+   reverse_run  <=  1'b0 ;
+   reverse_prev <=  1'b0 ;
+   trig_done_prev <= 1'b0 ;
 end else begin
+    trig_done_prev <= trig_done ;
+    reverse_prev <= reverse_run;
    if (set_rst_i || (dac_trig && !dac_do)) // manual reset or start
-      dac_pnt <= set_ofs_i;
-   else if (dac_do) begin
-      if (~dac_npnt_sub_neg)  dac_pnt <= set_wrap_i ? dac_npnt_sub : set_ofs_i; // wrap or go to start
-      else                    dac_pnt <= dac_npnt[RSZ+16-1:0]; // normal increase
+      if (reverse_run && reverse_on_i) begin
+          dac_pnt <= set_size_i - 1;
+          dac_npnt <= {1'b0, set_size_i - 1 - set_step_i};
+      end else begin
+         dac_pnt <= set_ofs_i;
+         dac_npnt <= set_ofs_i + set_step_i;
+      end
+   else if (dac_do && trig_slave_i) begin
+      if (reverse_run && reverse_on_i) begin
+         dac_pnt <= dac_npnt2;
+         if (dac_npnt2 < set_ofs_i + set_step_i) begin
+            reverse_run <= 1'b0;
+            dac_npnt <= {1'b0, dac_npnt2 + set_step_i};
+         end else begin
+            dac_npnt <= {1'b0, dac_npnt2 - set_step_i};
+         end
+      end else begin
+         if (~dac_npnt_sub_neg) begin
+            if (reverse_on_i) begin
+               reverse_run <= 1'b1;
+               dac_npnt <= dac_pnt - set_step_i;
+            end else begin
+               reverse_run <= 1'b0;
+               dac_pnt <= set_wrap_i ? dac_npnt_sub : set_ofs_i; // wrap or go to start
+               dac_npnt <= (set_wrap_i ? dac_npnt_sub : set_ofs_i) + set_step_i;
+            end
+         end else begin
+            dac_pnt <= dac_npnt2; // normal increase
+            dac_npnt <= dac_npnt + set_step_i;
+         end
+      end
    end
 end
-
-assign dac_npnt = dac_pnt + set_step_i;
-assign trig_done_o = (!dac_rep && trig_in) | (~dac_npnt_sub_neg);
 
 //---------------------------------------------------------------------------------
 //
