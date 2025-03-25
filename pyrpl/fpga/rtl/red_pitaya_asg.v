@@ -123,7 +123,9 @@ reg   [  32-1: 0] buf_a_rpnt_rd, buf_b_rpnt_rd, buf_c_rpnt_rd, buf_d_rpnt_rd;
 reg               trig_a_sw    , trig_b_sw    , trig_c_sw    , trig_d_sw    ;
 reg   [   3-1: 0] trig_a_src   , trig_b_src   , trig_c_src   , trig_d_src   ;
 wire              trig_a_done  , trig_b_done  , trig_c_done  , trig_d_done  ;
-
+reg               slave_a_trig , slave_b_trig , slave_c_trig , slave_d_trig ;
+wire              trig_a_slave , trig_b_slave , trig_c_slave , trig_d_slave ;
+reg               reverse_a_on , reverse_b_on , reverse_c_on , reverse_d_on ;
 reg               rand_a_on    , rand_b_on    , rand_c_on    , rand_d_on    ;
 wire  [ RSZ-1: 0] rand_pnt;
 
@@ -198,6 +200,7 @@ red_pitaya_asg_ch  #(.RSZ (RSZ)) ch [4-1:0] (
   .trig_sw_i       ({trig_d_sw        , trig_c_sw        , trig_b_sw        , trig_a_sw        }),  // software trigger
   .trig_ext_i      ({at_trig_d        , at_trig_c        , at_trig_a        , at_trig_b        }),  // advanced trigger as ext trigger - backwards-compatible with original version
   .trig_src_i      ({trig_d_src       , trig_c_src       , trig_b_src       , trig_a_src       }),  // trigger source selector
+  .trig_slave_i    ({trig_d_slave     , trig_c_slave     , trig_b_slave     , trig_a_slave     }),  // slave trigger
   .trig_done_o     ({trig_d_done      , trig_c_done      , trig_b_done      , trig_a_done      }),  // trigger event
   // buffer ctrl
   .buf_we_i        ({buf_d_we         , buf_c_we         , buf_b_we         , buf_a_we         }),  // buffer buffer write
@@ -219,6 +222,7 @@ red_pitaya_asg_ch  #(.RSZ (RSZ)) ch [4-1:0] (
   .set_rnum_i      ({set_d_rnum       , set_c_rnum       , set_b_rnum       , set_a_rnum       }),  // set number of repetitions
   .set_rdly_i      ({set_d_rdly       , set_c_rdly       , set_b_rdly       , set_a_rdly       }),  // set delay between repetitions
   .set_rgate_i     ({set_d_rgate      , set_c_rgate      , set_b_rgate      , set_a_rgate      }),  // set external gated repetition
+  .reverse_on_i    ({reverse_d_on     , reverse_c_on     , reverse_b_on     , reverse_a_on     }),
   .rand_on_i       ({rand_d_on        , rand_c_on        , rand_b_on        , rand_a_on        }),
   .rand_pnt_i      ({rand_pnt         , rand_pnt         , rand_pnt         , rand_pnt         })
 );
@@ -261,6 +265,11 @@ end
 
 assign trig_out_o = {trig_d_done, trig_c_done, trig_b_done, trig_a_done};
 
+assign trig_a_slave = !slave_a_trig || trig_d_done;
+assign trig_b_slave = !slave_b_trig || trig_a_done;
+assign trig_c_slave = !slave_c_trig || trig_b_done;
+assign trig_d_slave = !slave_d_trig || trig_c_done;
+
 //---------------------------------------------------------------------------------
 //
 //  System bus connection
@@ -272,6 +281,7 @@ always @(posedge dac_clk_i)
 if (dac_rstn_i == 1'b0) begin
    trig_a_sw   <=  1'b0    ;
    trig_a_src  <=  3'h0    ;
+   slave_a_trig <= 1'b0    ;
    set_a_amp   <= 14'h2000 ;
    set_a_dc    <= 14'h0    ;
    set_a_zero  <=  1'b0    ;
@@ -287,6 +297,7 @@ if (dac_rstn_i == 1'b0) begin
    set_a_rgate <=  1'b0    ;
    trig_b_sw   <=  1'b0    ;
    trig_b_src  <=  3'h0    ;
+   slave_b_trig <= 1'b0    ;
    set_b_amp   <= 14'h2000 ;
    set_b_dc    <= 14'h0    ;
    set_b_zero  <=  1'b0    ;
@@ -302,6 +313,7 @@ if (dac_rstn_i == 1'b0) begin
    set_b_rgate <=  1'b0    ;
    trig_c_sw   <=  1'b0    ;
    trig_c_src  <=  3'h0    ;
+   slave_c_trig <= 1'b0    ;
    set_c_amp   <= 14'h2000 ;
    set_c_dc    <= 14'h0    ;
    set_c_zero  <=  1'b0    ;
@@ -317,6 +329,7 @@ if (dac_rstn_i == 1'b0) begin
    set_c_rgate <=  1'b0    ;
    trig_d_sw   <=  1'b0    ;
    trig_d_src  <=  3'h0    ;
+   slave_d_trig <= 1'b0    ;
    set_d_amp   <= 14'h2000 ;
    set_d_dc    <= 14'h0    ;
    set_d_zero  <=  1'b0    ;
@@ -350,6 +363,11 @@ if (dac_rstn_i == 1'b0) begin
    at_invert_d <= 1'b0;
    at_autorearm_d <= 1'b0;
 
+   reverse_a_on <= 1'b0;
+   reverse_b_on <= 1'b0;
+   reverse_c_on <= 1'b0;
+   reverse_d_on <= 1'b0;
+
    rand_a_on <= 1'b0;
    rand_b_on <= 1'b0;
    rand_c_on <= 1'b0;
@@ -373,8 +391,8 @@ end else begin
       trig_d_src <= sys_wdata[19:16] ;
 
    if (sys_wen) begin
-      if (sys_addr[19:0]==20'h0)   {rand_a_on, at_autorearm_a, at_invert_a, at_reset_a, set_a_rgate, set_a_zero, set_a_rst, set_a_once, set_a_wrap} <= sys_wdata[12: 4] ;
-      if (sys_addr[19:0]==20'h0)   {rand_b_on, at_autorearm_b, at_invert_b, at_reset_b, set_b_rgate, set_b_zero, set_b_rst, set_b_once, set_b_wrap} <= sys_wdata[28:20] ;
+      if (sys_addr[19:0]==20'h0)   {reverse_a_on, slave_a_trig, rand_a_on, at_autorearm_a, at_invert_a, at_reset_a, set_a_rgate, set_a_zero, set_a_rst, set_a_once, set_a_wrap} <= sys_wdata[14: 4] ;
+      if (sys_addr[19:0]==20'h0)   {reverse_b_on, slave_b_trig, rand_b_on, at_autorearm_b, at_invert_b, at_reset_b, set_b_rgate, set_b_zero, set_b_rst, set_b_once, set_b_wrap} <= sys_wdata[30:20] ;
 
       if (sys_addr[19:0]==20'h4)   set_a_amp  <= sys_wdata[  0+13: 0] ;
       if (sys_addr[19:0]==20'h4)   set_a_dc   <= sys_wdata[ 16+13:16] ;
@@ -399,8 +417,8 @@ end else begin
       if (sys_addr[19:0]==20'h138)  at_counts_b[32-1:0]  <= sys_wdata[32-1: 0] ;
       if (sys_addr[19:0]==20'h13C)  at_counts_b[64-1:32] <= sys_wdata[32-1: 0] ;
 
-      if (sys_addr[19:0]==20'h50)   {rand_c_on, at_autorearm_c, at_invert_c, at_reset_c, set_c_rgate, set_c_zero, set_c_rst, set_c_once, set_c_wrap} <= sys_wdata[12: 4] ;
-      if (sys_addr[19:0]==20'h50)   {rand_d_on, at_autorearm_d, at_invert_d, at_reset_d, set_d_rgate, set_d_zero, set_d_rst, set_d_once, set_d_wrap} <= sys_wdata[28:20] ;
+      if (sys_addr[19:0]==20'h50)   {reverse_c_on, slave_c_trig, rand_c_on, at_autorearm_c, at_invert_c, at_reset_c, set_c_rgate, set_c_zero, set_c_rst, set_c_once, set_c_wrap} <= sys_wdata[14: 4] ;
+      if (sys_addr[19:0]==20'h50)   {reverse_b_on, slave_d_trig, rand_d_on, at_autorearm_d, at_invert_d, at_reset_d, set_d_rgate, set_d_zero, set_d_rst, set_d_once, set_d_wrap} <= sys_wdata[30:20] ;
 
       if (sys_addr[19:0]==20'h54)   set_c_amp  <= sys_wdata[  0+13: 0] ;
       if (sys_addr[19:0]==20'h54)   set_c_dc   <= sys_wdata[ 16+13:16] ;
@@ -437,11 +455,11 @@ end else begin
    ack_dly <=  ren_dly[3-1] || sys_wen ;
 end
 
-wire [32-1: 0] r0_rd = {3'h0,rand_b_on,at_autorearm_b,at_invert_b,at_reset_b,set_b_rgate, set_b_zero,set_b_rst,set_b_once,set_b_wrap, 1'b0,trig_b_src,
-                        3'h0,rand_a_on,at_autorearm_a,at_invert_a,at_reset_a,set_a_rgate, set_a_zero,set_a_rst,set_a_once,set_a_wrap, 1'b0,trig_a_src };
+wire [32-1: 0] r0_rd = {1'h0,reverse_b_on, slave_b_trig, rand_b_on,at_autorearm_b,at_invert_b,at_reset_b,set_b_rgate, set_b_zero,set_b_rst,set_b_once,set_b_wrap, 1'b0,trig_b_src,
+                        1'h0,reverse_a_on, slave_a_trig, rand_a_on,at_autorearm_a,at_invert_a,at_reset_a,set_a_rgate, set_a_zero,set_a_rst,set_a_once,set_a_wrap, 1'b0,trig_a_src };
 
-wire [32-1: 0] r1_rd = {3'h0,rand_d_on,at_autorearm_d,at_invert_d,at_reset_d,set_d_rgate, set_d_zero,set_d_rst,set_d_once,set_d_wrap, 1'b0,trig_d_src,
-                        3'h0,rand_c_on,at_autorearm_c,at_invert_c,at_reset_c,set_c_rgate, set_c_zero,set_c_rst,set_c_once,set_c_wrap, 1'b0,trig_c_src };
+wire [32-1: 0] r1_rd = {1'h0,reverse_d_on, slave_d_trig, rand_d_on,at_autorearm_d,at_invert_d,at_reset_d,set_d_rgate, set_d_zero,set_d_rst,set_d_once,set_d_wrap, 1'b0,trig_d_src,
+                        1'h0,reverse_c_on, slave_c_trig, rand_c_on,at_autorearm_c,at_invert_c,at_reset_c,set_c_rgate, set_c_zero,set_c_rst,set_c_once,set_c_wrap, 1'b0,trig_c_src };
 
 wire sys_en;
 assign sys_en = sys_wen | sys_ren;

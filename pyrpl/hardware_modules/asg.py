@@ -145,6 +145,8 @@ def make_asg(channel=0):
     class Asg(HardwareModule, SignalModule):
         _widget_class = AsgWidget
         _gui_attributes = ["waveform",
+                           "reverse_on",
+                           "slave",
                            "amplitude",
                            "offset",
                            "frequency",
@@ -197,6 +199,10 @@ def make_asg(channel=0):
         # register set_a/b_wrap
         _sm_wrappointer = BoolRegister(_START_OFFSET, 4 + _BIT_OFFSET,
                                        doc='If False, fgen starts from data[0] value after each cycle. If True, assumes that data is periodic and jumps to the naturally next index after full cycle.')
+
+        reverse_on = BoolRegister(_START_OFFSET, 14 + _BIT_OFFSET, doc='If True, reverse play data buffer on each repetition')
+
+        slave = BoolRegister(_START_OFFSET, 13 + _BIT_OFFSET, doc='If True, use neighbour asg done signal as clock enable')
 
         # register set_a_rgate
         _counter_wrap = IntRegister(0x8 + _VALUE_OFFSET,
