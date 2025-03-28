@@ -193,9 +193,6 @@ red_pitaya_ps i_ps (
 
   .fclk_clk_o    (fclk        ),
   .fclk_rstn_o   (frstn       ),
-  // ADC analog inputs
-  .vinp_i        (vinp_i      ),  // voltages p
-  .vinn_i        (vinn_i      ),  // voltages n
    // system read/write channel
   .sys_clk_o     (ps_sys_clk  ),  // system clock
   .sys_rstn_o    (ps_sys_rstn ),  // system reset - active low
@@ -518,6 +515,11 @@ red_pitaya_dsp i_dsp (
   .scope2_o        (  to_scope_b             ),
   .asg1phase_i     (  asg1phase_o            ),
 
+  .xadc1_i         (  xadc_signals[0]        ),
+  .xadc2_i         (  xadc_signals[1]        ),
+  .xadc3_i         (  xadc_signals[2]        ),
+  .xadc4_i         (  xadc_signals[3]        ),
+
   .pwm0            (  pwm_signals[0]         ),
   .pwm1            (  pwm_signals[1]         ),
   .pwm2            (  pwm_signals[2]         ),
@@ -553,11 +555,18 @@ red_pitaya_ams i_ams (
    // power test
   .clk_i           (  adc_clk                    ),  // clock
   .rstn_i          (  adc_rstn                   ),  // reset - active low
+  // ADC analog inputs
+  .vinp_i          (  vinp_i                     ),  // voltages p
+  .vinn_i          (  vinn_i                     ),  // voltages n
   // PWM configuration
   .dac_a_o         (  pwm_cfg_a                  ),
   .dac_b_o         (  pwm_cfg_b                  ),
   .dac_c_o         (  pwm_cfg_c                  ),
   .dac_d_o         (  pwm_cfg_d                  ),
+  .adc_a_r         (  xadc_signals[0]            ),
+  .adc_b_r         (  xadc_signals[1]            ),
+  .adc_c_r         (  xadc_signals[2]            ),
+  .adc_d_r         (  xadc_signals[3]            ),
   .pwm0_i 		   (  pwm_signals[0]             ),
   .pwm1_i 		   (  pwm_signals[1]             ),
   .pwm2_i 		   (  pwm_signals[2]             ),
@@ -574,6 +583,7 @@ red_pitaya_ams i_ams (
 );
 
 
+wire  [ 12-1: 0] xadc_signals[4-1:0];
 wire  [ 14-1: 0] pwm_signals[4-1:0];
 
 red_pitaya_pwm pwm [4-1:0] (

@@ -152,9 +152,12 @@ write_bitstream -force $path_out/red_pitaya.bit
 # generate the .bin file for flashing via 'cat red_pitaya.bin > /dev/xdevcfg'
 ################################################################################
 
-set_property BITSTREAM.GENERAL.COMPRESS FALSE [current_design]
-write_bitstream -force $path_out/red_pitaya_uncompressed.bit
-write_cfgmem -force -format BIN -size 4 -interface SMAPx32 -disablebitswap -loadbit "up 0x0 $path_out/red_pitaya_uncompressed.bit" red_pitaya.bin
+write_bitstream -force -bin_file  red_pitaya
+# exec bootgen -image $path_out/red_pitaya.bif -arch zynq -process_bitstream bin -o red_pitaya.bin -w
+
+# set_property BITSTREAM.GENERAL.COMPRESS FALSE [current_design]
+# write_bitstream -force $path_out/red_pitaya_uncompressed.bit
+# write_cfgmem -force -format BIN -size 4 -interface SMAPx32 -disablebitswap -loadbit "up 0x0 $path_out/red_pitaya_uncompressed.bit" red_pitaya.bin
 
 ################################################################################
 # generate system definition
