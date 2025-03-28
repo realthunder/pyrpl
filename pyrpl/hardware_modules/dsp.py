@@ -23,9 +23,13 @@ DSP_INPUTS = OrderedDict([
     ('asg3', 11),
     ('trig', 3),
     ('iir', 4),
+    ('xadc0', 17),
+    ('xadc1', 18),
+    ('xadc2', 19),
+    ('xadc3', 20),
     # ('scope0', 8), #same as asg0 by design
     # ('scope1', 9), #same as asg1 by design
-    ('off', 17)])
+    ('off', 21)])
 
 def all_inputs_keys(instance):
     """ collects all available logical inputs, composed of all

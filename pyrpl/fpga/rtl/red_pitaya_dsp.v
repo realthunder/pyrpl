@@ -71,6 +71,11 @@ module red_pitaya_dsp #(
    input      [ 14-1: 0] asg4_i,
    input      [ 14-1: 0] asg1phase_i,
 
+   input      [ 12-1: 0] xadc1_i,
+   input      [ 12-1: 0] xadc2_i,
+   input      [ 12-1: 0] xadc3_i,
+   input      [ 12-1: 0] xadc4_i,
+
    // pwm outputs
    output     [ 14-1: 0] pwm0,
    output     [ 14-1: 0] pwm1,
@@ -92,7 +97,7 @@ module red_pitaya_dsp #(
 );
 
 localparam EXTRAMODULES = 4; //need two extra control registers for scope/asg
-localparam EXTRAINPUTS = 5; //four extra input signals for dac(2)/adc(2) + iq2_2
+localparam EXTRAINPUTS = 9; //four extra input signals for dac(2)/adc(2) + iq2_2 + xadc(4, slow adc)
 localparam EXTRAOUTPUTS = 2; //four extra output signals for pwm channels
 localparam LOG_MODULES = 5;// ceil(log2(EXTRAINPUTS+EXTRMODULES+MODULES))
 
@@ -124,6 +129,10 @@ localparam ADC2  = MODULES+5;
 localparam DAC1  = MODULES+6;
 localparam DAC2  = MODULES+7;
 localparam IQ2_2 = MODULES+8;
+localparam XADC1 = MODULES+9;
+localparam XADC2 = MODULES+10;
+localparam XADC3 = MODULES+11;
+localparam XADC4 = MODULES+12;
 //EXTRAOUTPUTS numbers
 localparam PWM2  = MODULES+4;
 localparam PWM3  = MODULES+5;
@@ -165,10 +174,16 @@ assign output_signal[ASG1] = asg1_i;
 assign output_signal[ASG2] = asg2_i;
 assign output_signal[ASG3] = asg3_i;
 assign output_signal[ASG4] = asg4_i;
+
 assign output_direct[ASG1] = asg1_i;
 assign output_direct[ASG2] = asg2_i;
 assign output_direct[ASG3] = asg3_i;
 assign output_direct[ASG4] = asg4_i;
+
+assign output_signal[XADC1] = xadc1_i;
+assign output_signal[XADC2] = xadc2_i;
+assign output_signal[XADC3] = xadc3_i;
+assign output_signal[XADC4] = xadc4_i;
 
 //connect dac/adc to internal signals
 assign output_signal[ADC1] = dat_a_i;
