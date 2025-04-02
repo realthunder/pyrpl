@@ -24,7 +24,8 @@ file mkdir $path_sdk
 ################################################################################
 
 # set part xc7z010clg400-1
-set part xc7z020clg400-1
+# set part xc7z020clg400-1
+set part xc7z100ffg900-1
 
 create_project -in_memory -part $part
 
@@ -47,6 +48,9 @@ source                            $path_ip/system_bd.tcl
 generate_target all [get_files    system.bd]
 write_hwdef              -file    $path_sdk/red_pitaya.hwdef
 
+source                            $path_ip/fft_bd.tcl
+generate_target all [get_files    fft.bd]
+
 ################################################################################
 # read files:
 # 1. RTL design sources
@@ -58,6 +62,7 @@ write_hwdef              -file    $path_sdk/red_pitaya.hwdef
 #read_verilog                      $path_rtl/...
 
 read_verilog                      .srcs/sources_1/bd/system/hdl/system_wrapper.v
+read_verilog                      .srcs/sources_1/bd/fft/hdl/fft_wrapper.v
 
 read_verilog                      $path_rtl/axi_master.v
 read_verilog                      $path_rtl/axi_slave.v
