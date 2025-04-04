@@ -218,7 +218,6 @@ proc create_root_design { parentCell } {
 
   # Create ports
   set aclk_0 [ create_bd_port -dir I -type clk aclk_0 ]
-  set aresetn_0 [ create_bd_port -dir I -type rst aresetn_0 ]
   set event_data_in_channel_halt_0 [ create_bd_port -dir O -type intr event_data_in_channel_halt_0 ]
   set event_data_out_channel_halt_0 [ create_bd_port -dir O -type intr event_data_out_channel_halt_0 ]
   set event_frame_started_0 [ create_bd_port -dir O -type intr event_frame_started_0 ]
@@ -229,11 +228,11 @@ proc create_root_design { parentCell } {
   # Create instance: xfft_0, and set properties
   set xfft_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:xfft:9.1 xfft_0 ]
   set_property -dict [ list \
-   CONFIG.aresetn {true} \
+   CONFIG.aresetn {false} \
    CONFIG.data_format {fixed_point} \
-   CONFIG.implementation_options {automatically_select} \
+   CONFIG.implementation_options {radix_2_burst_io} \
    CONFIG.input_width {14} \
-   CONFIG.number_of_stages_using_block_ram_for_data_and_phase_factors {6} \
+   CONFIG.number_of_stages_using_block_ram_for_data_and_phase_factors {0} \
    CONFIG.output_ordering {natural_order} \
    CONFIG.phase_factor_width {14} \
    CONFIG.run_time_configurable_transform_length {false} \
@@ -250,7 +249,6 @@ proc create_root_design { parentCell } {
 
   # Create port connections
   connect_bd_net -net aclk_0_1 [get_bd_ports aclk_0] [get_bd_pins xfft_0/aclk]
-  connect_bd_net -net aresetn_0_1 [get_bd_ports aresetn_0] [get_bd_pins xfft_0/aresetn]
   connect_bd_net -net xfft_0_event_data_in_channel_halt [get_bd_ports event_data_in_channel_halt_0] [get_bd_pins xfft_0/event_data_in_channel_halt]
   connect_bd_net -net xfft_0_event_data_out_channel_halt [get_bd_ports event_data_out_channel_halt_0] [get_bd_pins xfft_0/event_data_out_channel_halt]
   connect_bd_net -net xfft_0_event_frame_started [get_bd_ports event_frame_started_0] [get_bd_pins xfft_0/event_frame_started]

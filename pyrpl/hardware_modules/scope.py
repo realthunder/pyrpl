@@ -224,10 +224,12 @@ class Scope(HardwareModule, AcquisitionModule):
                        "math_formula",
                        "xy_mode"]
     # running_state last for proper acquisition setup
-    _setup_attributes = _gui_attributes + ["rolling_mode"]
+    _setup_attributes = _gui_attributes + ["rolling_mode", "fft_enable"]
     # changing these resets the acquisition and autoscale (calls setup())
 
     data_length = data_length  # to use it in a list comprehension
+
+    fft_length = 8192
 
     rolling_mode = BoolProperty(default=True,
                                 doc="In rolling mode, the curve is "
@@ -374,6 +376,12 @@ class Scope(HardwareModule, AcquisitionModule):
                                 doc="Scope resets trigger automatically ("
                                     "adc_we_keep)")
 
+    fft_enable = BoolRegister(0x0, 5, doc="Enable fft")
+
+    _fft_out_busy = BoolRegister(0x0, 4, doc="FFT output busy")
+
+    _fft_rp_last = IntRegister(0x30, doc="FFT last write pointer")
+
     _adc_we_cnt = IntRegister(0x2C, doc="Number of samles that have passed "
                                         "since trigger was armed (adc_we_cnt)")
 
@@ -472,6 +480,13 @@ class Scope(HardwareModule, AcquisitionModule):
         """
         if new is not None:
             self.stop()
+
+    @property
+    def _fftdata(self):
+        """raw data from fft"""
+        x = np.array(self._reads(0x30000, self.fft_length), dtype=np.int16)
+        x[x >= 2 ** 13] -= 2 ** 14
+        return x
 
     @property
     def _rawdata_ch1(self):
