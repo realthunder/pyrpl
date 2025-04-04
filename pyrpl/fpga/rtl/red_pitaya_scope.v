@@ -377,9 +377,9 @@ wire            fft_dvalid       ;
 reg  [ 32-1: 0] fft_we_cnt       ;
 reg  [ 14-1: 0] fft_data_i       ;
 wire            fft_rstn_i       ;
-wire            fft_saxi_last     ;
-wire            fft_saxi_rdy      ;
-reg             fft_saxi_valid    ;
+wire            fft_saxi_last    ;
+wire            fft_saxi_rdy     ;
+reg             fft_saxi_valid   ;
 wire            fft_we_done      ;
 
 assign fft_saxi_last = fft_we_cnt == 32'b0 ;
@@ -415,13 +415,13 @@ end else begin
     end
 end
 
-reg  [  32-1: 0]fft_buf [0:(1<<RSZ)-1] ;
 wire [  32-1: 0]fft_maxi_data          ;
-reg  [ RSZ-1: 0]fft_raddr              ;
-reg  [  32-1: 0]fft_rd_data            ;
-reg  [ RSZ-1: 0]fft_rp_last            ;
 wire            fft_maxi_valid         ;
 wire            fft_maxi_last          ;
+reg  [  16-1: 0]fft_buf [0:(1<<RSZ)-1] ;
+reg  [ RSZ-1: 0]fft_raddr              ;
+reg  [  16-1: 0]fft_rd_data            ;
+reg  [ RSZ-1: 0]fft_rp_last            ;
 reg             fft_rd                 ;
 reg  [ RSZ-1: 0]fft_rp                 ;
 
@@ -430,18 +430,18 @@ if (fft_rstn_i == 1'b0) begin
     fft_rp <= RSZ-1'b0;
     fft_rp_last <= RSZ-1'b0;
 end else if (fft_enable && fft_maxi_valid) begin
-    if (!fft_rd) begin
-        fft_rd <= 1'b1;
-        fft_rp_last <= RSZ-1'b0;
-        fft_rp <= RSZ-1'b1;
-        fft_buf[0] <= fft_maxi_data;
-    end else begin
-        fft_buf[fft_rp] <= fft_maxi_data;
-        fft_rp <= fft_rp + 1;
+    if (fft_rd) begin
+        fft_buf[fft_rp] <= fft_maxi_data[32-1:16];
         if (fft_maxi_last) begin
             fft_rp_last <= fft_rp;
             fft_rd <= 1'b0;
-        end
+            fft_rp <= 1'b0;
+        end else
+            fft_rp = fft_rp + 1;
+    end else if (!fft_maxi_last) begin
+        fft_rd <= 1'b1;
+        fft_buf[fft_rp] <= fft_maxi_data[32-1:16];
+        fft_rp <= fft_rp + 1;
     end
 end
 
@@ -458,13 +458,13 @@ fft_wrapper fft_i (
    .S_AXIS_DATA_0_tready        (fft_saxi_rdy     ),
    .S_AXIS_DATA_0_tvalid        (fft_saxi_valid   ),
    .aclk_0                      (adc_clk_i        ),
-   .aresetn_0                   (fft_rstn_i       ),
-   .event_data_in_channel_halt_0(                 ),
-   .event_data_out_channel_halt_0(                ),
-   .event_status_channel_halt_0 (                 ),
-   .event_frame_started_0       (                 ),
-   .event_tlast_missing_0       (                 ),
-   .event_tlast_unexpected_0    (                 )
+   // .aresetn_0                   (fft_rstn_i       ),
+   .event_data_in_channel_halt_0(fft_in_halt      ),
+   .event_data_out_channel_halt_0(fft_out_halt    ),
+   .event_status_channel_halt_0 (fft_status_halt  ),
+   .event_frame_started_0       (fft_frame_start  ),
+   .event_tlast_missing_0       (fft_tlast_missing),
+   .event_tlast_unexpected_0    (fft_tlast_unexp  )
 );
 
 //---------------------------------------------------------------------------------
@@ -987,7 +987,13 @@ end else begin
    sys_err <= 1'b0 ;
 
    casez (sys_addr[19:0])
-     20'h00000 : begin sys_ack <= sys_en;          sys_rdata <= {{32- 6{1'b0}}, fft_enable
+     20'h00000 : begin sys_ack <= sys_en;          sys_rdata <= {{32-12{1'b0}}, fft_in_halt
+                                                                              , fft_out_halt
+                                                                              , fft_status_halt
+                                                                              , fft_frame_start
+                                                                              , fft_tlast_missing
+                                                                              , fft_tlast_unexp
+                                                                              , fft_enable
                                                                               , fft_rd
                                                                               , adc_we_keep               // do not disarm on 
                                                                               , adc_dly_do                // trigger status
@@ -1010,6 +1016,8 @@ end else begin
      20'h00028 : begin sys_ack <= sys_en;          sys_rdata <= {{32- 1{1'b0}}, set_avg_en}         ; end
 
      20'h0002C : begin sys_ack <= sys_en;          sys_rdata <=                 adc_we_cnt          ; end
+
+     20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ{1'b0}}, fft_rp_last}       ; end
 
      /*
      20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= {{32-18{1'b0}}, set_a_filt_aa}      ; end
@@ -1053,7 +1061,7 @@ end else begin
      20'h1???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_a_rd}              ; end
      20'h2???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_b_rd}              ; end
 
-     20'h3???? : begin sys_ack <= sys_en;          sys_rdata <= fft_rd_data                         ; end
+     20'h3???? : begin sys_ack <= sys_en;          sys_rdata <= {16'h0, fft_rd_data}           ; end
 	 
 	 
 
