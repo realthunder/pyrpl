@@ -380,7 +380,11 @@ class Scope(HardwareModule, AcquisitionModule):
 
     _fft_out_busy = BoolRegister(0x0, 4, doc="FFT output busy")
 
+    _status = IntRegister(0x00)
+
     _fft_rp_last = IntRegister(0x30, doc="FFT last write pointer")
+
+    _fft_frame_cnt = IntRegister(0x34, doc="FFT frame counter")
 
     _adc_we_cnt = IntRegister(0x2C, doc="Number of samles that have passed "
                                         "since trigger was armed (adc_we_cnt)")

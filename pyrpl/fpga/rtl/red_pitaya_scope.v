@@ -375,6 +375,7 @@ reg             fft_enable       ;
 reg  [ RSZ-1: 0]fft_wp           ;
 wire            fft_dvalid       ;
 reg  [ 32-1: 0] fft_we_cnt       ;
+reg  [ 32-1: 0] fft_frame_cnt    ;
 reg  [ 14-1: 0] fft_data_i       ;
 wire            fft_rstn_i       ;
 wire            fft_saxi_last    ;
@@ -392,11 +393,14 @@ if (fft_rstn_i == 1'b0) begin
     if (adc_rstn_i == 1'b0)
         fft_enable  <= 1'b0 ;
     fft_we_cnt <= 32'b0 ;
+    fft_frame_cnt <= 32'b0 ;
     fft_wp <= RSZ-1'b0 ;
     fft_saxi_valid <= 1'b0 ;
 end else begin
-   if (sys_wen && (sys_addr[19:0]==20'h0))
-      fft_enable <= sys_wdata[5];
+    if (fft_frame_start)
+        fft_frame_cnt = fft_frame_cnt + 1 ;
+    if (sys_wen && (sys_addr[19:0]==20'h0))
+        fft_enable <= sys_wdata[5];
 
     if (adc_trig && !adc_dly_do && pretrig_ok) begin
         fft_wp <= adc_wp_cur ;
@@ -410,9 +414,8 @@ end else begin
             fft_data_i <= adc_b_buf[fft_wp];
         fft_we_cnt <= fft_we_cnt - 1;
         fft_wp <= fft_wp + 1;
-    end else begin
+    end else
         fft_saxi_valid <= 1'b0;
-    end
 end
 
 wire [  32-1: 0]fft_maxi_data          ;
@@ -430,18 +433,14 @@ if (fft_rstn_i == 1'b0) begin
     fft_rp <= RSZ-1'b0;
     fft_rp_last <= RSZ-1'b0;
 end else if (fft_enable && fft_maxi_valid) begin
-    if (fft_rd) begin
+    if (fft_rd || !fft_maxi_last) begin
         fft_buf[fft_rp] <= fft_maxi_data[32-1:16];
+        fft_rd = !fft_maxi_last;
         if (fft_maxi_last) begin
             fft_rp_last <= fft_rp;
-            fft_rd <= 1'b0;
-            fft_rp <= 1'b0;
+            fft_rp <= RSZ-1'b0;
         end else
             fft_rp = fft_rp + 1;
-    end else if (!fft_maxi_last) begin
-        fft_rd <= 1'b1;
-        fft_buf[fft_rp] <= fft_maxi_data[32-1:16];
-        fft_rp <= fft_rp + 1;
     end
 end
 
@@ -1018,6 +1017,7 @@ end else begin
      20'h0002C : begin sys_ack <= sys_en;          sys_rdata <=                 adc_we_cnt          ; end
 
      20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ{1'b0}}, fft_rp_last}       ; end
+     20'h00034 : begin sys_ack <= sys_en;          sys_rdata <= fft_frame_cnt                       ; end
 
      /*
      20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= {{32-18{1'b0}}, set_a_filt_aa}      ; end
@@ -1061,7 +1061,7 @@ end else begin
      20'h1???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_a_rd}              ; end
      20'h2???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_b_rd}              ; end
 
-     20'h3???? : begin sys_ack <= sys_en;          sys_rdata <= {16'h0, fft_rd_data}           ; end
+     20'h3???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, fft_rd_data}                ; end
 	 
 	 
 
