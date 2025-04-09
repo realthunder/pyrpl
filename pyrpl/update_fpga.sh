@@ -24,13 +24,11 @@ awk 'NR==2 {print $2}' $FPGAS/$MODEL/$1/git_info.txt
 # FPGATOINSTALL=$FPGAS/$MODEL/$1/fpga.bit.bin
 FPGATOINSTALL=$CUSTOMFPGA
 
-
-# TODO figure out how to properly generate device tree overlay. Since we've
-# removed ps bound xadc, the default dtbo must not be used, or else the system
-# will crash and reboot.
-
-# /opt/redpitaya/bin/fpgautil -b $FPGATOINSTALL -o $FPGAS/$MODEL/$1/fpga.dtbo -n Full > /tmp/update_fpga.txt 2>&1
-/opt/redpitaya/bin/fpgautil -b $FPGATOINSTALL -n Full > /tmp/update_fpga.txt 2>&1
+# /opt/redpitaya/bin/fpgautil -b $FPGATOINSTALL -o $FPGAS/$MODEL/$1/fpga.dtbo -n Full 2>&1 | tee /tmp/update_fpga.txt
+/opt/redpitaya/bin/fpgautil -b $FPGATOINSTALL -n Full 2>&1 | tee /tmp/update_fpga.txt 
+# /opt/redpitaya/bin/fpgautil -b $FPGATOINSTALL
+# TODO replace the following and implement overlay and get device tree for custom fpga
+# /opt/redpitaya/bin/fpgautil -b $FPGATOINSTALL -f Full > /tmp/update_fpga.txt 2>&1
 
 if [ "$?" = '0' ]
 then
