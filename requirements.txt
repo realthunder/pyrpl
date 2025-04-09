@@ -1,1 +1,15 @@
-.
+numpy
+scipy
+paramiko
+pandas
+nose
+pip
+pyqt5
+qtpy
+pyqtgraph
+pyyaml
+nbconvert
+scp
+nest_asyncio
+qasync
+PyOpenGL
