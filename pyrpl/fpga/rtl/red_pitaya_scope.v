@@ -377,12 +377,15 @@ wire            fft_dvalid       ;
 reg  [ 32-1: 0] fft_we_cnt       ;
 reg  [ 32-1: 0] fft_frame_cnt    ;
 reg  [ 14-1: 0] fft_data_i       ;
+wire [ 16-14:0] fft_data_ext     ;
 wire            fft_rstn_i       ;
 wire            fft_saxi_last    ;
 wire            fft_saxi_rdy     ;
 reg             fft_saxi_valid   ;
 wire            fft_we_done      ;
 
+// sign extend the data for padding according to xfft requirement
+assign fft_data_ext = {16-14{fft_data_i[13]}};
 assign fft_saxi_last = fft_we_cnt == 32'b0 ;
 assign fft_we_done = !fft_enable || !fft_saxi_valid ;
 assign fft_rstn_i = adc_rstn_i | adc_rst_do ;
@@ -394,7 +397,7 @@ if (fft_rstn_i == 1'b0) begin
         fft_enable  <= 1'b0 ;
     fft_we_cnt <= 32'b0 ;
     fft_frame_cnt <= 32'b0 ;
-    fft_wp <= RSZ-1'b0 ;
+    fft_wp <= {RSZ{1'b0}} ;
     fft_saxi_valid <= 1'b0 ;
 end else begin
     if (fft_frame_start)
@@ -409,50 +412,49 @@ end else begin
     end else if (fft_dvalid && fft_saxi_rdy) begin
         fft_saxi_valid <= 1'b1;
         if (fft_wp == adc_wp)
-            fft_data_i <= adc_b_dat;
+            fft_data_i <= adc_a_dat;
         else
-            fft_data_i <= adc_b_buf[fft_wp];
+            fft_data_i <= adc_a_buf[fft_wp];
         fft_we_cnt <= fft_we_cnt - 1;
         fft_wp <= fft_wp + 1;
     end else
         fft_saxi_valid <= 1'b0;
 end
 
-wire [  32-1: 0]fft_maxi_data          ;
+wire [ 32-1:  0]fft_maxi_data          ;
 wire            fft_maxi_valid         ;
 wire            fft_maxi_last          ;
-reg  [  16-1: 0]fft_buf [0:(1<<RSZ)-1] ;
+reg  [ 16-1:  0]fft_buf [0:(1<<RSZ)-1] ;
 reg  [ RSZ-1: 0]fft_raddr              ;
-reg  [  16-1: 0]fft_rd_data            ;
+reg  [ 16-1:  0]fft_rd_data            ;
 reg  [ RSZ-1: 0]fft_rp_last            ;
 reg             fft_rd                 ;
 reg  [ RSZ-1: 0]fft_rp                 ;
 
 always @(posedge adc_clk_i)
 if (fft_rstn_i == 1'b0) begin
-    fft_rp <= RSZ-1'b0;
-    fft_rp_last <= RSZ-1'b0;
+    fft_rp <= {RSZ{1'b0}};
+    fft_rp_last <= {RSZ{1'b0}};
 end else if (fft_enable && fft_maxi_valid) begin
     if (fft_rd || !fft_maxi_last) begin
-        fft_buf[fft_rp] <= fft_maxi_data[32-1:16];
+        fft_buf[fft_rp] <= fft_maxi_data[16-1:0];
         fft_rd = !fft_maxi_last;
         if (fft_maxi_last) begin
             fft_rp_last <= fft_rp;
-            fft_rp <= RSZ-1'b0;
+            fft_rp <= {RSZ{1'b0}};
         end else
             fft_rp = fft_rp + 1;
     end
 end
 
 fft_wrapper fft_i (
-   .M_AXIS_DATA_0_tdata         (fft_maxi_data    ),
-   .M_AXIS_DATA_0_tlast         (fft_maxi_last    ),
-   .M_AXIS_DATA_0_tvalid        (fft_maxi_valid   ),
-   .M_AXIS_DATA_0_tready        (1'b1             ),
+   .M_AXIS_DOUT_0_tdata         (fft_maxi_data    ),
+   .M_AXIS_DOUT_0_tlast         (fft_maxi_last    ),
+   .M_AXIS_DOUT_0_tvalid        (fft_maxi_valid   ),
    .S_AXIS_CONFIG_0_tdata       ( ),
    .S_AXIS_CONFIG_0_tready      ( ),
    .S_AXIS_CONFIG_0_tvalid      ( ),
-   .S_AXIS_DATA_0_tdata         ({2'b0, fft_data_i, 16'b0} ),
+   .S_AXIS_DATA_0_tdata         ({fft_data_ext, fft_data_i, 16'b0} ),
    .S_AXIS_DATA_0_tlast         (fft_saxi_last    ),
    .S_AXIS_DATA_0_tready        (fft_saxi_rdy     ),
    .S_AXIS_DATA_0_tvalid        (fft_saxi_valid   ),
