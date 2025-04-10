@@ -489,6 +489,7 @@ class Scope(HardwareModule, AcquisitionModule):
         length = max(2, self._fft_rp_last + 1)
         x = np.array(self._reads(0x30000, length//2), dtype=np.int32)
         x[x >= 2 ** 15] -= 2 ** 16
+        x = np.array(x, dtype=float) / 2**13
         return x
 
     @property
