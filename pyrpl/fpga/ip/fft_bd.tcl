@@ -123,6 +123,7 @@ set bCheckIPsPassed 1
 set bCheckIPs 1
 if { $bCheckIPs == 1 } {
    set list_check_ips "\ 
+xilinx.com:ip:cordic:6.0\
 xilinx.com:ip:xfft:9.1\
 "
 
@@ -187,7 +188,7 @@ proc create_root_design { parentCell } {
 
 
   # Create interface ports
-  set M_AXIS_DATA_0 [ create_bd_intf_port -mode Master -vlnv xilinx.com:interface:axis_rtl:1.0 M_AXIS_DATA_0 ]
+  set M_AXIS_DOUT_0 [ create_bd_intf_port -mode Master -vlnv xilinx.com:interface:axis_rtl:1.0 M_AXIS_DOUT_0 ]
 
   set S_AXIS_CONFIG_0 [ create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:axis_rtl:1.0 S_AXIS_CONFIG_0 ]
   set_property -dict [ list \
@@ -225,6 +226,19 @@ proc create_root_design { parentCell } {
   set event_tlast_missing_0 [ create_bd_port -dir O -type intr event_tlast_missing_0 ]
   set event_tlast_unexpected_0 [ create_bd_port -dir O -type intr event_tlast_unexpected_0 ]
 
+  # Create instance: cordic_0, and set properties
+  set cordic_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:cordic:6.0 cordic_0 ]
+  set_property -dict [ list \
+   CONFIG.Coarse_Rotation {true} \
+   CONFIG.Compensation_Scaling {No_Scale_Compensation} \
+   CONFIG.Data_Format {SignedFraction} \
+   CONFIG.Functional_Selection {Translate} \
+   CONFIG.Input_Width {29} \
+   CONFIG.Output_Width {16} \
+   CONFIG.cartesian_has_tlast {true} \
+   CONFIG.out_tlast_behv {Pass_Cartesian_TLAST} \
+ ] $cordic_0
+
   # Create instance: xfft_0, and set properties
   set xfft_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:xfft:9.1 xfft_0 ]
   set_property -dict [ list \
@@ -234,21 +248,24 @@ proc create_root_design { parentCell } {
    CONFIG.input_width {14} \
    CONFIG.number_of_stages_using_block_ram_for_data_and_phase_factors {0} \
    CONFIG.output_ordering {natural_order} \
-   CONFIG.phase_factor_width {14} \
+   CONFIG.phase_factor_width {8} \
+   CONFIG.rounding_modes {convergent_rounding} \
    CONFIG.run_time_configurable_transform_length {false} \
+   CONFIG.scaling_options {unscaled} \
    CONFIG.target_clock_frequency {125} \
    CONFIG.target_data_throughput {125} \
    CONFIG.throttle_scheme {nonrealtime} \
-   CONFIG.transform_length {8192} \
+   CONFIG.transform_length {16384} \
  ] $xfft_0
 
   # Create interface connections
   connect_bd_intf_net -intf_net S_AXIS_CONFIG_0_1 [get_bd_intf_ports S_AXIS_CONFIG_0] [get_bd_intf_pins xfft_0/S_AXIS_CONFIG]
   connect_bd_intf_net -intf_net S_AXIS_DATA_0_1 [get_bd_intf_ports S_AXIS_DATA_0] [get_bd_intf_pins xfft_0/S_AXIS_DATA]
-  connect_bd_intf_net -intf_net xfft_0_M_AXIS_DATA [get_bd_intf_ports M_AXIS_DATA_0] [get_bd_intf_pins xfft_0/M_AXIS_DATA]
+  connect_bd_intf_net -intf_net cordic_0_M_AXIS_DOUT [get_bd_intf_ports M_AXIS_DOUT_0] [get_bd_intf_pins cordic_0/M_AXIS_DOUT]
+  connect_bd_intf_net -intf_net xfft_0_M_AXIS_DATA [get_bd_intf_pins cordic_0/S_AXIS_CARTESIAN] [get_bd_intf_pins xfft_0/M_AXIS_DATA]
 
   # Create port connections
-  connect_bd_net -net aclk_0_1 [get_bd_ports aclk_0] [get_bd_pins xfft_0/aclk]
+  connect_bd_net -net aclk_0_1 [get_bd_ports aclk_0] [get_bd_pins cordic_0/aclk] [get_bd_pins xfft_0/aclk]
   connect_bd_net -net xfft_0_event_data_in_channel_halt [get_bd_ports event_data_in_channel_halt_0] [get_bd_pins xfft_0/event_data_in_channel_halt]
   connect_bd_net -net xfft_0_event_data_out_channel_halt [get_bd_ports event_data_out_channel_halt_0] [get_bd_pins xfft_0/event_data_out_channel_halt]
   connect_bd_net -net xfft_0_event_frame_started [get_bd_ports event_frame_started_0] [get_bd_pins xfft_0/event_frame_started]

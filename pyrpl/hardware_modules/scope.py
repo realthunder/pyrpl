@@ -229,8 +229,6 @@ class Scope(HardwareModule, AcquisitionModule):
 
     data_length = data_length  # to use it in a list comprehension
 
-    fft_length = 8192
-
     rolling_mode = BoolProperty(default=True,
                                 doc="In rolling mode, the curve is "
                                     "continuously acquired and "
@@ -488,8 +486,9 @@ class Scope(HardwareModule, AcquisitionModule):
     @property
     def _fftdata(self):
         """raw data from fft"""
-        x = np.array(self._reads(0x30000, self.fft_length), dtype=np.int16)
-        x[x >= 2 ** 13] -= 2 ** 14
+        length = max(2, self._fft_rp_last + 1)
+        x = np.array(self._reads(0x30000, length//2), dtype=np.int32)
+        x[x >= 2 ** 15] -= 2 ** 16
         return x
 
     @property
