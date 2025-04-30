@@ -68,6 +68,14 @@ class WaveformAttribute(SelectProperty):
             elif waveform == 'halframp':
                 y = np.linspace(-1.0, 1.0, instance.data_length,
                                 endpoint=False)
+            elif waveform == 'sqrt':
+                y = np.linspace(-1.0, 3.0, instance.data_length,
+                                endpoint=False)
+                y[instance.data_length // 2:] = -1 * y[:instance.data_length // 2]
+                idxp = y > 0
+                idxn = y < 0
+                y[idxp] = np.sqrt(y[idxp])
+                y[idxn] = -1 * np.sqrt(-y[idxn])
             elif waveform == 'square':
                 y = np.ones(instance.data_length)
                 y[len(y)//2:] = -1.0
@@ -145,6 +153,7 @@ def make_asg(channel=0):
     class Asg(HardwareModule, SignalModule):
         _widget_class = AsgWidget
         _gui_attributes = ["waveform",
+                           'sync_on',
                            "reverse_on",
                            "slave",
                            "amplitude",
@@ -200,6 +209,8 @@ def make_asg(channel=0):
         _sm_wrappointer = BoolRegister(_START_OFFSET, 4 + _BIT_OFFSET,
                                        doc='If False, fgen starts from data[0] value after each cycle. If True, assumes that data is periodic and jumps to the naturally next index after full cycle.')
 
+        sync_on = BoolRegister(_START_OFFSET, 15 + _BIT_OFFSET, doc='Sync start together with other asg channel(s) with sync_on', call_setup=True)
+
         reverse_on = BoolRegister(_START_OFFSET, 14 + _BIT_OFFSET, doc='If True, reverse play data buffer on each repetition')
 
         slave = BoolRegister(_START_OFFSET, 13 + _BIT_OFFSET, doc='If True, use neighbour asg done signal as clock enable')
@@ -250,7 +261,8 @@ def make_asg(channel=0):
                                   doc="amplitude of output waveform [volts]")
 
         start_phase = PhaseRegister(0xC + _VALUE_OFFSET, bits=30,
-                                    doc="Phase at which to start triggered waveforms [degrees]")
+                                    doc="Phase at which to start triggered waveforms [degrees]",
+                                    call_setup=True)
 
         frequency = FrequencyRegister(0x10 + _VALUE_OFFSET, bits=30,
                                       log_increment=True,
@@ -299,7 +311,7 @@ def make_asg(channel=0):
             return self._rmsamplitude**2/(125e6*self._frequency_correction/2)
 
         waveforms = ['sin', 'cos', 'ramp', 'halframp', 'square', 'dc',
-                     'noise']
+                     'noise', 'sqrt']
 
         waveform = WaveformAttribute(waveforms)
 
