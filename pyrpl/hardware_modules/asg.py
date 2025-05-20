@@ -19,12 +19,14 @@ Let's set up the ASG to output a sawtooth signal of amplitude 0.8 V
     asg.setup(waveform='halframp', frequency=20e4, amplitude=0.8, offset=0, trigger_source='immediately')
 """
 
+import traceback
 import numpy as np
 from collections import OrderedDict
-from ..attributes import BoolRegister, FloatRegister, SelectRegister, SelectProperty, \
+from ..attributes import BoolRegister, FloatRegister, SelectRegister, SelectProperty, StringProperty,\
                              IntRegister, LongRegister, PhaseRegister, FrequencyRegister, FloatProperty
 from ..modules import HardwareModule, SignalModule
 from ..widgets.module_widgets import AsgWidget
+from ..widgets.attribute_widgets import FileAttributeWidget
 from . import all_output_directs, dsp_addr_base
 
 
@@ -37,6 +39,8 @@ class WaveformAttribute(SelectProperty):
         waveform = waveform.lower()
         if not waveform in instance.waveforms:
             raise ValueError("waveform shourd be one of " + instance.waveforms)
+        elif waveform == 'custom':
+            instance.__class__.waveform_file.load(instance)
         else:
             if waveform == 'noise':
                 # current amplitude becomes rms amplitude
@@ -88,6 +92,38 @@ class WaveformAttribute(SelectProperty):
             instance.data = y
             instance._waveform = waveform
         return waveform
+
+
+class WaveformFileProperty(StringProperty):
+    _widget_class = FileAttributeWidget
+
+    def set_value(self, instance, filename):
+        super().set_value(instance, filename)
+        if filename:
+            if instance.waveform != 'custom':
+                instance.waveform = 'custom'
+            else:
+                self.load(instance)
+
+    def load(self, instance):
+        filename = self.get_value(instance)
+        if not filename:
+            return
+        try:
+            data = np.genfromtxt(filename, skip_header=1, delimiter=',')
+            if len(data.shape) != 1:
+                data = np.interp(np.linspace(data[0, 0], data[-1, 0], instance.data_length),
+                                 data[:, 0], data[:, 1])
+            elif data.shape[0] != instance.data_length:
+                instance._logger.info(f'resample waveform {len(data)} -> {instance.data_length}')
+                data = np.interp(np.linspace(0, len(data)-1, instance.data_length),
+                                np.linspace(0, len(data)-1, len(data)),
+                                data)
+            instance.data = data
+        except Exception:
+            traceback.print_exc()
+            instance._logger.error(
+                    f'Failed to load custom waveform {filename}')
 
 
 class AsgAmplitudeAttribute(FloatRegister):
@@ -153,6 +189,7 @@ def make_asg(channel=0):
     class Asg(HardwareModule, SignalModule):
         _widget_class = AsgWidget
         _gui_attributes = ["waveform",
+                           "waveform_file",
                            'sync_on',
                            "reverse_on",
                            "slave",
@@ -311,9 +348,11 @@ def make_asg(channel=0):
             return self._rmsamplitude**2/(125e6*self._frequency_correction/2)
 
         waveforms = ['sin', 'cos', 'ramp', 'halframp', 'square', 'dc',
-                     'noise', 'sqrt']
+                     'noise', 'sqrt', 'custom']
 
         waveform = WaveformAttribute(waveforms)
+
+        waveform_file = WaveformFileProperty(doc="Path to custom waveform csv file")
 
         def trig(self):
             self.start_phase = 0
