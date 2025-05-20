@@ -184,6 +184,35 @@ class StringAttributeWidget(BaseAttributeWidget):
         self.widget.setText(new_value)
 
 
+class FileAttributeWidget(BaseAttributeWidget):
+    """
+    Widget for file entry with browse button
+    """
+    def _make_widget(self):
+        self.widget = QtWidgets.QWidget()
+        layout = self.lay = QtWidgets.QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.widget.setLayout(layout)
+        self.lineedit = QtWidgets.QLineEdit()
+        layout.addWidget(self.lineedit)
+        button = QtWidgets.QPushButton('...')
+        button.setMaximumWidth(20)
+        button.clicked.connect(self._on_browse)
+        layout.addWidget(button, 0)
+        self.lineedit.textChanged.connect(self.write_widget_value_to_attribute)
+
+    def _on_browse(self):
+        filename = QtWidgets.QFileDialog.getOpenFileName()
+        if filename:
+            self.lineedit.setText(filename[0])
+
+    def _get_widget_value(self):
+        return str(self.lineedit.text())
+
+    def _set_widget_value(self, new_value):
+        self.lineedit.setText(new_value)
+
+
 class TextAttributeWidget(StringAttributeWidget):
     """
     Property for multiline string values.
