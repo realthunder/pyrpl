@@ -110,7 +110,7 @@ class WaveformFileProperty(StringProperty):
         if not filename:
             return
         try:
-            data = np.genfromtxt(filename, skip_header=1, delimiter=',')
+            data = np.genfromtxt(filename, delimiter=',')
             if len(data.shape) != 1:
                 data = np.interp(np.linspace(data[0, 0], data[-1, 0], instance.data_length),
                                  data[:, 0], data[:, 1])
