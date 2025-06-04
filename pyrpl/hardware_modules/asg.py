@@ -41,6 +41,7 @@ class WaveformAttribute(SelectProperty):
             raise ValueError("waveform shourd be one of " + instance.waveforms)
         elif waveform == 'custom':
             instance.__class__.waveform_file.load(instance)
+            instance._waveform = waveform
         else:
             if waveform == 'noise':
                 # current amplitude becomes rms amplitude
