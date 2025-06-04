@@ -43,7 +43,7 @@ module red_pitaya_hk #(
   output reg [DWE-1:0] exp_p_dat_o,  // exp. con. output data
   output reg [DWE-1:0] exp_p_dir_o,  // exp. con. 1-output enable
   input      [DWE-1:0] exp_n_dat_i,  //
-  output reg [DWE-1:0] exp_n_dat_o,  //
+  output     [DWE-1:0] exp_n_dat_o,  //
   output reg [DWE-1:0] exp_n_dir_o,  //
   // System bus
   input      [ 32-1:0] sys_addr   ,  // bus address
@@ -109,6 +109,13 @@ wire [32-1: 0] id_value;
 assign id_value[31: 4] = 28'h0; // reserved
 assign id_value[ 3: 0] =  4'h1; // board type   1 - release 1
 
+
+// Use exp_n[1:8] pins as SPI CS expansion. exp_n[0] accepts real SPI CS, which
+// will be AND to _exp_n_data_o[1:8] to produce gated SPI CS
+reg [DWE-1:0] spi_cs_en;
+reg [DWE-1:0] _exp_n_dat_o;
+assign exp_n_dat_o = _exp_n_dat_o & ((spi_cs_en & {DWE{exp_n_dat_i[0]}}) | ~spi_cs_en);
+
 //---------------------------------------------------------------------------------
 //
 //  System bus connection
@@ -118,17 +125,20 @@ if (rstn_i == 1'b0) begin
   led_o        <= {DWL{1'b0}};
   exp_p_dat_o  <= {DWE{1'b0}};
   exp_p_dir_o  <= {DWE{1'b0}};
-  exp_n_dat_o  <= {DWE{1'b0}};
+  _exp_n_dat_o  <= {DWE{1'b0}};
   exp_n_dir_o  <= {DWE{1'b0}};
+  spi_cs_en    <= {DWE{1'b0}};
 end else if (sys_wen) begin
   if (sys_addr[19:0]==20'h0c)   digital_loop <= sys_wdata[0];
 
   if (sys_addr[19:0]==20'h10)   exp_p_dir_o  <= sys_wdata[DWE-1:0];
   if (sys_addr[19:0]==20'h14)   exp_n_dir_o  <= sys_wdata[DWE-1:0];
   if (sys_addr[19:0]==20'h18)   exp_p_dat_o  <= sys_wdata[DWE-1:0];
-  if (sys_addr[19:0]==20'h1C)   exp_n_dat_o  <= sys_wdata[DWE-1:0];
+  if (sys_addr[19:0]==20'h1C)   _exp_n_dat_o  <= sys_wdata[DWE-1:0];
 
   if (sys_addr[19:0]==20'h30)   led_o        <= sys_wdata[DWL-1:0];
+
+  if (sys_addr[19:0]==20'h34)   spi_cs_en    <= sys_wdata[DWL-1:0];
 end
 
 wire sys_en;
@@ -150,11 +160,13 @@ end else begin
     20'h00010: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_p_dir_o}       ; end
     20'h00014: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_n_dir_o}       ; end
     20'h00018: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_p_dat_o}       ; end
-    20'h0001C: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_n_dat_o}       ; end
+    20'h0001C: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, _exp_n_dat_o}       ; end
     20'h00020: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_p_dat_i}       ; end
     20'h00024: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_n_dat_i}       ; end
 
     20'h00030: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWL{1'b0}}, led_o}             ; end
+
+    20'h00034: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWL{1'b0}}, spi_cs_en}         ; end
 
       default: begin sys_ack <= sys_en;  sys_rdata <=  32'h0                              ; end
   endcase
