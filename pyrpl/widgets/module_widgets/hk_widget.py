@@ -46,7 +46,9 @@ class HkWidget(ModuleWidget):
                 self.attribute_layout.removeWidget(direction_widget)
                 lay.addWidget(val_widget)
                 lay.addWidget(direction_widget)
-
+            spi_cs_widget = self.attribute_widgets['spi_cs_en' + str(i)]
+            self.attribute_layout.removeWidget(spi_cs_widget)
+            lay.addWidget(spi_cs_widget)
 
 
         self.attribute_layout.setStretch(0,0)

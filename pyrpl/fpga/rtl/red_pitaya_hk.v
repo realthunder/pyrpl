@@ -110,11 +110,11 @@ assign id_value[31: 4] = 28'h0; // reserved
 assign id_value[ 3: 0] =  4'h1; // board type   1 - release 1
 
 
-// Use exp_n[1:8] pins as SPI CS expansion. exp_n[0] accepts real SPI CS, which
-// will be AND to _exp_n_data_o[1:8] to produce gated SPI CS
+// Use exp_n[1:8] pins as SPI CS expansion. exp_n[0] accepts real SPI CS as
+// input, which will be AND to spi_cs_en to produce gated SPI CS
 reg [DWE-1:0] spi_cs_en;
 reg [DWE-1:0] _exp_n_dat_o;
-assign exp_n_dat_o = _exp_n_dat_o & ((spi_cs_en & {DWE{exp_n_dat_i[0]}}) | ~spi_cs_en);
+assign exp_n_dat_o = (_exp_n_dat_o & ~spi_cs_en) | (spi_cs_en & {DWE{exp_n_dat_i[0]}});
 
 //---------------------------------------------------------------------------------
 //
@@ -134,11 +134,11 @@ end else if (sys_wen) begin
   if (sys_addr[19:0]==20'h10)   exp_p_dir_o  <= sys_wdata[DWE-1:0];
   if (sys_addr[19:0]==20'h14)   exp_n_dir_o  <= sys_wdata[DWE-1:0];
   if (sys_addr[19:0]==20'h18)   exp_p_dat_o  <= sys_wdata[DWE-1:0];
-  if (sys_addr[19:0]==20'h1C)   _exp_n_dat_o  <= sys_wdata[DWE-1:0];
+  if (sys_addr[19:0]==20'h1C)   _exp_n_dat_o <= sys_wdata[DWE-1:0];
+
+  if (sys_addr[19:0]==20'h28)   spi_cs_en    <= sys_wdata[DWE-1:0];
 
   if (sys_addr[19:0]==20'h30)   led_o        <= sys_wdata[DWL-1:0];
-
-  if (sys_addr[19:0]==20'h34)   spi_cs_en    <= sys_wdata[DWL-1:0];
 end
 
 wire sys_en;
@@ -164,9 +164,9 @@ end else begin
     20'h00020: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_p_dat_i}       ; end
     20'h00024: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_n_dat_i}       ; end
 
-    20'h00030: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWL{1'b0}}, led_o}             ; end
+    20'h00028: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, spi_cs_en}         ; end
 
-    20'h00034: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWL{1'b0}}, spi_cs_en}         ; end
+    20'h00030: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWL{1'b0}}, led_o}             ; end
 
       default: begin sys_ack <= sys_en;  sys_rdata <=  32'h0                              ; end
   endcase
