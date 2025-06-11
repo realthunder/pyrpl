@@ -1,4 +1,4 @@
-from ..attributes import IntRegister, SelectRegister, IORegister, BoolProperty
+from ..attributes import IntRegister, SelectRegister, IORegister, BoolProperty, BoolRegister
 from ..modules import HardwareModule
 from ..widgets.module_widgets.hk_widget import HkWidget
 import numpy as np
@@ -19,7 +19,8 @@ class HK(HardwareModule):
                         ['expansion_P' + str(i) for i in range(8)] + \
                         ['expansion_P' + str(i) + '_output' for i in range(8)]+ \
                         ['expansion_N' + str(i) for i in range(8)] + \
-                        ['expansion_N' + str(i) + '_output' for i in range(8)]
+                        ['expansion_N' + str(i) + '_output' for i in range(8)]+ \
+                        ['spi_cs_en' + str(i) for i in range(8)]
     _gui_attributes =  _setup_attributes
     addr_base = 0x40000000
     # We need all attributes to be there when the interpreter is done reading the class (for metaclass to workout)
@@ -37,6 +38,8 @@ class HK(HardwareModule):
         locals()['expansion_N' + str(i) + '_output'] = ExpansionDirection(
                                                       doc="direction of the "
                                                           "port")
+        locals()['spi_cs_en' + str(i)] = BoolRegister(0x28, bit=i,
+                                                      doc="SPI CS expansion enable")
 
     id = SelectRegister(0x0, doc="device ID", options={"prototype0": 0,
                                                        "release1": 1})
