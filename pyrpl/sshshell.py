@@ -104,10 +104,14 @@ class SshShell(object):
         lines = []
         while True:
             exited = channel.exit_status_ready()
-            while channel.recv_ready():
-                line = stdout_.readline(1024)
-                self._logger.debug(f'> {line}')
-                lines.append(line)
+            if channel.recv_ready():
+                while True:
+                    line = stdout_.readline(1024)
+                    if not line:
+                        break
+                    line = line.strip()
+                    self._logger.debug(f'> {line}')
+                    lines.append(line)
             if exited:
                 ret = channel.recv_exit_status()
                 channel.close()
