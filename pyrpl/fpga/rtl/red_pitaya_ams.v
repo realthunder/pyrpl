@@ -102,8 +102,10 @@ if (rstn_i == 1'b0) begin
    manual_a    <= 1'b0       ;
    manual_b    <= 1'b0       ;
    // Default manual configuration for DAC c & d for backward compatibility
-   manual_c    <= 1'b1       ;
-   manual_d    <= 1'b1       ;
+   // manual_c    <= 1'b1       ;
+   // manual_d    <= 1'b1       ;
+   manual_c    <= 1'b0       ;
+   manual_d    <= 1'b0       ;
 end else begin
    if (sys_wen) begin
       if (manual_a && sys_addr[19:0]==16'h20)   dac_a_o <= sys_wdata[24-1: 0] ;
