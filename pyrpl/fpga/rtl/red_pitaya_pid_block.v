@@ -67,7 +67,7 @@ module red_pitaya_pid_block #(
    parameter     ISR = 32         ,//official redpitaya: 18
    parameter     DSR = 10         ,
    parameter     GAINBITS = 24    ,
-   parameter     DERIVATIVE = 0   , //disables differential gain if 0
+   parameter     DERIVATIVE = 1   , //disables differential gain if 0
    
    //parameters for input pre-filter
    parameter     FILTERSTAGES = 4 ,
@@ -264,17 +264,13 @@ assign int_shr = $signed(int_reg[IBW-1:ISR]) ;
 //  Derivative - 2 cycles delay (but treat as 1 cycle because its not
 //  functional at the moment
 
-wire signed [    39-1: 0] kd_mult       ;
-reg signed  [39-DSR-1: 0] kd_reg        ;
-reg signed  [39-DSR-1: 0] kd_reg_r      ;
-reg signed  [39-DSR  : 0] kd_reg_s      ;
+wire  signed [15+GAINBITS-1: 0] kd_mult;
+reg   signed [15+GAINBITS-DSR-1: 0] kd_reg;
+reg   signed [15+GAINBITS-DSR-1: 0] kd_reg_r;
+reg   signed [15+GAINBITS-DSR  : 0] kd_reg_s;
 
 generate 
 	if (DERIVATIVE == 1) begin
-		wire  [15+GAINBITS-1: 0] kd_mult;
-		reg   [15+GAINBITS-DSR-1: 0] kd_reg;
-		reg   [15+GAINBITS-DSR-1: 0] kd_reg_r;
-		reg   [15+GAINBITS-DSR  : 0] kd_reg_s;
 		always @(posedge clk_i) begin
 		   if (rstn_i == 1'b0) begin
 		      kd_reg   <= {15+GAINBITS-DSR{1'b0}};
@@ -290,7 +286,7 @@ generate
         assign kd_mult = (pause_d==1'b1) ? $signed({15+GAINBITS-1{1'b0}}) : $signed(error) * $signed(set_kd);
 	end
 	else begin
-		wire [15+GAINBITS-DSR:0] kd_reg_s;
+		wire signed [15+GAINBITS-DSR:0] kd_reg_s;
 		assign kd_reg_s = {15+GAINBITS-DSR+1{1'b0}};
 	end
 endgenerate 
