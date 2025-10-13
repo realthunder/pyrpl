@@ -36,8 +36,8 @@ class Pwm(DspModule):
                                                 pwm3='in2')[name])
         # because pwm's input is using adc-input's plug
         self.name = name
-        with self.do_setup:
-            self.input ='off'
+        #  with self.do_setup:
+        #      self.input ='off'
     """
     def __init__(self, client, name, parent): # name is 'pwm0' or 'pwm1'
         pwm_to_module = dict(pwm1='adc1', pwm2='adc2')
