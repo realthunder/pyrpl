@@ -34,7 +34,7 @@ class HK(HardwareModule):
                                                           "port")
         locals()['expansion_N' + str(i)] = IORegister(0x24, 0x1C, 0x14, bit=i,
                                                       outputmode=True,
-                                                      doc="positive digital io")
+                                                      doc="negative digital io")
         locals()['expansion_N' + str(i) + '_output'] = ExpansionDirection(
                                                       doc="direction of the "
                                                           "port")

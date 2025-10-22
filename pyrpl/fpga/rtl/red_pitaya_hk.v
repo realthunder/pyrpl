@@ -110,11 +110,11 @@ assign id_value[31: 4] = 28'h0; // reserved
 assign id_value[ 3: 0] =  4'h1; // board type   1 - release 1
 
 
-// Use exp_n[1:8] pins as SPI CS expansion. exp_n[0] accepts real SPI CS as
+// Use exp_n[1:8] pins as SPI CS expansion. exp_p[4] accepts real SPI CS as
 // input, which will be AND to spi_cs_en to produce gated SPI CS
 reg [DWE-1:0] spi_cs_en;
 reg [DWE-1:0] _exp_n_dat_o;
-assign exp_n_dat_o = (_exp_n_dat_o & ~spi_cs_en) | (spi_cs_en & {DWE{exp_n_dat_i[0]}});
+assign exp_n_dat_o = (_exp_n_dat_o & ~spi_cs_en) | (spi_cs_en & {DWE{exp_p_dat_i[4]}});
 
 //---------------------------------------------------------------------------------
 //
