@@ -74,13 +74,10 @@ class WaveformAttribute(SelectProperty):
                 y = np.linspace(-1.0, 1.0, instance.data_length,
                                 endpoint=False)
             elif waveform == 'sqrt':
-                y = np.linspace(-1.0, 3.0, instance.data_length,
+                y = np.linspace(0.0, 2.0, instance.data_length,
                                 endpoint=False)
-                y[instance.data_length // 2:] = -1 * y[:instance.data_length // 2]
-                idxp = y > 0
-                idxn = y < 0
-                y[idxp] = np.sqrt(y[idxp])
-                y[idxn] = -1 * np.sqrt(-y[idxn])
+                y[instance.data_length // 2:] = 1 - y[:instance.data_length // 2]
+                y = np.sqrt(y)*2 - 1
             elif waveform == 'square':
                 y = np.ones(instance.data_length)
                 y[len(y)//2:] = -1.0
