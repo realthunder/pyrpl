@@ -29,7 +29,9 @@
 module red_pitaya_hk #(
   parameter DWL = 8, // data width for LED
   parameter DWE = 8, // data width for extension
-  parameter [57-1:0] DNA = 57'h0823456789ABCDE
+  parameter [57-1:0] DNA = 57'h0823456789ABCDE,
+  parameter CNT = 2083, // default clock counter, equal to freq 1/(2083*2*8ns) = 3.00048kHz
+  parameter CSZ = 16 // clock counter width
 )(
   // system signals
   input                clk_i      ,  // clock
@@ -116,6 +118,11 @@ reg [DWE-1:0] spi_cs_en;
 reg [DWE-1:0] _exp_n_dat_o;
 assign exp_n_dat_o = (_exp_n_dat_o & ~spi_cs_en) | (spi_cs_en & {DWE{exp_p_dat_i[4]}});
 
+
+reg clk_out_en;
+reg [CSZ-1:0] clk_cnt_v;
+reg [CSZ-1:0] clk_cnt;
+
 //---------------------------------------------------------------------------------
 //
 //  System bus connection
@@ -125,20 +132,34 @@ if (rstn_i == 1'b0) begin
   led_o        <= {DWL{1'b0}};
   exp_p_dat_o  <= {DWE{1'b0}};
   exp_p_dir_o  <= {DWE{1'b0}};
-  _exp_n_dat_o  <= {DWE{1'b0}};
+  _exp_n_dat_o <= {DWE{1'b0}};
   exp_n_dir_o  <= {DWE{1'b0}};
   spi_cs_en    <= {DWE{1'b0}};
-end else if (sys_wen) begin
-  if (sys_addr[19:0]==20'h0c)   digital_loop <= sys_wdata[0];
+  clk_cnt_v    <= {CSZ{CNT}};
+  clk_cnt      <= {CSZ{1'b0}};
+  clk_out_en   <= 1'b1;
+end else begin
+  if (sys_wen) begin
+    if (sys_addr[19:0]==20'h0c)   digital_loop <= sys_wdata[0];
 
-  if (sys_addr[19:0]==20'h10)   exp_p_dir_o  <= sys_wdata[DWE-1:0];
-  if (sys_addr[19:0]==20'h14)   exp_n_dir_o  <= sys_wdata[DWE-1:0];
-  if (sys_addr[19:0]==20'h18)   exp_p_dat_o  <= sys_wdata[DWE-1:0];
-  if (sys_addr[19:0]==20'h1C)   _exp_n_dat_o <= sys_wdata[DWE-1:0];
+    if (sys_addr[19:0]==20'h10)   exp_p_dir_o  <= sys_wdata[DWE-1:0];
+    if (sys_addr[19:0]==20'h14)   exp_n_dir_o  <= sys_wdata[DWE-1:0];
+    if (sys_addr[19:0]==20'h18)   exp_p_dat_o  <= sys_wdata[DWE-1:0];
+    if (sys_addr[19:0]==20'h1C)   _exp_n_dat_o <= sys_wdata[DWE-1:0];
 
-  if (sys_addr[19:0]==20'h28)   spi_cs_en    <= sys_wdata[DWE-1:0];
+    if (sys_addr[19:0]==20'h28)   spi_cs_en    <= sys_wdata[DWE-1:0];
 
-  if (sys_addr[19:0]==20'h30)   led_o        <= sys_wdata[DWL-1:0];
+    if (sys_addr[19:0]==20'h30)   led_o        <= sys_wdata[DWL-1:0];
+  end
+
+  if (exp_n_dir_o[7]) begin
+    if (clk_cnt >= clk_cnt_v) begin
+        clk_cnt <= {CSZ{1'b0}};
+        _exp_n_dat_o[7] = ~_exp_n_dat_o[7];
+    end else begin
+        clk_cnt <= clk_cnt + clk_out_en;
+    end
+  end
 end
 
 wire sys_en;
