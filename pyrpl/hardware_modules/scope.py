@@ -493,6 +493,14 @@ class Scope(HardwareModule, AcquisitionModule):
         return x
 
     @property
+    def _ffthist(self):
+        """raw data from fft history"""
+        x = np.array(self._reads(0x40000, 2**14), dtype=np.int32)
+        x[x >= 2 ** 15] -= 2 ** 16
+        x = np.array(x, dtype=float) / 2**13
+        return x
+
+    @property
     def _rawdata_ch1(self):
         """raw data from ch1"""
         # return np.array([self.to_pyint(v) for v in self._reads(0x10000,
