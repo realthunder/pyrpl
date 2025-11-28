@@ -363,8 +363,12 @@ always @(posedge adc_clk_i) begin
    adc_b_raddr <= adc_raddr     ; // otherwise memory corruption at reading
    adc_a_rd    <= adc_a_buf[adc_a_raddr] ;
    adc_b_rd    <= adc_b_buf[adc_b_raddr] ;
+
    fft_raddr   <= adc_raddr     ;
    fft_rd_data <= fft_buf[fft_raddr] ;
+
+   fft_hist_raddr <= adc_raddr  ;
+   fft_hist_rdada <= fft_hist[fft_hist_raddr] ;
 end
 
 
@@ -421,34 +425,156 @@ end else begin
         fft_saxi_valid <= 1'b0;
 end
 
-wire [ 32-1:  0]fft_maxi_data          ;
+wire [ 16-1:  0]fft_maxi_msb           ;
+wire [ 16-1:  0]fft_maxi_lsb           ;
 wire            fft_maxi_valid         ;
 wire            fft_maxi_last          ;
 reg  [ 16-1:  0]fft_buf [0:(1<<RSZ)-1] ;
 reg  [ RSZ-1: 0]fft_raddr              ;
 reg  [ 16-1:  0]fft_rd_data            ;
 reg  [ RSZ-1: 0]fft_rp_last            ;
-reg             fft_rd                 ;
+reg             fft_ready              ;
 reg  [ RSZ-1: 0]fft_rp                 ;
+reg  [ 16-1:  0]fft_hist[0:(1<<RSZ)-1] ;
+reg  [ 16-1:  0]fft_hist_rdata         ;
+reg  [ RSZ-1: 0]fft_hist_raddr         ;
+reg  [ RSZ-1: 0]fft_hist_rp            ;
+reg  [ RSZ-1: 0]fft_hist_length        ;
+reg  [ RSZ-1: 0]fft_hist_start         ;
+reg  [ 16-1:  0]fft_hist_data          ;
+reg  [ RSZ-1: 0]fft_hist_idx           ;
+wire [ 16-1:  0]fft_cur                ;
+
+assign fft_cur = (fft_maxi_lsb>=16'h8000 || fft_hist_data > fft_maxi_lsb) ? fft_hist_data : fft_maxi_lsb;
 
 always @(posedge adc_clk_i)
 if (fft_rstn_i == 1'b0) begin
     fft_rp <= {RSZ{1'b0}};
     fft_rp_last <= {RSZ{1'b0}};
+    fft_hist_rp <= {RSZ{1'b0}};
+    fft_hist_idx <= {RSZ{1'b0}};
+    fft_hist_data <= 16'b0;
+    fft_hist_length <= 16'b0;
 end else if (fft_enable && fft_maxi_valid) begin
-    if (fft_rd || !fft_maxi_last) begin
-        fft_buf[fft_rp] <= fft_maxi_data[16-1:0];
-        fft_rd = !fft_maxi_last;
+    if (fft_ready || !fft_maxi_last) begin
+        fft_buf[fft_rp] <= fft_maxi_lsb;
+
+        fft_ready = !fft_maxi_last;
+
         if (fft_maxi_last) begin
             fft_rp_last <= fft_rp;
             fft_rp <= {RSZ{1'b0}};
-        end else
+
+            if (fft_hist_rst) begin:
+                fft_hist_rp <= {RSZ{1'b0}};
+                fft_hist_rst = 1'b0;
+            end else begin
+                fft_hist[fft_hist_rp] = fft_hist_idx;
+                fft_hist[fft_hist_rp] = fft_cur;
+                if (fft_hist_length == 0 || fft_hist_rp < fft_hist_length)
+                    fft_hist_rp = fft_hist_rp + 1;
+                else
+                    fft_hist_rp = 16'b0;
+            end
+
+            fft_hist_data <= 16'b0;
+            fft_hist_idx <= 16'b0;
+
+        end else begin
+            if (fft_rp == fft_hist_start)
+                fft_hist_data <= fft_maxi_lsb;
+            else if (fft_rp > fft_hist_start && (fft_maxi_lsb>=16'h8000 || fft_hist_data > fft_maxi_lsb)) begin
+                fft_hist_data <= fft_maxi_lsb;
+                fft_hist_idx = fft_rp;
+            end
             fft_rp = fft_rp + 1;
+            fft_hist_data = fft_cur;
+        end
     end
 end
 
+
+// module peak_detector_auto_threshold #(
+//     parameter DATA_WIDTH = 16,
+//     parameter WINDOW_SIZE = 256,
+//     parameter K = 4 // multiplier for threshold
+// )(
+//     input wire clk,
+//     input wire rst,
+//     input wire [DATA_WIDTH-1:0] data_in,
+//     output reg [DATA_WIDTH-1:0] peak_value,
+//     output reg peak_valid
+// );
+//
+//     reg [DATA_WIDTH-1:0] current_max;
+//     reg [31:0] sum;
+//     reg [63:0] sum_sq;
+//     reg [$clog2(WINDOW_SIZE)-1:0] sample_count;
+//
+//     reg [31:0] mean;
+//     reg [31:0] variance;
+//     reg [31:0] threshold;
+//
+//     always @(posedge clk or posedge rst) begin
+//         if (rst) begin
+//             current_max <= 0;
+//             sum <= 0;
+//             sum_sq <= 0;
+//             sample_count <= 0;
+//             peak_value <= 0;
+//             peak_valid <= 0;
+//         end else begin
+//             // Update max
+//             if (data_in > current_max)
+//                 current_max <= data_in;
+//
+//             // Accumulate sum and sum of squares
+//             sum <= sum + data_in;
+//             sum_sq <= sum_sq + data_in * data_in;
+//
+//             // Increment sample count
+//             sample_count <= sample_count + 1;
+//
+//             // End of window
+//             if (sample_count == WINDOW_SIZE - 1) begin
+//                 // Compute mean
+//                 mean <= sum / WINDOW_SIZE;
+//
+//                 // Compute variance
+//                 variance <= (sum_sq / WINDOW_SIZE) - (mean * mean);
+//
+//                 // Compute threshold
+//                 threshold <= mean + (K * sqrt_approx(variance));
+//
+//                 // Check peak validity
+//                 if (current_max >= threshold) begin
+//                     peak_value <= current_max;
+//                     peak_valid <= 1;
+//                 end else begin
+//                     peak_valid <= 0;
+//                 end
+//
+//                 // Reset for next window
+//                 sample_count <= 0;
+//                 current_max <= 0;
+//                 sum <= 0;
+//                 sum_sq <= 0;
+//             end else begin
+//                 peak_valid <= 0;
+//             end
+//         end
+//     end
+//
+//     // Simple sqrt approximation (replace with proper module for accuracy)
+//     function [31:0] sqrt_approx(input [31:0] val);
+//         sqrt_approx = val[31:16]; // crude approximation
+//     endfunction
+//
+// endmodule
+
+
 fft_wrapper fft_i (
-   .M_AXIS_DOUT_0_tdata         (fft_maxi_data    ),
+   .M_AXIS_DOUT_0_tdata         (fft_maxi_msb, fft_maxi_lsb),
    .M_AXIS_DOUT_0_tlast         (fft_maxi_last    ),
    .M_AXIS_DOUT_0_tvalid        (fft_maxi_valid   ),
    .S_AXIS_CONFIG_0_tdata       ( ),
@@ -951,6 +1077,7 @@ end else begin
       if (sys_addr[19:0]==20'h20)   set_a_hyst    <= sys_wdata[14-1:0] ;
       //if (sys_addr[19:0]==20'h24)   set_b_hyst    <= sys_wdata[14-1:0] ;
       if (sys_addr[19:0]==20'h28)   set_avg_en    <= sys_wdata[     0] ;
+      if (sys_addr[19:0]==20'h38)   fft_hist_length<= sys_wdata[16-1:0];
 
       /*
       if (sys_addr[19:0]==20'h30)   set_a_filt_aa <= sys_wdata[18-1:0] ;
@@ -995,7 +1122,7 @@ end else begin
                                                                               , fft_tlast_missing
                                                                               , fft_tlast_unexp
                                                                               , fft_enable
-                                                                              , fft_rd
+                                                                              , fft_ready
                                                                               , adc_we_keep               // do not disarm on 
                                                                               , adc_dly_do                // trigger status
                                                                               , 1'b0                      // reset
@@ -1020,6 +1147,12 @@ end else begin
 
      20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ{1'b0}}, fft_rp_last}       ; end
      20'h00034 : begin sys_ack <= sys_en;          sys_rdata <= fft_frame_cnt                       ; end
+
+     20'h00038 : begin
+         sys_ack <= sys_en;
+         sys_rdata <= {{32-RSZ{1'b0}}, fft_hist_length};
+         fft_hist_rst <= 1'b1;
+     end
 
      /*
      20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= {{32-18{1'b0}}, set_a_filt_aa}      ; end
@@ -1064,8 +1197,8 @@ end else begin
      20'h2???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_b_rd}              ; end
 
      20'h3???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, fft_rd_data}                ; end
-	 
-	 
+
+     20'h4???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, fft_hist_rdata}             ; end
 
        default : begin sys_ack <= sys_en;          sys_rdata <=  32'h0                              ; end
    endcase
