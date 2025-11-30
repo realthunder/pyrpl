@@ -83,6 +83,8 @@ module red_pitaya_asg (
  
   input                 trig_scope_i    ,  // trigger from the scope
 
+  output                sync_rst_o,  // syncrhonized reset signal
+
   output     [ 14-1: 0] asg1phase_o,
 
   // System bus
@@ -131,13 +133,11 @@ reg               rand_a_on    , rand_b_on    , rand_c_on    , rand_d_on    ;
 wire  [ RSZ-1: 0] rand_pnt;
 
 wire              _set_a_rst   , _set_b_rst   , _set_c_rst   , _set_d_rst    ;
-wire              set_rst ;
-assign set_rst = (sync_a_on & set_a_rst) | (sync_b_on & set_b_rst) | (sync_c_on & set_c_rst) | (sync_d_on & set_d_rst) ;
-// assign set_rst = set_a_rst | set_b_rst | set_c_rst | set_d_rst ;
-assign _set_a_rst = set_a_rst | (sync_a_on & set_rst); 
-assign _set_b_rst = set_b_rst | (sync_b_on & set_rst); 
-assign _set_c_rst = set_c_rst | (sync_c_on & set_rst); 
-assign _set_d_rst = set_d_rst | (sync_d_on & set_rst); 
+assign sync_rst_o = (sync_a_on & set_a_rst) | (sync_b_on & set_b_rst) | (sync_c_on & set_c_rst) | (sync_d_on & set_d_rst) ;
+assign _set_a_rst = set_a_rst | (sync_a_on & sync_rst_o); 
+assign _set_b_rst = set_b_rst | (sync_b_on & sync_rst_o); 
+assign _set_c_rst = set_c_rst | (sync_c_on & sync_rst_o); 
+assign _set_d_rst = set_d_rst | (sync_d_on & sync_rst_o); 
 
 wire              _set_a_zero   , _set_b_zero   , _set_c_zero   , _set_d_zero    ;
 wire              set_zero ;

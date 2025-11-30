@@ -145,6 +145,15 @@ class AsgAmplitudeAttribute(FloatRegister):
             super(AsgAmplitudeAttribute, self).set_value(obj, val)
 
 
+class AsgFrequencyAttribute(FrequencyRegister):
+    def set_value(self, obj, val):
+        if obj.sync_on and not obj.sm_reset:
+            obj.sm_reset = True
+            super().set_value(obj, val)
+            obj.sm_reset = False
+        else:
+            super().set_value(obj, val)
+
 
 class AsgOffsetAttribute(FloatProperty):
     def __init__(self, **kwargs):
@@ -299,7 +308,7 @@ def make_asg(channel=0):
                                     doc="Phase at which to start triggered waveforms [degrees]",
                                     call_setup=True)
 
-        frequency = FrequencyRegister(0x10 + _VALUE_OFFSET, bits=30,
+        frequency = AsgFrequencyAttribute(0x10 + _VALUE_OFFSET, bits=30,
                                       log_increment=True,
                                       doc="Frequency of the output waveform [Hz]")
 
