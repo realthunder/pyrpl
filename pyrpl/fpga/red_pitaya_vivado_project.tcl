@@ -31,6 +31,8 @@ source                            $path_ip/system_bd.tcl
 # generate SDK files
 generate_target all [get_files    system.bd]
 
+source                            $path_ip/fft_bd.tcl
+generate_target all [get_files    fft.bd]
 ################################################################################
 # read files:
 # 1. RTL design sources
@@ -39,6 +41,7 @@ generate_target all [get_files    system.bd]
 ################################################################################
 
 read_verilog                      ./project/pyrpl.srcs/sources_1/bd/system/hdl/system_wrapper.v
+read_verilog                      ./project/pyrpl.srcs/sources_1/bd/fft/hdl/fft_wrapper.v
 
 add_files                         $path_rtl/axi_master.v
 add_files                         $path_rtl/axi_slave.v

@@ -384,6 +384,8 @@ class Scope(HardwareModule, AcquisitionModule):
 
     _fft_frame_cnt = IntRegister(0x34, doc="FFT frame counter")
 
+    fft_hist_length = IntRegister(0x38, doc="FFT history buffer size")
+
     _adc_we_cnt = IntRegister(0x2C, doc="Number of samles that have passed "
                                         "since trigger was armed (adc_we_cnt)")
 
@@ -495,9 +497,10 @@ class Scope(HardwareModule, AcquisitionModule):
     @property
     def _ffthist(self):
         """raw data from fft history"""
-        x = np.array(self._reads(0x40000, 2**14), dtype=np.int32)
-        x[x >= 2 ** 15] -= 2 ** 16
-        x = np.array(x, dtype=float) / 2**13
+        length = self.fft_hist_length
+        if not length:
+            return []
+        x = np.array(self._reads(0x40000, length), dtype=np.int32)
         return x
 
     @property
