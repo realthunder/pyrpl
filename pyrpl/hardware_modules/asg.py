@@ -148,9 +148,11 @@ class AsgAmplitudeAttribute(FloatRegister):
 class AsgFrequencyAttribute(FrequencyRegister):
     def set_value(self, obj, val):
         if obj.sync_on and not obj.sm_reset:
-            obj.sm_reset = True
-            super().set_value(obj, val)
-            obj.sm_reset = False
+            try:
+                obj.sm_reset = True
+                super().set_value(obj, val)
+            finally:
+                obj.sm_reset = False
         else:
             super().set_value(obj, val)
 
@@ -403,13 +405,15 @@ def make_asg(channel=0):
             """
             Sets up the function generator. (just setting attributes is ok).
             """
-            self.on = False
-            self.sm_reset = True
-            self._counter_wrap = self._default_counter_wrap
-            self._sm_wrappointer = True
-            self.waveform = self.waveform
-            self.sm_reset = False
-            self.on = True
+            try:
+                self.on = False
+                self.sm_reset = True
+                self._counter_wrap = self._default_counter_wrap
+                self._sm_wrappointer = True
+                self.waveform = self.waveform
+            finally:
+                self.sm_reset = False
+                self.on = True
 
         # advanced trigger - alpha version functionality
         scopetriggerphase = PhaseRegister(0x114 + _VALUE_OFFSET, bits=14,

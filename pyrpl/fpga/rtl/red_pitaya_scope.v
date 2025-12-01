@@ -469,7 +469,7 @@ end
 
 
 reg  [ 32-1:  0]fft_hist[0:(1<<RSZ)-1] ;
-reg  [ 16-1:  0]fft_hist_rdata         ;
+reg  [ 32-1:  0]fft_hist_rdata         ;
 reg  [ RSZ-1: 0]fft_hist_raddr         ;
 reg  [ RSZ-1: 0]fft_hist_rp            ;
 reg  [ RSZ-1: 0]fft_hist_length        ;
@@ -1060,7 +1060,7 @@ end else begin
       if (sys_addr[19:0]==20'h20)   set_a_hyst    <= sys_wdata[14-1:0] ;
       //if (sys_addr[19:0]==20'h24)   set_b_hyst    <= sys_wdata[14-1:0] ;
       if (sys_addr[19:0]==20'h28)   set_avg_en    <= sys_wdata[     0] ;
-      if (sys_addr[19:0] == 20'h38) fft_hist_length <= sys_wdata[RSZ-1:0];
+      if (sys_addr[19:0]==20'h38) fft_hist_length <= sys_wdata[RSZ-1:0];
       if (sys_addr[19:0]==20'h3C)   fft_hist_start<= sys_wdata[RSZ-1:0];
 
       /*
@@ -1179,7 +1179,7 @@ end else begin
 
      20'h3???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, fft_rd_data}                ; end
 
-     20'h4???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, fft_hist_rdata}             ; end
+     20'h4???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_hist_rdata                      ; end
 
        default : begin sys_ack <= sys_en;          sys_rdata <=  32'h0                              ; end
    endcase
