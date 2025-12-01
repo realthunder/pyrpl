@@ -120,7 +120,8 @@ module red_pitaya_scope #(
 reg             adc_arm_do   ;
 reg             adc_rst_do   ;
 wire            adc_sync_rst ;
-assign adc_sync_rst = adc_rst_do | sync_rst_i ;
+// assign adc_sync_rst = adc_rst_do | sync_rst_i ;
+assign adc_sync_rst = adc_rst_do;
 
 // input filter is disabled
 
@@ -370,8 +371,8 @@ always @(posedge adc_clk_i) begin
    fft_raddr   <= adc_raddr     ;
    fft_rd_data <= fft_buf[fft_raddr] ;
 
-   fft_hist_raddr <= adc_raddr  ;
-   fft_hist_rdata <= fft_hist[fft_hist_raddr] ;
+   // fft_hist_raddr <= adc_raddr  ;
+   // fft_hist_rdata <= fft_hist[fft_hist_raddr] ;
 end
 
 
@@ -452,6 +453,7 @@ always @(posedge adc_clk_i)
 if (fft_rstn_i == 1'b0) begin
     fft_rp <= {RSZ{1'b0}};
     fft_rp_last <= {RSZ{1'b0}};
+    fft_reading <= 0 ;
 end else if (fft_enable && fft_maxi_valid) begin
     if (fft_reading || !fft_maxi_last) begin
         fft_buf[fft_rp] <= fft_maxi_lsb;
@@ -486,6 +488,7 @@ reg  [ 32-1:  0]fft_sum_sqr            ;
 reg  [ 32-1:  0]fft_mean               ;
 reg  [ 32-1:  0]fft_variance           ;
 
+/*
 always @(posedge adc_clk_i)
 if (fft_rstn_i == 1'b0) begin
     fft_hist_rp <= 0;
@@ -555,6 +558,7 @@ end
 function [31:0] sqrt_approx(input [31:0] val);
     sqrt_approx = val[31:16]; // crude approximation
 endfunction
+*/
 
 fft_wrapper fft_i (
    .M_AXIS_DOUT_0_tdata         ({fft_maxi_msb, fft_maxi_lsb}),
