@@ -67,7 +67,8 @@
  */
 
 module red_pitaya_scope #(
-  parameter RSZ = 14  // RAM size 2^RSZ
+  parameter RSZ = 14,  // RAM size 2^RSZ
+  parameter HSZ = 12  // fft history buffer size 2^HSZ (Note: consider word size of 32bit, better not exceed 64KBytes in total)
 )(
 
    // ADC
@@ -120,8 +121,7 @@ module red_pitaya_scope #(
 reg             adc_arm_do   ;
 reg             adc_rst_do   ;
 wire            adc_sync_rst ;
-// assign adc_sync_rst = adc_rst_do | sync_rst_i ;
-assign adc_sync_rst = adc_rst_do;
+assign adc_sync_rst = adc_rst_do | sync_rst_i ;
 
 // input filter is disabled
 
@@ -362,7 +362,7 @@ end
 assign adc_rd_dv = adc_rval[3];
 
 always @(posedge adc_clk_i) begin
-   adc_raddr   <= sys_addr[RSZ+1:2] ; // address synchronous to clock
+   adc_raddr   <= sys_addr[RSZ-1+2:2] ; // address synchronous to clock
    adc_a_raddr <= adc_raddr     ; // double register 
    adc_b_raddr <= adc_raddr     ; // otherwise memory corruption at reading
    adc_a_rd    <= adc_a_buf[adc_a_raddr] ;
@@ -371,8 +371,8 @@ always @(posedge adc_clk_i) begin
    fft_raddr   <= adc_raddr     ;
    fft_rd_data <= fft_buf[fft_raddr] ;
 
-   // fft_hist_raddr <= adc_raddr  ;
-   // fft_hist_rdata <= fft_hist[fft_hist_raddr] ;
+   fft_hist_raddr <= sys_addr[HSZ-1+4:2]  ;
+   fft_hist_rdata <= fft_hist[fft_hist_raddr] ;
 end
 
 
@@ -470,11 +470,11 @@ end else if (fft_enable && fft_maxi_valid) begin
 end
 
 
-reg  [ 32-1:  0]fft_hist[0:(1<<RSZ)-1] ;
+reg  [ 32-1:  0]fft_hist[0:(1<<HSZ)-1] ;
 reg  [ 32-1:  0]fft_hist_rdata         ;
-reg  [ RSZ-1: 0]fft_hist_raddr         ;
-reg  [ RSZ-1: 0]fft_hist_rp            ;
-reg  [ RSZ-1: 0]fft_hist_length        ;
+reg  [ HSZ-1: 0]fft_hist_raddr         ;
+reg  [ HSZ-1: 0]fft_hist_rp            ;
+reg  [ HSZ-1: 0]fft_hist_length        ;
 reg  [ RSZ-1: 0]fft_hist_start         ;
 reg  [ 16-1:  0]fft_hist_max           ;
 reg  [ 16-1:  0]fft_hist_max2          ;
@@ -488,15 +488,18 @@ reg  [ 32-1:  0]fft_sum_sqr            ;
 reg  [ 32-1:  0]fft_mean               ;
 reg  [ 32-1:  0]fft_variance           ;
 
-/*
 always @(posedge adc_clk_i)
 if (fft_rstn_i == 1'b0) begin
+    if (adc_rstn_i == 1'b0) begin
+        fft_hist_length <= 0;
+        fft_threshold_k <= 4;
+        fft_hist_start <= 0;
+    end
     fft_hist_rp <= 0;
     fft_hist_idx <= 0;
+    fft_hist_idx2 <= 0;
     fft_hist_max <= 0;
     fft_hist_max2 <= 0;
-    fft_hist_length <= 0;
-    fft_threshold_k <= 4;
     fft_sum <= 0;
     fft_sum_sqr <= 0;
     fft_mean <= 0;
@@ -507,7 +510,8 @@ end else if (fft_enable && fft_maxi_valid) begin
         if (fft_maxi_last) begin
             fft_mean <= fft_sum / (fft_real_rp + 1);
             fft_variance <= fft_sum_sqr / (fft_real_rp + 1) - (fft_mean * fft_mean);
-            fft_threshold <= fft_mean + (fft_threshold_k * sqrt_approx(fft_variance));
+            // fft_threshold <= fft_mean + (fft_threshold_k * sqrt_approx(fft_variance));
+            fft_threshold <= fft_mean + (fft_threshold_k * fft_variance[31:16]);
 
             if (fft_hist_max > fft_threshold) begin
                 if (fft_hist_max2 > fft_threshold) begin
@@ -554,6 +558,7 @@ end else if (fft_enable && fft_maxi_valid) begin
     end
 end
 
+/*
 // Simple sqrt approximation (replace with proper module for accuracy)
 function [31:0] sqrt_approx(input [31:0] val);
     sqrt_approx = val[31:16]; // crude approximation
@@ -1064,7 +1069,7 @@ end else begin
       if (sys_addr[19:0]==20'h20)   set_a_hyst    <= sys_wdata[14-1:0] ;
       //if (sys_addr[19:0]==20'h24)   set_b_hyst    <= sys_wdata[14-1:0] ;
       if (sys_addr[19:0]==20'h28)   set_avg_en    <= sys_wdata[     0] ;
-      if (sys_addr[19:0]==20'h38) fft_hist_length <= sys_wdata[RSZ-1:0];
+      if (sys_addr[19:0]==20'h38) fft_hist_length <= sys_wdata[HSZ-1:0];
       if (sys_addr[19:0]==20'h3C)   fft_hist_start<= sys_wdata[RSZ-1:0];
 
       /*
@@ -1136,7 +1141,7 @@ end else begin
      20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ{1'b0}}, fft_rp_last}       ; end
      20'h00034 : begin sys_ack <= sys_en;          sys_rdata <= fft_frame_cnt                       ; end
 
-     20'h00038 : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ{1'b0}}, fft_hist_length}   ; end
+     20'h00038 : begin sys_ack <= sys_en;          sys_rdata <= {{32-HSZ{1'b0}}, fft_hist_length}   ; end
      20'h0003C : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ{1'b0}}, fft_hist_start}    ; end
 
      /*
