@@ -30,7 +30,8 @@ module red_pitaya_hk #(
   parameter DWL = 8, // data width for LED
   parameter DWE = 8, // data width for extension
   parameter [57-1:0] DNA = 57'h0823456789ABCDE,
-  parameter CNT = 2083, // default clock counter, equal to freq 1/(2083*2*8ns) = 3.00048kHz
+  // parameter CNT = 2083, // default clock counter, equal to freq 1/(2083*2*8ns) ~ 30KHz
+  parameter CNT = 6249, // default clock counter, equal to freq 1/(6249*2*8ns) ~ 10KHz
   parameter CSZ = 16 // clock counter width
 )(
   // system signals
@@ -119,9 +120,11 @@ reg [DWE-1:0] _exp_n_dat_o;
 assign exp_n_dat_o = (_exp_n_dat_o & ~spi_cs_en) | (spi_cs_en & {DWE{exp_p_dat_i[4]}});
 
 
-reg clk_out_en;
+reg [1:0] clk_out_en;
 reg [CSZ-1:0] clk_cnt_v;
 reg [CSZ-1:0] clk_cnt;
+reg [CSZ-1:0] clk_cnt2_v;
+reg [CSZ-1:0] clk_cnt2;
 
 //---------------------------------------------------------------------------------
 //
@@ -137,7 +140,9 @@ if (rstn_i == 1'b0) begin
   spi_cs_en    <= {DWE{1'b0}};
   clk_cnt_v    <= {CSZ{CNT}};
   clk_cnt      <= {CSZ{1'b0}};
-  clk_out_en   <= 1'b1;
+  clk_cnt2_v   <= {CSZ{CNT}};
+  clk_cnt2     <= {CSZ{1'b0}};
+  clk_out_en   <= 2'b1;
 end else begin
   if (sys_wen) begin
     if (sys_addr[19:0]==20'h0c)   digital_loop <= sys_wdata[0];
@@ -148,16 +153,30 @@ end else begin
     if (sys_addr[19:0]==20'h1C)   _exp_n_dat_o <= sys_wdata[DWE-1:0];
 
     if (sys_addr[19:0]==20'h28)   spi_cs_en    <= sys_wdata[DWE-1:0];
+    if (sys_addr[19:0]==20'h2C)   clk_out_en   <= sys_wdata[1:0];
 
     if (sys_addr[19:0]==20'h30)   led_o        <= sys_wdata[DWL-1:0];
+
+    if (sys_addr[19:0]==20'h34)   clk_cnt_v    <= sys_wdata[CSZ-1:0];
+    if (sys_addr[19:0]==20'h38)   clk_cnt2_v   <= sys_wdata[CSZ-1:0];
+
   end
 
-  if (exp_n_dir_o[7]) begin
+  if (exp_n_dir_o[7] && clk_out_en[0]) begin
     if (clk_cnt >= clk_cnt_v) begin
         clk_cnt <= {CSZ{1'b0}};
         _exp_n_dat_o[7] = ~_exp_n_dat_o[7];
     end else begin
-        clk_cnt <= clk_cnt + clk_out_en;
+        clk_cnt <= clk_cnt + 1;
+    end
+  end
+
+  if (exp_p_dir_o[7] && clk_out_en[1]) begin
+    if (clk_cnt2 >= clk_cnt2_v) begin
+        clk_cnt2 <= {CSZ{1'b0}};
+        exp_p_dat_o[7] = ~exp_p_dat_o[7];
+    end else begin
+        clk_cnt2 <= clk_cnt2 + 1;
     end
   end
 end
@@ -187,7 +206,12 @@ end else begin
 
     20'h00028: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, spi_cs_en}         ; end
 
+    20'h0002C: begin sys_ack <= sys_en;  sys_rdata <= {{32-2{1'b0}}, clk_out_en}          ; end
+
     20'h00030: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWL{1'b0}}, led_o}             ; end
+
+    20'h00034: begin sys_ack <= sys_en;  sys_rdata <= {{32-CSZ{1'b0}}, clk_cnt_v}         ; end
+    20'h00038: begin sys_ack <= sys_en;  sys_rdata <= {{32-CSZ{1'b0}}, clk_cnt2_v}        ; end
 
       default: begin sys_ack <= sys_en;  sys_rdata <=  32'h0                              ; end
   endcase
