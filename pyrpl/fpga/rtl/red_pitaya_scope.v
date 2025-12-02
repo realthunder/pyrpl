@@ -68,7 +68,7 @@
 
 module red_pitaya_scope #(
   parameter RSZ = 14,  // RAM size 2^RSZ
-  parameter HSZ = 12  // fft history buffer size 2^HSZ (Note: consider word size of 32bit, better not exceed 64KBytes in total)
+  parameter HSZ = 12  // fft history buffer size 2^HSZ (Note: consider word size of 32 bits (4 bytes), better not exceed 64KBytes in total, so HSZ <= 14)
 )(
 
    // ADC
@@ -371,7 +371,7 @@ always @(posedge adc_clk_i) begin
    fft_raddr   <= adc_raddr     ;
    fft_rd_data <= fft_buf[fft_raddr] ;
 
-   fft_hist_raddr <= sys_addr[HSZ-1+4:2]  ;
+   fft_hist_raddr <= sys_addr[HSZ-1+2:2]  ;
    fft_hist_rdata <= fft_hist[fft_hist_raddr] ;
 end
 
@@ -400,9 +400,12 @@ assign fft_rstn_i = adc_rstn_i && !adc_sync_rst ;
 assign fft_dvalid = fft_enable && fft_we_cnt != 32'b0 && (fft_wp != adc_wp || (adc_we && adc_dv));
 
 always @(posedge adc_clk_i)
+if (adc_rstn_i == 1'b0) begin
+    fft_enable  <= 1'b0 ;
+end
+
+always @(posedge adc_clk_i)
 if (fft_rstn_i == 1'b0) begin
-    if (adc_rstn_i == 1'b0)
-        fft_enable  <= 1'b0 ;
     fft_we_cnt <= 32'b0 ;
     fft_frame_cnt <= 32'b0 ;
     fft_wp <= {RSZ{1'b0}} ;
@@ -470,7 +473,7 @@ end else if (fft_enable && fft_maxi_valid) begin
 end
 
 
-reg  [ 32-1:  0]fft_hist[0:(1<<HSZ)-1] ;
+reg  [ 32-1:  0]fft_hist[0:(1<<(HSZ+1))-1] ;
 reg  [ 32-1:  0]fft_hist_rdata         ;
 reg  [ HSZ-1: 0]fft_hist_raddr         ;
 reg  [ HSZ-1: 0]fft_hist_rp            ;
@@ -488,72 +491,75 @@ reg  [ 32-1:  0]fft_sum_sqr            ;
 reg  [ 32-1:  0]fft_mean               ;
 reg  [ 32-1:  0]fft_variance           ;
 
-always @(posedge adc_clk_i)
-if (fft_rstn_i == 1'b0) begin
+always @(posedge adc_clk_i) begin
     if (adc_rstn_i == 1'b0) begin
-        fft_hist_length <= 0;
+        fft_hist_length <= {HSZ{1'b0}};
         fft_threshold_k <= 4;
-        fft_hist_start <= 0;
+        fft_hist_start <= {RSZ{1'b0}};
     end
-    fft_hist_rp <= 0;
-    fft_hist_idx <= 0;
-    fft_hist_idx2 <= 0;
-    fft_hist_max <= 0;
-    fft_hist_max2 <= 0;
-    fft_sum <= 0;
-    fft_sum_sqr <= 0;
-    fft_mean <= 0;
-    fft_variance <= 0;
-    fft_threshold <= 0;
-end else if (fft_enable && fft_maxi_valid) begin
-    if (fft_reading || !fft_maxi_last) begin
-        if (fft_maxi_last) begin
-            fft_mean <= fft_sum / (fft_real_rp + 1);
-            fft_variance <= fft_sum_sqr / (fft_real_rp + 1) - (fft_mean * fft_mean);
-            // fft_threshold <= fft_mean + (fft_threshold_k * sqrt_approx(fft_variance));
-            fft_threshold <= fft_mean + (fft_threshold_k * fft_variance[31:16]);
 
-            if (fft_hist_max > fft_threshold) begin
-                if (fft_hist_max2 > fft_threshold) begin
-                    if (fft_hist_idx > fft_hist_idx2)
-                        fft_hist[fft_hist_rp] <= {fft_hist_idx, fft_hist_idx2};
-                    else
-                        fft_hist[fft_hist_rp] <= {fft_hist_idx2, fft_hist_idx};
-                end else begin
-                    fft_hist[fft_hist_rp] <= {16'b0, fft_hist_idx};
-                end
-            end else
-                fft_hist[fft_hist_rp] <= 0;
+    if (fft_rstn_i == 1'b0) begin
+        fft_hist_rp <= {HSZ{1'b0}};
+        fft_hist_idx <= 0;
+        fft_hist_idx2 <= 0;
+        fft_hist_max <= 0;
+        fft_hist_max2 <= 0;
+        fft_sum <= 0;
+        fft_sum_sqr <= 0;
+        fft_mean <= 0;
+        fft_variance <= 0;
+        fft_threshold <= 0;
+    end else if (fft_enable && fft_maxi_valid) begin
+        if (fft_reading || !fft_maxi_last) begin
+            if (fft_maxi_last) begin
+                fft_mean <= fft_sum / (fft_real_rp + 1);
+                fft_variance <= fft_sum_sqr / (fft_real_rp + 1) - (fft_mean * fft_mean);
+                // fft_threshold <= fft_mean + (fft_threshold_k * sqrt_approx(fft_variance));
+                fft_threshold <= fft_mean + (fft_threshold_k * fft_variance[31:16]);
 
-            if (fft_hist_length == 0 || fft_hist_rp < fft_hist_length)
-                fft_hist_rp <= fft_hist_rp + 1;
-            else
-                fft_hist_rp <= 0;
+                if (fft_hist_max > fft_threshold) begin
+                    // if (fft_hist_max2 > fft_threshold) begin
+                    //     if (fft_hist_idx > fft_hist_idx2)
+                    //         fft_hist[fft_hist_rp] <= {fft_hist_idx, fft_hist_idx2};
+                    //     else
+                    //         fft_hist[fft_hist_rp] <= {fft_hist_idx2, fft_hist_idx};
+                    // end else begin
+                    //     fft_hist[fft_hist_rp] <= {16'b0, fft_hist_idx};
+                    // end
+                    fft_hist[fft_hist_rp] <= 1;
+                end else
+                    fft_hist[fft_hist_rp] <= 0;
 
-            fft_hist_max <= 0;
-            fft_hist_max2 <= 0;
-            fft_hist_idx <= 0;
-            fft_hist_idx2 <= 0;
-            fft_sum <= 0;
-            fft_sum_sqr <= 0;
+                if (fft_hist_rp < fft_hist_length)
+                    fft_hist_rp <= fft_hist_rp + 1;
+                else
+                    fft_hist_rp <= 0;
 
-        end else if (fft_rp[0] == 0) begin
-            if (fft_real_rp == fft_hist_start) begin
-                fft_hist_max <= fft_data_abs;
-                fft_hist_max2 <= fft_data_abs;
-            end else if (fft_real_rp > fft_hist_start) begin
-                if (fft_data_abs >= fft_hist_max) begin
-                    fft_hist_max2 <= fft_hist_max;
-                    fft_hist_idx2 <= fft_hist_idx;
+                fft_hist_max <= 0;
+                fft_hist_max2 <= 0;
+                fft_hist_idx <= 0;
+                fft_hist_idx2 <= 0;
+                fft_sum <= 0;
+                fft_sum_sqr <= 0;
+
+            end else if (fft_rp[0] == 0) begin
+                if (fft_real_rp == fft_hist_start) begin
                     fft_hist_max <= fft_data_abs;
-                    fft_hist_idx <= fft_real_rp;
-                end else if (fft_data_abs >= fft_hist_max2) begin
                     fft_hist_max2 <= fft_data_abs;
-                    fft_hist_idx2 <= fft_real_rp;
+                end else if (fft_real_rp > fft_hist_start) begin
+                    if (fft_data_abs >= fft_hist_max) begin
+                        fft_hist_max2 <= fft_hist_max;
+                        fft_hist_idx2 <= fft_hist_idx;
+                        fft_hist_max <= fft_data_abs;
+                        fft_hist_idx <= fft_real_rp;
+                    end else if (fft_data_abs >= fft_hist_max2) begin
+                        fft_hist_max2 <= fft_data_abs;
+                        fft_hist_idx2 <= fft_real_rp;
+                    end
                 end
+                fft_sum <= fft_sum + fft_data_abs;
+                fft_sum_sqr <= fft_sum_sqr + fft_data_abs*fft_data_abs;
             end
-            fft_sum <= fft_sum + fft_data_abs;
-            fft_sum_sqr <= fft_sum_sqr + fft_data_abs*fft_data_abs;
         end
     end
 end

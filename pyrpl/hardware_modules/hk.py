@@ -20,7 +20,9 @@ class HK(HardwareModule):
                         ['expansion_P' + str(i) + '_output' for i in range(8)]+ \
                         ['expansion_N' + str(i) for i in range(8)] + \
                         ['expansion_N' + str(i) + '_output' for i in range(8)]+ \
-                        ['spi_cs_en' + str(i) for i in range(8)]
+                        ['spi_cs_en' + str(i) for i in range(8)] + \
+                        ['clk_en' + str(i) for i in range(2)] + \
+                        ['clk_count' + str(i) for i in range(2)]
     _gui_attributes =  _setup_attributes
     addr_base = 0x40000000
     # We need all attributes to be there when the interpreter is done reading the class (for metaclass to workout)
@@ -40,6 +42,9 @@ class HK(HardwareModule):
                                                           "port")
         locals()['spi_cs_en' + str(i)] = BoolRegister(0x28, bit=i,
                                                       doc="SPI CS expansion enable")
+    for i in range(2):
+        locals()['clk_en' + str(i)] = BoolRegister(0x2C, bit=i, doc="Clock output enable")
+        locals()['clk_count' + str(i)] = IntRegister(0x34 + i*4, doc="Clock counter", min=1)
 
     id = SelectRegister(0x0, doc="device ID", options={"prototype0": 0,
                                                        "release1": 1})

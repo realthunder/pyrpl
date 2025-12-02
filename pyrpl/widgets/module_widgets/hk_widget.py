@@ -34,6 +34,18 @@ class HkWidget(ModuleWidget):
         self.lay_h1.addStretch(1)
 
         self.layout_vs = []
+
+        lay = QtWidgets.QVBoxLayout()
+        self.layout_vs.append(lay)
+        self.attribute_layout.addLayout(lay)
+        for i in range(2):
+            clk_widget = self.attribute_widgets['clk_en' + str(i)]
+            self.attribute_layout.removeWidget(clk_widget)
+            lay.addWidget(clk_widget)
+            clk_widget = self.attribute_widgets['clk_count' + str(i)]
+            self.attribute_layout.removeWidget(clk_widget)
+            lay.addWidget(clk_widget)
+
         for i in range(8):
             lay = QtWidgets.QVBoxLayout()
             self.layout_vs.append(lay)
@@ -49,7 +61,6 @@ class HkWidget(ModuleWidget):
             spi_cs_widget = self.attribute_widgets['spi_cs_en' + str(i)]
             self.attribute_layout.removeWidget(spi_cs_widget)
             lay.addWidget(spi_cs_widget)
-
 
         self.attribute_layout.setStretch(0,0)
         self.attribute_layout.addStretch(1)
