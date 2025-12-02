@@ -473,7 +473,7 @@ end else if (fft_enable && fft_maxi_valid) begin
 end
 
 
-reg  [ 32-1:  0]fft_hist[0:(1<<(HSZ+1))-1] ;
+reg  [ 32-1:  0]fft_hist[0:(1<<HSZ)-1] ;
 reg  [ 32-1:  0]fft_hist_rdata         ;
 reg  [ HSZ-1: 0]fft_hist_raddr         ;
 reg  [ HSZ-1: 0]fft_hist_rp            ;
@@ -493,13 +493,14 @@ reg  [ 32-1:  0]fft_variance           ;
 
 always @(posedge adc_clk_i) begin
     if (adc_rstn_i == 1'b0) begin
-        fft_hist_length <= {HSZ{1'b0}};
+        fft_hist_length <= 0;
         fft_threshold_k <= 4;
-        fft_hist_start <= {RSZ{1'b0}};
+        fft_hist_start <= 0;
     end
 
     if (fft_rstn_i == 1'b0) begin
-        fft_hist_rp <= {HSZ{1'b0}};
+        // fft_hist_rp <= {HSZ{1'b0}};
+        fft_hist_rp <= 0;
         fft_hist_idx <= 0;
         fft_hist_idx2 <= 0;
         fft_hist_max <= 0;
@@ -518,15 +519,14 @@ always @(posedge adc_clk_i) begin
                 fft_threshold <= fft_mean + (fft_threshold_k * fft_variance[31:16]);
 
                 if (fft_hist_max > fft_threshold) begin
-                    // if (fft_hist_max2 > fft_threshold) begin
-                    //     if (fft_hist_idx > fft_hist_idx2)
-                    //         fft_hist[fft_hist_rp] <= {fft_hist_idx, fft_hist_idx2};
-                    //     else
-                    //         fft_hist[fft_hist_rp] <= {fft_hist_idx2, fft_hist_idx};
-                    // end else begin
-                    //     fft_hist[fft_hist_rp] <= {16'b0, fft_hist_idx};
-                    // end
-                    fft_hist[fft_hist_rp] <= 1;
+                    if (fft_hist_max2 > fft_threshold) begin
+                        if (fft_hist_idx > fft_hist_idx2)
+                            fft_hist[fft_hist_rp] <= {fft_hist_idx, fft_hist_idx2};
+                        else
+                            fft_hist[fft_hist_rp] <= {fft_hist_idx2, fft_hist_idx};
+                    end else begin
+                        fft_hist[fft_hist_rp] <= {16'b0, fft_hist_idx};
+                    end
                 end else
                     fft_hist[fft_hist_rp] <= 0;
 
