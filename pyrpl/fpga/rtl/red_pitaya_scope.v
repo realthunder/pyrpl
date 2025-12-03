@@ -120,8 +120,13 @@ module red_pitaya_scope #(
 
 reg             adc_arm_do   ;
 reg             adc_rst_do   ;
+reg             _sync_rst_i  ;
 wire            adc_sync_rst ;
-assign adc_sync_rst = adc_rst_do | sync_rst_i ;
+
+always @(posedge adc_clk_i)
+    _sync_rst_i <= sync_rst_i ;
+
+assign adc_sync_rst = adc_rst_do || (!sync_rst_i && _sync_rst_i);
 
 // input filter is disabled
 
@@ -491,75 +496,81 @@ reg  [ 32-1:  0]fft_sum_sqr            ;
 reg  [ 32-1:  0]fft_mean               ;
 reg  [ 32-1:  0]fft_variance           ;
 
-always @(posedge adc_clk_i) begin
-    if (adc_rstn_i == 1'b0) begin
-        fft_hist_length <= 0;
-        fft_threshold_k <= 4;
-        fft_hist_start <= 0;
-    end
+always @(posedge adc_clk_i)
+if (adc_rstn_i == 1'b0) begin
+   fft_hist_length <= 0;
+   fft_threshold_k <= 4;
+   fft_hist_start <= 0;
+end else if (sys_wen) begin
+    if (sys_addr[19:0]==20'h38) fft_hist_length <= sys_wdata[HSZ-1:0];
+    if (sys_addr[19:0]==20'h3C)  fft_hist_start <= sys_wdata[RSZ-1:0];
+    if (sys_addr[19:0]==20'h40) fft_threshold_k <= sys_wdata[16-1:0];
+end
 
-    if (fft_rstn_i == 1'b0) begin
-        // fft_hist_rp <= {HSZ{1'b0}};
-        fft_hist_rp <= 0;
-        fft_hist_idx <= 0;
-        fft_hist_idx2 <= 0;
-        fft_hist_max <= 0;
-        fft_hist_max2 <= 0;
-        fft_sum <= 0;
-        fft_sum_sqr <= 0;
-        fft_mean <= 0;
-        fft_variance <= 0;
-        fft_threshold <= 0;
-    end else if (fft_enable && fft_maxi_valid) begin
-        if (fft_reading || !fft_maxi_last) begin
-            if (fft_maxi_last) begin
-                fft_mean <= fft_sum / (fft_real_rp + 1);
-                fft_variance <= fft_sum_sqr / (fft_real_rp + 1) - (fft_mean * fft_mean);
-                // fft_threshold <= fft_mean + (fft_threshold_k * sqrt_approx(fft_variance));
-                fft_threshold <= fft_mean + (fft_threshold_k * fft_variance[31:16]);
+always @(posedge adc_clk_i)
+if (fft_rstn_i == 1'b0) begin
+    fft_hist_rp <= 0;
+    fft_hist_idx <= 0;
+    fft_hist_idx2 <= 0;
+    fft_hist_max <= 0;
+    fft_hist_max2 <= 0;
+    fft_sum <= 0;
+    fft_sum_sqr <= 0;
+    fft_mean <= 0;
+    fft_variance <= 0;
+    fft_threshold <= 0;
+end else if (fft_enable && fft_maxi_valid) begin
+    if (fft_reading || !fft_maxi_last) begin
+        if (fft_maxi_last) begin
+            fft_mean <= fft_sum / (fft_real_rp + 1);
+            fft_variance <= fft_sum_sqr / (fft_real_rp + 1) - (fft_mean * fft_mean);
+            // fft_threshold <= fft_mean + (fft_threshold_k * sqrt_approx(fft_variance));
+            fft_threshold <= fft_mean + (fft_threshold_k * fft_variance[31:16]);
 
-                if (fft_hist_max > fft_threshold) begin
-                    if (fft_hist_max2 > fft_threshold) begin
-                        if (fft_hist_idx > fft_hist_idx2)
-                            fft_hist[fft_hist_rp] <= {fft_hist_idx, fft_hist_idx2};
-                        else
-                            fft_hist[fft_hist_rp] <= {fft_hist_idx2, fft_hist_idx};
-                    end else begin
-                        fft_hist[fft_hist_rp] <= {16'b0, fft_hist_idx};
-                    end
-                end else
-                    fft_hist[fft_hist_rp] <= 0;
-
-                if (fft_hist_rp < fft_hist_length)
-                    fft_hist_rp <= fft_hist_rp + 1;
-                else
-                    fft_hist_rp <= 0;
-
-                fft_hist_max <= 0;
-                fft_hist_max2 <= 0;
-                fft_hist_idx <= 0;
-                fft_hist_idx2 <= 0;
-                fft_sum <= 0;
-                fft_sum_sqr <= 0;
-
-            end else if (fft_rp[0] == 0) begin
-                if (fft_real_rp == fft_hist_start) begin
-                    fft_hist_max <= fft_data_abs;
-                    fft_hist_max2 <= fft_data_abs;
-                end else if (fft_real_rp > fft_hist_start) begin
-                    if (fft_data_abs >= fft_hist_max) begin
-                        fft_hist_max2 <= fft_hist_max;
-                        fft_hist_idx2 <= fft_hist_idx;
-                        fft_hist_max <= fft_data_abs;
-                        fft_hist_idx <= fft_real_rp;
-                    end else if (fft_data_abs >= fft_hist_max2) begin
-                        fft_hist_max2 <= fft_data_abs;
-                        fft_hist_idx2 <= fft_real_rp;
-                    end
+            if (fft_hist_max > fft_threshold) begin
+                if (fft_hist_max2 > fft_threshold) begin
+                    if (fft_hist_idx > fft_hist_idx2)
+                        fft_hist[fft_hist_rp] <= {fft_hist_idx, fft_hist_idx2};
+                    else
+                        fft_hist[fft_hist_rp] <= {fft_hist_idx2, fft_hist_idx};
+                end else begin
+                    fft_hist[fft_hist_rp] <= {16'b0, fft_hist_idx};
                 end
-                fft_sum <= fft_sum + fft_data_abs;
-                fft_sum_sqr <= fft_sum_sqr + fft_data_abs*fft_data_abs;
+            end else
+                fft_hist[fft_hist_rp] <= 0;
+
+            // If fft_hist_length is set, then use it to define the history
+            // buffer size for wrap around.
+            // If else, then use ASG 3 trigger to wrap arround.
+            if ((fft_hist_length == 0 && asg_trig2_p) || (fft_hist_length > 0 && fft_hist_rp >= fft_hist_length))
+                fft_hist_rp <= 0;
+            else
+                fft_hist_rp <= fft_hist_rp + 1;
+
+            fft_hist_max <= 0;
+            fft_hist_max2 <= 0;
+            fft_hist_idx <= 0;
+            fft_hist_idx2 <= 0;
+            fft_sum <= 0;
+            fft_sum_sqr <= 0;
+
+        end else if (fft_rp[0] == 0) begin
+            if (fft_real_rp == fft_hist_start) begin
+                fft_hist_max <= fft_data_abs;
+                fft_hist_max2 <= fft_data_abs;
+            end else if (fft_real_rp > fft_hist_start) begin
+                if (fft_data_abs >= fft_hist_max) begin
+                    fft_hist_max2 <= fft_hist_max;
+                    fft_hist_idx2 <= fft_hist_idx;
+                    fft_hist_max <= fft_data_abs;
+                    fft_hist_idx <= fft_real_rp;
+                end else if (fft_data_abs >= fft_hist_max2) begin
+                    fft_hist_max2 <= fft_data_abs;
+                    fft_hist_idx2 <= fft_real_rp;
+                end
             end
+            fft_sum <= fft_sum + fft_data_abs;
+            fft_sum_sqr <= fft_sum_sqr + fft_data_abs*fft_data_abs;
         end
     end
 end
@@ -1064,6 +1075,7 @@ if (adc_rstn_i == 1'b0) begin
    set_deb_len   <=  20'd62500  ;
    set_a_axi_en  <=   1'b0      ;
    set_b_axi_en  <=   1'b0      ;
+
 end else begin
    if (sys_wen) begin
       if (sys_addr[19:0]==20'h00)   adc_we_keep   <= sys_wdata[     3] ;
@@ -1075,8 +1087,6 @@ end else begin
       if (sys_addr[19:0]==20'h20)   set_a_hyst    <= sys_wdata[14-1:0] ;
       //if (sys_addr[19:0]==20'h24)   set_b_hyst    <= sys_wdata[14-1:0] ;
       if (sys_addr[19:0]==20'h28)   set_avg_en    <= sys_wdata[     0] ;
-      if (sys_addr[19:0]==20'h38) fft_hist_length <= sys_wdata[HSZ-1:0];
-      if (sys_addr[19:0]==20'h3C)   fft_hist_start<= sys_wdata[RSZ-1:0];
 
       /*
       if (sys_addr[19:0]==20'h30)   set_a_filt_aa <= sys_wdata[18-1:0] ;
@@ -1149,6 +1159,7 @@ end else begin
 
      20'h00038 : begin sys_ack <= sys_en;          sys_rdata <= {{32-HSZ{1'b0}}, fft_hist_length}   ; end
      20'h0003C : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ{1'b0}}, fft_hist_start}    ; end
+     20'h00040 : begin sys_ack <= sys_en;          sys_rdata <= {{32-16{1'b0}}, fft_threshold_k}    ; end
 
      /*
      20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= {{32-18{1'b0}}, set_a_filt_aa}      ; end
