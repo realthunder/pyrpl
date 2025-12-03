@@ -423,7 +423,6 @@ IOBUF i_iobufn [8-1:0] (.O(exp_n_in), .IO(exp_n_io), .I(exp_n_out), .T(~exp_n_di
 
 wire    [  4-1:0] trig_asg_out;
 wire trig_scope_out;
-wire trig_scope_hist_out;
 wire    [14-1: 0] to_scope_a;
 wire    [14-1: 0] to_scope_b;
 wire dsp_trigger;
