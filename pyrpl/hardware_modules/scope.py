@@ -376,7 +376,7 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_enable = BoolRegister(0x0, 5, doc="Enable fft")
 
-    _fft_out_busy = BoolRegister(0x0, 4, doc="FFT output busy")
+    _fft_out_done = BoolRegister(0x0, 4, doc="FFT output done")
 
     _status = IntRegister(0x00)
 
