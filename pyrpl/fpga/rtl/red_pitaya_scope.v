@@ -377,7 +377,8 @@ always @(posedge adc_clk_i) begin
    fft_rd_data <= fft_buf[fft_raddr] ;
 
    fft_hist_raddr <= sys_addr[HSZ-1+2:2]  ;
-   fft_hist_rdata <= fft_hist[fft_hist_raddr] ;
+   fft_hist_raddr2 <= fft_hist_raddr  ;
+   fft_hist_rdata <= fft_hist[fft_hist_raddr2] ;
 end
 
 
@@ -396,18 +397,20 @@ wire            fft_saxi_last    ;
 wire            fft_saxi_rdy     ;
 reg             fft_saxi_valid   ;
 wire            fft_done         ;
-reg             fft_read_done    ;
+reg             fft_read_busy    ;
 
 // sign extend the data for padding according to xfft requirement
 assign fft_data_ext = {16-14{fft_data_i[13]}};
 assign fft_saxi_last = fft_we_cnt == 32'b0 ;
-assign fft_done = !fft_enable || fft_read_done ;
+assign fft_done = !fft_enable || !fft_read_busy ;
 assign fft_rstn_i = adc_rstn_i ;
 assign fft_dvalid = fft_enable && fft_we_cnt != 32'b0 && (fft_wp != adc_wp || (adc_we && adc_dv));
 
 always @(posedge adc_clk_i)
 if (adc_rstn_i == 1'b0) begin
     fft_enable  <= 1'b0 ;
+end else if (sys_wen) begin
+    if (sys_addr[19:0]==20'h0) fft_enable <= sys_wdata[5];
 end
 
 always @(posedge adc_clk_i)
@@ -459,23 +462,24 @@ always @(posedge adc_clk_i)
 if (fft_rstn_i == 1'b0) begin
     fft_rp <= {RSZ{1'b0}};
     fft_rp_last <= {RSZ{1'b0}};
-    fft_read_done <= 0;
+    fft_read_busy <= 0;
 end else if (fft_enable && fft_maxi_valid) begin
     fft_buf[fft_rp] <= fft_maxi_lsb;
     if (fft_maxi_last) begin
         fft_rp_last <= fft_rp;
         fft_rp <= {RSZ{1'b0}};
-        fft_read_done <= 1;
+        fft_read_busy <= 0;
     end else begin
-        fft_read_done <= 0;
+        fft_read_busy <= 1;
         fft_rp = fft_rp + 1;
     end
 end
 
 
-reg  [ 16-1:  0]fft_hist[0:(1<<HSZ)-1] ;
+reg  [ 32-1:  0]fft_hist[0:(1<<HSZ)-1] ;
 reg  [ 32-1:  0]fft_hist_rdata         ;
 reg  [ HSZ-1: 0]fft_hist_raddr         ;
+reg  [ HSZ-1: 0]fft_hist_raddr2        ;
 reg  [ HSZ-1: 0]fft_hist_rp            ;
 reg  [ HSZ-1: 0]fft_hist_length        ;
 reg  [ RSZ-1: 0]fft_hist_start         ;
@@ -496,81 +500,76 @@ if (fft_rstn_i == 1'b0) begin
    fft_hist_length <= 0;
    fft_threshold_k <= 4;
    fft_hist_start <= 0;
-   fft_enable <= 0;
 end else if (sys_wen) begin
     if (sys_addr[19:0]==20'h38) fft_hist_length <= sys_wdata[HSZ-1:0];
     if (sys_addr[19:0]==20'h3C)  fft_hist_start <= sys_wdata[RSZ-1:0];
     if (sys_addr[19:0]==20'h40) fft_threshold_k <= sys_wdata[16-1:0];
-    if (sys_addr[19:0]==20'h0) fft_enable <= sys_wdata[5];
 end
 
-always @(posedge adc_clk_i)
-if (fft_rstn_i == 1'b0) begin
-    fft_hist_rp <= 0;
-    fft_hist_idx <= 0;
-    fft_hist_idx2 <= 0;
-    fft_hist_max <= 0;
-    fft_hist_max2 <= 0;
-    fft_sum <= 0;
-    fft_sum_sqr <= 0;
-    fft_mean <= 0;
-    fft_variance <= 0;
-    fft_threshold <= 0;
-end else if (fft_enable && fft_maxi_valid) begin
-    if (fft_maxi_last) begin
-        fft_mean <= fft_sum / (fft_real_rp + 1);
-        fft_variance <= fft_sum_sqr / (fft_real_rp + 1) - (fft_mean * fft_mean);
-        // fft_threshold <= fft_mean + (fft_threshold_k * sqrt_approx(fft_variance));
-        fft_threshold <= fft_mean + (fft_threshold_k * fft_variance[31:16]);
-
-        // if (fft_hist_max > fft_threshold) begin
-        //     if (fft_hist_max2 > fft_threshold) begin
-        //         if (fft_hist_idx > fft_hist_idx2)
-        //             fft_hist[fft_hist_rp] <= {fft_hist_idx, fft_hist_idx2};
-        //         else
-        //             fft_hist[fft_hist_rp] <= {fft_hist_idx2, fft_hist_idx};
-        //     end else begin
-        //         fft_hist[fft_hist_rp] <= {16'b0, fft_hist_idx};
-        //     end
-        // end else
-        //     fft_hist[fft_hist_rp] <= 0;
-
-        fft_hist[fft_hist_rp] <= fft_hist_rp;
-
-        // If fft_hist_length is set, then use it to define the history
-        // buffer size for wrap around.
-        // If else, then use ASG 3 trigger to wrap arround.
-        if ((fft_hist_length == 0 && asg_trig2_p) || (fft_hist_length > 0 && fft_hist_rp >= fft_hist_length))
-            fft_hist_rp <= 0;
-        else if (fft_hist_rp < 200)
-            fft_hist_rp <= fft_hist_rp + 1;
-        else
-            fft_hist_rp <= 0;
-
-        fft_hist_max <= 0;
-        fft_hist_max2 <= 0;
+always @(posedge adc_clk_i) begin
+    if (fft_rstn_i == 1'b0) begin
+        fft_hist_rp <= 0;
         fft_hist_idx <= 0;
         fft_hist_idx2 <= 0;
+        fft_hist_max <= 0;
+        fft_hist_max2 <= 0;
         fft_sum <= 0;
         fft_sum_sqr <= 0;
+        fft_mean <= 0;
+        fft_variance <= 0;
+        fft_threshold <= 0;
+    end else if (fft_enable && fft_maxi_valid) begin
+        if (fft_maxi_last) begin
+            fft_mean <= fft_sum / (fft_real_rp + 1);
+            fft_variance <= fft_sum_sqr / (fft_real_rp + 1) - (fft_mean * fft_mean);
+            // fft_threshold <= fft_mean + (fft_threshold_k * sqrt_approx(fft_variance));
+            fft_threshold <= fft_mean + (fft_threshold_k * fft_variance[31:16]);
 
-    end else if (fft_rp[0] == 0) begin
-        if (fft_real_rp == fft_hist_start) begin
-            fft_hist_max <= fft_data_abs;
-            fft_hist_max2 <= fft_data_abs;
-        end else if (fft_real_rp > fft_hist_start) begin
-            if (fft_data_abs >= fft_hist_max) begin
-                fft_hist_max2 <= fft_hist_max;
-                fft_hist_idx2 <= fft_hist_idx;
+            if (fft_hist_max > fft_threshold) begin
+                if (fft_hist_max2 > fft_threshold) begin
+                    if (fft_hist_idx > fft_hist_idx2)
+                        fft_hist[fft_hist_rp] <= {fft_hist_idx, fft_hist_idx2};
+                    else
+                        fft_hist[fft_hist_rp] <= {fft_hist_idx2, fft_hist_idx};
+                end else begin
+                    fft_hist[fft_hist_rp] <= {16'b0, fft_hist_idx};
+                end
+            end else
+                fft_hist[fft_hist_rp] <= 0;
+
+            // If fft_hist_length is set, then use it to define the history
+            // buffer size for wrap around.
+            // If else, then use ASG 3 trigger to wrap arround.
+            if ((fft_hist_length == 0 && asg_trig2_p) || (fft_hist_length > 0 && fft_hist_rp >= fft_hist_length))
+                fft_hist_rp <= 0;
+            else
+                fft_hist_rp <= fft_hist_rp + 1;
+
+            fft_hist_max <= 0;
+            fft_hist_max2 <= 0;
+            fft_hist_idx <= 0;
+            fft_hist_idx2 <= 0;
+            fft_sum <= 0;
+            fft_sum_sqr <= 0;
+
+        end else if (fft_rp[0] == 0) begin
+            if (fft_real_rp == fft_hist_start) begin
                 fft_hist_max <= fft_data_abs;
-                fft_hist_idx <= fft_real_rp;
-            end else if (fft_data_abs >= fft_hist_max2) begin
                 fft_hist_max2 <= fft_data_abs;
-                fft_hist_idx2 <= fft_real_rp;
+            end else if (fft_real_rp > fft_hist_start) begin
+                if (fft_data_abs >= fft_hist_max) begin
+                    fft_hist_max2 <= fft_hist_max;
+                    fft_hist_idx2 <= fft_hist_idx;
+                    fft_hist_max <= fft_data_abs;
+                    fft_hist_idx <= fft_real_rp;
+                end else if (fft_data_abs >= fft_hist_max2) begin
+                    fft_hist_max2 <= fft_data_abs;
+                    fft_hist_idx2 <= fft_real_rp;
+                end
             end
+            fft_sum <= fft_sum + fft_data_abs;
+            fft_sum_sqr <= fft_sum_sqr + fft_data_abs*fft_data_abs;
         end
-        fft_sum <= fft_sum + fft_data_abs;
-        fft_sum_sqr <= fft_sum_sqr + fft_data_abs*fft_data_abs;
     end
 end
 
@@ -1130,7 +1129,7 @@ end else begin
                                                                               , fft_tlast_missing
                                                                               , fft_tlast_unexp
                                                                               , fft_enable
-                                                                              , fft_read_done
+                                                                              , fft_read_busy
                                                                               , adc_we_keep               // do not disarm on 
                                                                               , adc_dly_do                // trigger status
                                                                               , 1'b0                      // reset
