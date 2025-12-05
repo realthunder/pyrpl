@@ -388,6 +388,16 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_hist_start = IntRegister(0x3C, doc="FFT peak detection start index")
 
+    _fft_hist_count = IntRegister(0x44, doc="FFT history counter")
+
+    _fft_hist_last = IntRegister(0x48, doc="FFT history counter")
+
+    _fft_mean = IntRegister(0x4C, doc="FFT mean value")
+
+    _fft_variance = IntRegister(0x50, doc="FFT variance")
+
+    _fft_threshold = IntRegister(0x54, doc="FFT peak threshold")
+
     _adc_we_cnt = IntRegister(0x2C, doc="Number of samles that have passed "
                                         "since trigger was armed (adc_we_cnt)")
 
