@@ -110,6 +110,31 @@ read_xdc                          $path_sdc/red_pitaya.xdc
 #synth_design -top red_pitaya_top
 synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivalent_registers
 
+create_debug_core u_ila_0 ila
+set_property C_DATA_DEPTH 1024 [get_debug_cores u_ila_0]
+
+set_property port_width 1 [get_debug_ports u_ila_0/clk]
+connect_debug_port u_ila_0/clk [get_nets [list adc_clk]]
+
+set debug_nets {fft_maxi_last fft_sum_reg_n_0_*}
+
+if {[llength $debug_nets] > 0} {
+    set probe_idx 0
+    foreach net $debug_nets {
+        set nets [get_nets -hier $net]
+        set_property mark_debug true $nets
+        set net_width [llength $nets]
+        set probe_port_name "probe$probe_idx"
+        if {$probe_idx > 0} {
+            create_debug_port u_ila_0 probe
+        }
+        set_property port_width $net_width [get_debug_ports u_ila_0/$probe_port_name]
+        connect_debug_port u_ila_0/$probe_port_name $nets
+        puts "INFO: Connected $net (Width: $net_width) to $probe_port_name."
+        incr probe_idx
+    }
+}
+
 write_checkpoint         -force   $path_out/post_synth
 report_timing_summary    -file    $path_out/post_synth_timing_summary.rpt
 report_power             -file    $path_out/post_synth_power.rpt
@@ -127,6 +152,10 @@ phys_opt_design
 write_checkpoint         -force   $path_out/post_place
 report_timing_summary    -file    $path_out/post_place_timing_summary.rpt
 #write_hwdef              -file    $path_sdk/red_pitaya.hwdef
+
+# Write the debug probes information to a file
+write_debug_probes -force $path_out/debug_probes.ltx
+
 
 ################################################################################
 # run router

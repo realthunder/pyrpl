@@ -526,8 +526,8 @@ always @(posedge adc_clk_i) begin
         fft_hist_last <= 0;
     end else if (fft_enable && fft_maxi_valid) begin
         if (fft_maxi_last) begin
-        /*
             fft_mean <= fft_sum / (fft_real_rp + 1);
+        /*
             fft_variance <= fft_sum_sqr / (fft_real_rp + 1) - (fft_mean * fft_mean);
             // fft_threshold <= fft_mean + (fft_threshold_k * sqrt_approx(fft_variance));
             fft_threshold <= fft_mean + (fft_threshold_k * fft_variance[31:16]);
@@ -553,8 +553,8 @@ always @(posedge adc_clk_i) begin
                 fft_hist_rp <= 0;
             else
                 fft_hist_rp <= fft_hist_rp + 1;
-
         */
+
             fft_hist_max <= 0;
             fft_hist_max2 <= 0;
             fft_hist_idx <= 0;

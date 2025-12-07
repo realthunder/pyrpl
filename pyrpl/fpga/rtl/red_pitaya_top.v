@@ -468,7 +468,6 @@ red_pitaya_scope i_scope (
 //---------------------------------------------------------------------------------
 //  DAC arbitrary signal generator
 wire    [14-1: 0] asg1phase_o;
-wire    asg_sync_rst_o;
 
 red_pitaya_asg i_asg (
    // DAC

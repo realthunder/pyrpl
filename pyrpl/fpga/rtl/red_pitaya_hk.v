@@ -165,7 +165,7 @@ end else begin
   if (exp_n_dir_o[7] && clk_out_en[0]) begin
     if (clk_cnt >= clk_cnt_v) begin
         clk_cnt <= {CSZ{1'b0}};
-        _exp_n_dat_o[7] = ~_exp_n_dat_o[7];
+        _exp_n_dat_o[7] <= ~_exp_n_dat_o[7];
     end else begin
         clk_cnt <= clk_cnt + 1;
     end
@@ -174,7 +174,7 @@ end else begin
   if (exp_p_dir_o[7] && clk_out_en[1]) begin
     if (clk_cnt2 >= clk_cnt2_v) begin
         clk_cnt2 <= {CSZ{1'b0}};
-        exp_p_dat_o[7] = ~exp_p_dat_o[7];
+        exp_p_dat_o[7] <= ~exp_p_dat_o[7];
     end else begin
         clk_cnt2 <= clk_cnt2 + 1;
     end
