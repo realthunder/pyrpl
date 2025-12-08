@@ -386,17 +386,15 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_hist_length = IntRegister(0x38, doc="FFT history buffer size")
 
-    fft_hist_start = IntRegister(0x3C, doc="FFT peak detection start index")
+    fft_peak_start = IntRegister(0x3C, doc="FFT peak detection start index")
 
-    _fft_hist_count = IntRegister(0x44, doc="FFT history counter")
+    fft_peak_threshold = IntRegister(0x40, doc="FFT peak detection threshold")
 
-    _fft_hist_last = IntRegister(0x48, doc="FFT history counter")
+    fft_peak_minimum = IntRegister(0x44, doc="FFT peak detection lower bound")
 
-    _fft_mean = IntRegister(0x4C, doc="FFT mean value")
+    fft_peak_idx = IntRegister(0x48, doc="FFT peak indices")
 
-    _fft_variance = IntRegister(0x50, doc="FFT variance")
-
-    _fft_threshold = IntRegister(0x54, doc="FFT peak threshold")
+    fft_peak = IntRegister(0x4C, doc="FFT peak value")
 
     _adc_we_cnt = IntRegister(0x2C, doc="Number of samles that have passed "
                                         "since trigger was armed (adc_we_cnt)")
@@ -503,7 +501,7 @@ class Scope(HardwareModule, AcquisitionModule):
         length = max(2, self._fft_rp_last + 1)
         x = np.array(self._reads(0x30000, length//2), dtype=np.int32)
         x[x >= 2 ** 15] -= 2 ** 16
-        x = np.array(x, dtype=float) / 2**13
+        x = np.array(x, dtype=float) / 2**15
         return x
 
     @property

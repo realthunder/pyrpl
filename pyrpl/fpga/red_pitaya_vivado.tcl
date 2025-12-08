@@ -68,6 +68,8 @@ read_verilog                      $path_rtl/axi_master.v
 read_verilog                      $path_rtl/axi_slave.v
 read_verilog                      $path_rtl/axi_wr_fifo.v
 
+read_verilog                      $path_rtl/peak_detector.sv
+
 read_verilog                      $path_rtl/red_pitaya_ams.v
 read_verilog                      $path_rtl/red_pitaya_asg_ch.v
 read_verilog                      $path_rtl/red_pitaya_asg.v
@@ -110,15 +112,16 @@ read_xdc                          $path_sdc/red_pitaya.xdc
 #synth_design -top red_pitaya_top
 synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivalent_registers
 
-create_debug_core u_ila_0 ila
-set_property C_DATA_DEPTH 1024 [get_debug_cores u_ila_0]
-
-set_property port_width 1 [get_debug_ports u_ila_0/clk]
-connect_debug_port u_ila_0/clk [get_nets [list adc_clk]]
-
-set debug_nets {fft_maxi_last fft_sum_reg_n_0_*}
+# set debug_nets {fft_maxi_last fft_sum_reg_n_0_*}
+set debug_nets {}
 
 if {[llength $debug_nets] > 0} {
+    create_debug_core u_ila_0 ila
+    set_property C_DATA_DEPTH 1024 [get_debug_cores u_ila_0]
+
+    set_property port_width 1 [get_debug_ports u_ila_0/clk]
+    connect_debug_port u_ila_0/clk [get_nets [list adc_clk]]
+
     set probe_idx 0
     foreach net $debug_nets {
         set nets [get_nets -hier $net]
