@@ -16,6 +16,8 @@ module peak_detector #(
     output logic [DSZ-1:0] peak,
     output logic [SSZ-1:0] peak2_idx,
     output logic [DSZ-1:0] peak2,
+    output logic [SSZ+DSZ-1:0] sum, // sum of all data. Max value: 2^SSZ * 2^DSZ
+    output logic [SSZ-1:0] count,
     output logic           ready
 );
 
@@ -30,13 +32,13 @@ module peak_detector #(
 //      peak - mean > k * stdev
 //
 // The algorithm is optimized to NOT using any division and square root
-// operation to avoid timing issue and use less clock cycles.
+// operation to use less clock cycles.
 //
-//      (peak - mean)^2 > k^2 * variance
-//
-//      N^2 * (peak - mean)^2 > k^2 * N^2 * (mean_of_square - square_of_mean)
-//      (peak * N - mean*N)^2 > k^2 * (N * N * mean_of_square - square_of_mean * N * N)
-//      (peak * N - sum)^2    > k^2 * ( N * sum_of_square - square_of_sum)
+//                peak - mean  >  k * stdev
+//            (peak - mean)^2  >  k^2 * variance
+//      N^2 * (peak - mean)^2  >  k^2 * N^2 * (mean_of_square - square_of_mean)
+//      (peak * N - mean*N)^2  >  k^2 * (N * N * mean_of_square - square_of_mean * N * N)
+//         (peak * N - sum)^2  >  k^2 * ( N * sum_of_square - square_of_sum)
 
 // --- FSM STATES ---
 typedef enum logic [3:0] {
@@ -55,14 +57,8 @@ typedef enum logic [3:0] {
 
 state_t current_state;
 
-// sum of data
-logic [SSZ+DSZ-1:0] sum;         // Max value: 2^SSZ * 2^DSZ
-
 // sum of square of each data
 logic [SSZ+DSZ*2-1:0] sum_sq;      // Max value: 2^SSZ * 2^DSZ * 2^DSZ
-
-// count the amount of data
-logic [SSZ-1:0] count;
 
 // square of sum
 logic [(SSZ+DSZ)*2-1:0] S_sq [4-1: 0]; // 4-stage piplining
@@ -84,9 +80,7 @@ logic [(SSZ+DSZ)*2-1:0] scaled_diff2_sq [4-1: 0]; // scaled_diff2 ^2, 4-stage pi
 logic [(SSZ+DSZ)*2-1:0] threshold;
 
 logic last_frame_start; 
-logic [DSZ-1:0]  data;
 
-assign data = data_valid ? data_in : 0;
 assign ready = current_state==S_DONE;
 
 always @(posedge clk)
@@ -95,17 +89,20 @@ if (resetn == 0) begin
     current_state <= S_IDLE;
 end else begin
     if (!last_frame_start && frame_start) begin
-        current_state <= S_STREAM;
+        // Yes, we may discard the first incoming data if data_valid is on.
+        // But that's okay.
         peak_idx <= 0;
         peak2_idx <= 0;
-        peak <= data;
-        peak2 <= data;
-        count <= data_valid ? 1 : 0;
-        sum <= data;
-        sum_sq <= data * data;
+        peak <= 0;
+        peak2 <= 0;
+        count <= 0;
+        sum <= 0;
+        sum_sq <= 0;
         current_state <= S_STREAM;
     end else if (current_state == S_STREAM) begin
         if (frame_end) begin
+            // Yes, we may be discarding the last data.
+            // But that's okay.
             current_state <= S_DETECT1;
             S_sq[0] <= sum * sum; // S^2
             N_S2[0] <= count * sum_sq; // N * S2
@@ -114,17 +111,17 @@ end else begin
             scaled_diff <= peak * count - sum;
             scaled_diff2 <= peak2 * count - sum;
         end else if (data_valid) begin
-            if (peak <= data) begin
+            if (peak <= data_in) begin
                 peak2 <= peak;
                 peak2_idx <= peak_idx;
-                peak <= data;
+                peak <= data_in;
                 peak_idx <= data_index;
-            end else if (peak2 <= data) begin
-                peak2 <= data;
+            end else if (peak2 <= data_in) begin
+                peak2 <= data_in;
                 peak2_idx <= data_index;
             end
-            sum <= sum + data;
-            sum_sq <= sum_sq + data * data;
+            sum <= sum + data_in;
+            sum_sq <= sum_sq + data_in * data_in;
             count <= count + 1;
         end
     end else if (current_state >= S_DETECT1 && current_state < S_DETECT4) begin

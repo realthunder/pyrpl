@@ -396,6 +396,10 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_peak = IntRegister(0x4C, doc="FFT peak value")
 
+    fft_sum = IntRegister(0x50, doc="Sum of all valid data fot FFT peak detection")
+
+    fft_count = IntRegister(0x54, doc="Data count for FFT peak detection")
+
     _adc_we_cnt = IntRegister(0x2C, doc="Number of samles that have passed "
                                         "since trigger was armed (adc_we_cnt)")
 
