@@ -108,9 +108,18 @@ begin
    dac_rdat   <= dac_rd ;  // improve timing
 end
 
+reg             buf_we;
+reg [  14-1: 0] dac_wd;
+
 // write
-always @(posedge dac_clk_i)
-if (buf_we_i)  dac_buf[buf_addr_i] <= buf_wdata_i[14-1:0] ;
+always @(posedge dac_clk_i) begin
+    if (buf_we_i || buf_we)  begin
+        dac_wd <= buf_wdata_i[14-1:0];
+        dac_buf[buf_addr_i] <=  dac_wd;
+    end
+    buf_we <= buf_we_i;
+end
+
 
 // read-back disabled
 //always @(posedge dac_clk_i)
