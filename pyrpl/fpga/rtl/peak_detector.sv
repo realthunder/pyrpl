@@ -89,7 +89,7 @@ if (resetn == 0) begin
     current_state <= S_IDLE;
 end else begin
     if (!last_frame_start && frame_start) begin
-        // Yes, we may discard the first incoming data if data_valid is on.
+        // Yes, we may be discarding the first incoming data, because data_valid might be on.
         // But that's okay.
         peak_idx <= 0;
         peak2_idx <= 0;
