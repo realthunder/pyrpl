@@ -23,7 +23,7 @@ import traceback
 import numpy as np
 from collections import OrderedDict
 from ..attributes import BoolRegister, FloatRegister, SelectRegister, SelectProperty, StringProperty,\
-                             IntRegister, LongRegister, PhaseRegister, FrequencyRegister, FloatProperty
+                             IntRegister, LongRegister, PhaseRegister, FrequencyRegister, FloatProperty, epsilon
 from ..modules import HardwareModule, SignalModule
 from ..widgets.module_widgets import AsgWidget
 from ..widgets.attribute_widgets import FileAttributeWidget
@@ -155,6 +155,27 @@ class AsgFrequencyAttribute(FrequencyRegister):
                 obj.sm_reset = False
         else:
             super().set_value(obj, val)
+        obj.__class__.counter.value_updated(obj, obj.counter)
+
+
+class AsgCounterProperty(FloatProperty):
+    def get_value(self, obj):
+        step = obj.__class__.frequency.from_python(obj, obj.frequency)
+        res = 2**obj.__class__.frequency.bits
+        if (step > epsilon):
+            res /= step
+        obj._logger.debug(f'{obj.name}: freq {obj.frequency}, step {step}, counter {res}')
+        return res
+
+    def set_value(self, obj, val):
+        res = 2**obj.__class__.frequency.bits
+        if (val > epsilon):
+            res /= val
+        obj.frequency = obj.__class__.frequency.to_python(obj, res)
+
+    def value_updated(self, obj, val):
+        obj._logger.debug(f'{obj.name}: updated {val}')
+        super().value_updated(obj, val)
 
 
 class AsgOffsetAttribute(FloatProperty):
@@ -205,6 +226,7 @@ def make_asg(channel=0):
                            "amplitude",
                            "offset",
                            "frequency",
+                           "counter",
                            "trigger_source",
                            "output_direct",
                            "start_phase"]
@@ -313,6 +335,8 @@ def make_asg(channel=0):
         frequency = AsgFrequencyAttribute(0x10 + _VALUE_OFFSET, bits=30,
                                       log_increment=True,
                                       doc="Frequency of the output waveform [Hz]")
+
+        counter = AsgCounterProperty(min=1e-5, doc='Counter value determins the frequency of the waveform')
 
         _counter_step = IntRegister(0x10 + _VALUE_OFFSET, doc="""Each clock cycle the counter_step is increases the internal counter modulo counter_wrap.
             The current counter step rightshifted by 16 bits is the index of the value that is chosen from the data table.
