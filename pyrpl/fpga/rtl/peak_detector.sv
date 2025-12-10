@@ -16,9 +16,11 @@ module peak_detector #(
     output logic [DSZ-1:0] peak,
     output logic [SSZ-1:0] peak2_idx,
     output logic [DSZ-1:0] peak2,
-    output logic [SSZ+DSZ-1:0] sum, // sum of all data. Max value: 2^SSZ * 2^DSZ
-    output logic [SSZ-1:0] count,
-    output logic           ready
+    output logic [SSZ+DSZ-1:0] sum_o, 
+    output logic [SSZ:0]   count_o,
+    output logic [32-1:0]  total_count,
+    output logic           ready,
+    output logic [3:0]     state
 );
 
 // This module detects two peaks (two maximum values) of a given stream of data. 
@@ -42,20 +44,23 @@ module peak_detector #(
 
 // --- FSM STATES ---
 typedef enum logic [3:0] {
-    S_IDLE    = 0,
-    S_STREAM  = 1,  // Continuous calculation and peak check
-    S_DETECT1 = 2,  // Peak detection with threshold calculation steps
-    S_DETECT2 = 3,  // Peak detection with threshold calculation steps
-    S_DETECT3 = 4,  // Peak detection with threshold calculation steps
-    S_DETECT4 = 5,  // Peak detection with threshold calculation steps
-    S_DETECT5 = 6,  // Peak detection with threshold calculation steps
-    S_DETECT6 = 7,  // Peak detection with threshold calculation steps
-    S_DETECT7 = 8,  // Peak detection with threshold calculation steps
-    S_DETECT8 = 9,  // Peak detection with threshold calculation steps
-    S_DONE    = 10  // Peak detected
+    S_IDLE    = 1,
+    S_STREAM  = 2,  // Continuous calculation and peak check
+    S_DETECT1 = 3,  // Peak detection with threshold calculation steps
+    S_DETECT2 = 4,  // Peak detection with threshold calculation steps
+    S_DETECT3 = 5,  // Peak detection with threshold calculation steps
+    S_DETECT4 = 6,  // Peak detection with threshold calculation steps
+    S_DETECT5 = 7,  // Peak detection with threshold calculation steps
+    S_DETECT6 = 8,  // Peak detection with threshold calculation steps
+    S_DETECT7 = 9,  // Peak detection with threshold calculation steps
+    S_DETECT8 = 10,  // Peak detection with threshold calculation steps
+    S_DONE    = 11  // Peak detected
 } state_t;
 
 state_t current_state;
+
+logic [SSZ+DSZ-1:0] sum; // sum of all data. Max value: 2^SSZ * 2^DSZ
+logic [SSZ:0] count;
 
 // sum of square of each data
 logic [SSZ+DSZ*2-1:0] sum_sq;      // Max value: 2^SSZ * 2^DSZ * 2^DSZ
@@ -83,11 +88,15 @@ logic last_frame_start;
 
 assign ready = current_state==S_DONE;
 
+assign state = current_state;
+
 always @(posedge clk)
 if (resetn == 0) begin
     last_frame_start <= 0;
     current_state <= S_IDLE;
+    total_count = 0;
 end else begin
+    last_frame_start <= frame_start;
     if (!last_frame_start && frame_start) begin
         // Yes, we may be discarding the first incoming data, because data_valid might be on.
         // But that's okay.
@@ -110,6 +119,7 @@ end else begin
             // TODO: do we need to worry about signess?
             scaled_diff <= peak * count - sum;
             scaled_diff2 <= peak2 * count - sum;
+            total_count = total_count + 1;
         end else if (data_valid) begin
             if (peak <= data_in) begin
                 peak2 <= peak;
@@ -150,10 +160,10 @@ end else begin
             peak_idx <= 0;
         if (scaled_diff2_sq[3] < threshold)
             peak2_idx <= 0;
+        sum_o <= sum;
+        count_o <= count;
         current_state <= S_DONE;
     end
-
-    last_frame_start <= frame_start;
 end
 
 endmodule
