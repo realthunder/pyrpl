@@ -84,20 +84,16 @@ logic [(SSZ+DSZ)*2-1:0] scaled_diff2_sq [4-1: 0]; // scaled_diff2 ^2, 4-stage pi
 
 logic [(SSZ+DSZ)*2-1:0] threshold;
 
-logic last_frame_start; 
-
 assign ready = current_state==S_DONE;
 
 assign state = current_state;
 
 always @(posedge clk)
 if (resetn == 0) begin
-    last_frame_start <= 0;
     current_state <= S_IDLE;
     total_count = 0;
 end else begin
-    last_frame_start <= frame_start;
-    if (!last_frame_start && frame_start) begin
+    if (frame_start) begin
         // Yes, we may be discarding the first incoming data, because data_valid might be on.
         // But that's okay.
         peak_idx <= 0;
