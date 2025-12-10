@@ -122,11 +122,14 @@ reg             adc_arm_do   ;
 reg             adc_rst_do   ;
 reg             _sync_rst_i  ;
 wire            adc_sync_rst ;
+reg  [2-1: 0]  sync_rst      ;
 
-always @(posedge adc_clk_i)
+always @(posedge adc_clk_i) begin
     _sync_rst_i <= sync_rst_i ;
+    sync_rst = {sync_rst[0], !sync_rst_i && sync_rst_i};
+end
 
-assign adc_sync_rst = adc_rst_do || (!sync_rst_i && _sync_rst_i);
+assign adc_sync_rst = adc_rst_do || sync_rst[0];
 
 // input filter is disabled
 
@@ -387,7 +390,7 @@ end
 
 reg             fft_enable       ;
 wire            fft_dvalid       ;
-reg  [ 32-1: 0] fft_we_cnt       ;
+wire [ 32-1: 0] fft_we_cnt       ;
 reg  [ 32-1: 0] fft_frame_cnt    ;
 reg  [ 14-1: 0] fft_data_i       ;
 wire [ 16-14:0] fft_data_ext     ;
@@ -399,9 +402,11 @@ wire            fft_done         ;
 reg             fft_read_busy    ;
 
 // sign extend the data for padding according to xfft requirement
+assign fft_we_cnt = adc_dly_cnt;
 assign fft_data_ext = {16-14{fft_data_i[13]}};
 assign fft_saxi_last = fft_we_cnt == 32'b0 ;
 assign fft_done = !fft_enable || (!fft_read_busy && fft_peak_ready);
+// assign fft_rstn_i = adc_rstn_i && ~|sync_rst;
 assign fft_rstn_i = adc_rstn_i ;
 assign fft_dvalid = fft_enable && fft_we_cnt != 32'b0 && adc_we && adc_dv;
 
@@ -414,20 +419,40 @@ end
 
 always @(posedge adc_clk_i)
 if (fft_rstn_i == 1'b0) begin
-    fft_we_cnt <= 32'b0 ;
     fft_frame_cnt <= 32'b0 ;
     fft_saxi_valid <= 1'b0 ;
 end else begin
     if (fft_frame_start)
         fft_frame_cnt = fft_frame_cnt + 1 ;
 
-    if (adc_trig && !adc_dly_do && pretrig_ok) begin
-        fft_we_cnt <= set_dly ;
-        fft_saxi_valid <= 1'b0;
-    end else if (fft_dvalid && fft_saxi_rdy) begin
-        fft_saxi_valid <= 1'b1;
+    if (fft_dvalid && fft_saxi_rdy) begin
+        // set_dly determins where the trigger point is located in the
+        // aquisition buffer (with size of 2**RSZ). The default value of set_dly
+        // 2**(RSZ-1) implies that the trigger point is in the middle of the
+        // buffer, so we get samples before and after trigger point.
+        //
+        // Our fft instance accepts frames of a maximum length of 2**RSZ. So
+        // once triggered, if set_dly < 2**RSZ, by right we shall start reading
+        // before the current adc write position. This implies that we will be
+        // using adc_a_buf as a three port memory block (one write, one read
+        // from PS and another read from fft). This forces the memory to be
+        // converted to scarce districuted LUT resources.
+        //
+        // However, in our design, we use asg to drive both the external
+        // scanning and also as the adc trigger. We must wait for the scanner to
+        // be stable before accquiring the data. So the trigger point should not
+        // be in the buffer, i.e. set_dly > 2**RSZ. Hence, fft can simply read
+        // the current adc sample without needing to access the buffer, which
+        // means we can keep the adc buffer as cheaper dual-port (one reader one
+        // writer) block RAM.
+        //
+        // We do not enforce set_dly > 2**RSZ. We simply start feeding fft
+        // when the counter goes below 2**RSZ, which is what the following
+        // statement does, i.e. data is valid if fft_we_cnt < 2**RSZ. Note that
+        // this also implies if set_dly < 2**RSZ, we won't fill the fft frame
+        // before processing.
+        fft_saxi_valid <= ~|fft_we_cnt[32-1:RSZ];
         fft_data_i <= adc_a_dat;
-        fft_we_cnt <= fft_we_cnt - 1;
     end else
         fft_saxi_valid <= 1'b0;
 end
