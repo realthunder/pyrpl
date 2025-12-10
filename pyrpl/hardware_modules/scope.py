@@ -400,6 +400,12 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_count = IntRegister(0x54, doc="Data count for FFT peak detection")
 
+    fft_hist_count = IntRegister(0x58, doc="Total sample count FFT analysis for FFT peak detection")
+
+    fft_peak_state = IntRegister(0x5C, doc="FFT Peak detection state")
+
+    fft_total_count = IntRegister(0x60, doc="FFT Peak detection total data count")
+
     _adc_we_cnt = IntRegister(0x2C, doc="Number of samles that have passed "
                                         "since trigger was armed (adc_we_cnt)")
 

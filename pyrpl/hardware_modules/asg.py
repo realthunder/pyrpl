@@ -164,7 +164,7 @@ class AsgCounterProperty(FloatProperty):
         res = 2**obj.__class__.frequency.bits
         if (step > epsilon):
             res /= step
-        obj._logger.debug(f'{obj.name}: freq {obj.frequency}, step {step}, counter {res}')
+        #  obj._logger.debug(f'{obj.name}: freq {obj.frequency}, step {step}, counter {res}')
         return res
 
     def set_value(self, obj, val):
@@ -174,7 +174,7 @@ class AsgCounterProperty(FloatProperty):
         obj.frequency = obj.__class__.frequency.to_python(obj, res)
 
     def value_updated(self, obj, val):
-        obj._logger.debug(f'{obj.name}: updated {val}')
+        #  obj._logger.debug(f'{obj.name}: updated {val}')
         super().value_updated(obj, val)
 
 
