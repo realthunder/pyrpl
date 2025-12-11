@@ -67,6 +67,8 @@
  */
 
 module red_pitaya_scope #(
+  parameter FSZ = 13,  // FFT transform length 2^FSZ
+  parameter QSZ = 12,  // FFT queue size 2^QSZ
   parameter RSZ = 14,  // RAM size 2^RSZ
   parameter HSZ = 12  // fft history buffer size 2^HSZ (Note: consider word size of 32bit, better not exceed 64KBytes in total)
 )(
@@ -388,24 +390,27 @@ end
 
 //////////////// FFT AXI Stream /////////////////////
 
-reg             fft_enable       ;
-reg  [ 32-1: 0] fft_we_cnt       ;
-reg  [ RSZ-1: 0]fft_wp           ;
-reg  [ 32-1: 0] fft_frame_cnt    ;
-reg  [ 14-1: 0] fft_data_i       ;
-wire [ 16-14:0] fft_data_ext     ;
-wire            fft_rstn_i       ;
-wire            fft_saxi_last    ;
-wire            fft_saxi_rdy     ;
-reg             fft_saxi_valid   ;
-wire            fft_done         ;
-reg             fft_read_busy    ;
+reg             fft_enable                  ;
+reg  [ 32-1: 0] fft_we_cnt                  ;
+reg  [ 14-1: 0] fft_queue[0:(1<<QSZ)-1] ;
+reg  [ QSZ-1:0] fft_q_wp                    ;
+reg  [ QSZ-1:0] fft_q_rp                    ;
+reg  [ 32-1: 0] fft_frame_cnt               ;
+reg  [ 14-1: 0] fft_data_i                  ;
+wire [ 16-14:0] fft_data_ext                ;
+wire            fft_rstn_i                  ;
+wire            fft_saxi_last               ;
+wire            fft_saxi_rdy                ;
+wire            fft_saxi_valid              ;
+wire            fft_read_busy               ;
+wire            fft_done                    ;
 
 // sign extend the data for padding according to xfft requirement
 assign fft_data_ext = {16-14{fft_data_i[13]}};
-assign fft_saxi_last = fft_we_cnt==1 ;
+assign fft_saxi_last = fft_we_cnt == 1;
+assign fft_saxi_valid = fft_we_cnt > 0 && fft_we_cnt <= 2**FSZ;
 assign fft_done = !fft_enable || (!fft_read_busy && fft_peak_ready_last && fft_we_cnt==0);
-assign fft_rstn_i = adc_rstn_i && ~|sync_rst;
+assign fft_rstn_i = adc_rstn_i && !adc_sync_rst;
 // assign fft_rstn_i = adc_rstn_i;
 
 always @(posedge adc_clk_i)
@@ -418,29 +423,29 @@ end
 always @(posedge adc_clk_i)
 if (fft_rstn_i == 1'b0) begin
     fft_we_cnt <= 0;
-    fft_wp <= 0;
+    fft_q_wp <= 0;
+    fft_q_rp <= 0;
     fft_frame_cnt <= 0 ;
-    fft_saxi_valid <= 0;
 end else begin
     if (fft_frame_start)
         fft_frame_cnt = fft_frame_cnt + 1 ;
 
+    if (adc_we && adc_dv) begin
+        fft_queue[fft_q_wp] <= adc_a_dat ;
+        fft_q_wp <= fft_q_wp + 1;
+    end
+
     if (adc_trig && !adc_dly_do && pretrig_ok) begin
-        if (set_dly < 2**RSZ) begin
-            fft_we_cnt <= set_dly;
-            fft_wp <= adc_wp_cur;
-        end else begin
-            fft_we_cnt <= 2**RSZ-1;
-            fft_wp <= adc_wp_cur + set_dly - 2**RSZ;
-        end
-        fft_saxi_valid <= 0;
-    end else if (fft_we_cnt == 0)
-        fft_saxi_valid <= 0;
-    end else if (fft_we_cnt >= 2**RSZ || fft_saxi_rdy) begin
-        fft_data_i <= adc_a_buf[fft_wp];
-        fft_saxi_valid <= fft_we_cnt<=2**RSZ;
+        fft_we_cnt <= set_dly;
+        fft_q_rp <= fft_q_wp;
+        fft_data_i <= adc_a_dat;
+    end else if (fft_we_cnt > 0 && (fft_we_cnt > 2*FSZ || fft_saxi_rdy)) begin
+        // NOTE: there might be buffer overrun if sizeof(fft_queue)
+        // < sizeof(adc_a_buf). The overrun is less likely the larger of
+        // fft_queue
+        fft_data_i <= fft_q_rp == fft_q_wp ? adc_a_dat : fft_queue[fft_q_rp];
+        fft_q_rp <= fft_q_rp + 1;
         fft_we_cnt <= fft_we_cnt - 1;
-        fft_wp <= fft_wp + 1;
     end
 end
 
@@ -448,29 +453,23 @@ wire [ 16-1:  0]fft_maxi_msb           ;
 wire [ 16-1:  0]fft_maxi_lsb           ;
 wire            fft_maxi_valid         ;
 wire            fft_maxi_last          ;
-reg  [ 16-1:  0]fft_buf [0:(1<<RSZ)-1] ;
-reg  [ RSZ-1: 0]fft_raddr              ;
+reg  [ 16-1:  0]fft_buf [0:(1<<FSZ)-1] ;
+reg  [ FSZ-1: 0]fft_raddr              ;
 reg  [ 16-1:  0]fft_rd_data            ;
-reg  [ RSZ-1: 0]fft_rp_last            ;
-reg  [ RSZ-1: 0]fft_rp                 ;
+reg  [ FSZ-1: 0]fft_rp_last            ;
+reg  [ FSZ-1: 0]fft_rp                 ;
 
 always @(posedge adc_clk_i)
 if (fft_rstn_i == 1'b0) begin
-    fft_rp <= {RSZ{1'b0}};
-    fft_rp_last <= {RSZ{1'b0}};
-    fft_read_busy <= 0;
+    fft_rp <= 0;
+    fft_rp_last <= 0;
 end else if (fft_enable && fft_maxi_valid) begin
     fft_buf[fft_rp] <= fft_maxi_lsb;
     if (fft_maxi_last) begin
         fft_rp_last <= fft_rp;
-        fft_rp <= {RSZ{1'b0}};
-        fft_read_busy <= 0;
-    end else begin
-        fft_read_busy <= 1;
+        fft_rp <= 0;
+    end else
         fft_rp = fft_rp + 1;
-    end
-end else begin
-    fft_read_busy <= 0;
 end
 
 
@@ -484,18 +483,18 @@ reg  [ 32-1:  0]   fft_peak_last_indices  ;
 reg  [ 32-1:  0]   fft_peak_last          ;
 reg  [ HSZ-1: 0]   fft_hist_length        ;
 reg  [ 32-1:  0]   fft_hist_cnt           ;
-reg  [ RSZ-1: 0]   fft_peak_start         ;
-wire [ RSZ-1: 0]   fft_peak_idx           ;
+reg  [ FSZ-1: 0]   fft_peak_start         ;
+wire [ FSZ-1: 0]   fft_peak_idx           ;
 wire [ 16-1:  0]   fft_peak               ;
-wire [ RSZ-1: 0]   fft_peak2_idx          ;
+wire [ FSZ-1: 0]   fft_peak2_idx          ;
 wire [ 16-1:  0]   fft_peak2              ;
-reg  [ RSZ+16-1: 0]fft_sum                ;
-wire [ RSZ+16-1: 0]_fft_sum               ;
-reg  [ RSZ: 0]     fft_count              ;
-wire [ RSZ: 0]     _fft_count             ;
+reg  [ FSZ+16-1: 0]fft_sum                ;
+wire [ FSZ+16-1: 0]_fft_sum               ;
+reg  [ FSZ: 0]     fft_count              ;
+wire [ FSZ: 0]     _fft_count             ;
 reg  [ 16-1:  0]   fft_threshold_k        ;
 reg                fft_peak_ready_last    ;
-wire [ RSZ-1: 0]   fft_peak_rp            ;
+wire [ FSZ-1: 0]   fft_peak_rp            ;
 wire               fft_peak_data_valid    ;
 wire [ 16-1:  0]   fft_peak_data          ;
 wire [ 16-1:  0]   fft_peak_data_abs      ;
@@ -506,19 +505,19 @@ assign fft_peak_rp = fft_rp;
 // assign fft_peak_data = fft_buf[fft_peak_rp];
 assign fft_peak_data = fft_maxi_lsb;
 assign fft_peak_data_abs = fft_peak_data[16-1] ? -fft_peak_data : fft_peak_data;
-assign fft_peak_data_valid = fft_maxi_valid && fft_peak_rp>=fft_peak_start && fft_peak_rp[RSZ-1]==0 && fft_peak_data_abs>fft_peak_minimum;
+assign fft_peak_data_valid = fft_maxi_valid && fft_peak_rp>=fft_peak_start && fft_peak_rp[FSZ-1]==0 && fft_peak_data_abs>fft_peak_minimum;
 
-assign fft_peak_indices = {{16-RSZ{1'b0}}, fft_peak2_idx, {16-RSZ{1'b0}}, fft_peak_idx};
+assign fft_peak_indices = {{16-FSZ{1'b0}}, fft_peak2_idx, {16-FSZ{1'b0}}, fft_peak_idx};
 
 always @(posedge adc_clk_i)
-if (fft_rstn_i == 1'b0) begin
+if (adc_rstn_i == 1'b0) begin
    fft_hist_length <= 0;
    fft_threshold_k <= 4;
    fft_peak_start <= 0;
    fft_peak_minimum <= 1;
 end else if (sys_wen) begin
     if (sys_addr[19:0]==20'h38) fft_hist_length <= sys_wdata[HSZ-1:0];
-    if (sys_addr[19:0]==20'h3C)  fft_peak_start <= sys_wdata[RSZ-1:0];
+    if (sys_addr[19:0]==20'h3C)  fft_peak_start <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h40) fft_threshold_k <= sys_wdata[16-1:0];
     if (sys_addr[19:0]==20'h44) fft_peak_minimum <= sys_wdata[16-1:0];
 end
@@ -553,10 +552,9 @@ always @(posedge adc_clk_i) begin
     end
 end
 
-wire [32-1: 0]  fft_total_count;
 wire [4-1: 0]   fft_peak_state;
 
-peak_detector #(.SSZ(RSZ), .DSZ(16)) peak_detector_i (
+peak_detector #(.SSZ(FSZ), .DSZ(16)) peak_detector_i (
     .clk            (adc_clk_i),
     .resetn         (fft_rstn_i),
     .data_valid     (fft_peak_data_valid),
@@ -571,7 +569,6 @@ peak_detector #(.SSZ(RSZ), .DSZ(16)) peak_detector_i (
     .peak2          (fft_peak2),
     .sum_o          (_fft_sum),
     .count_o        (_fft_count),
-    .total_count    (fft_total_count),
     .ready          (fft_peak_ready),
     .state          (fft_peak_state)
 );
@@ -1148,12 +1145,12 @@ end else begin
 
      20'h0002C : begin sys_ack <= sys_en;          sys_rdata <=                 adc_we_cnt          ; end
 
-     20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ{1'b0}}, fft_rp_last}       ; end
+     20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= fft_rp_last                         ; end
      20'h00034 : begin sys_ack <= sys_en;          sys_rdata <= fft_frame_cnt                       ; end
 
-     20'h00038 : begin sys_ack <= sys_en;          sys_rdata <= {{32-HSZ{1'b0}}, fft_hist_length}   ; end
-     20'h0003C : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ{1'b0}}, fft_peak_start}    ; end
-     20'h00040 : begin sys_ack <= sys_en;          sys_rdata <= {{32-16{1'b0}}, fft_threshold_k}    ; end
+     20'h00038 : begin sys_ack <= sys_en;          sys_rdata <= fft_hist_length                     ; end
+     20'h0003C : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_start                      ; end
+     20'h00040 : begin sys_ack <= sys_en;          sys_rdata <= fft_threshold_k                     ; end
      20'h00044 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_minimum                    ; end
      20'h00048 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_last_indices               ; end
      20'h0004C : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_last                       ; end
@@ -1161,7 +1158,6 @@ end else begin
      20'h00054 : begin sys_ack <= sys_en;          sys_rdata <= fft_count                           ; end
      20'h00058 : begin sys_ack <= sys_en;          sys_rdata <= fft_hist_cnt                        ; end
      20'h0005C : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_state                      ; end
-     20'h00060 : begin sys_ack <= sys_en;          sys_rdata <= fft_total_count                     ; end
 
      /*
      20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= {{32-18{1'b0}}, set_a_filt_aa}      ; end

@@ -18,7 +18,6 @@ module peak_detector #(
     output logic [DSZ-1:0] peak2,
     output logic [SSZ+DSZ-1:0] sum_o, 
     output logic [SSZ:0]   count_o,
-    output logic [32-1:0]  total_count,
     output logic           ready,
     output logic [3:0]     state
 );
@@ -91,7 +90,6 @@ assign state = current_state;
 always @(posedge clk)
 if (resetn == 0) begin
     current_state <= S_IDLE;
-    total_count = 0;
 end else begin
     if (frame_start) begin
         // Yes, we may be discarding the first incoming data, because data_valid might be on.
@@ -115,7 +113,6 @@ end else begin
             // TODO: do we need to worry about signess?
             scaled_diff <= peak * count - sum;
             scaled_diff2 <= peak2 * count - sum;
-            total_count = total_count + 1;
         end else if (data_valid) begin
             if (peak <= data_in) begin
                 peak2 <= peak;

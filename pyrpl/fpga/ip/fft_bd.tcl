@@ -235,7 +235,7 @@ proc create_root_design { parentCell } {
    CONFIG.Compensation_Scaling {No_Scale_Compensation} \
    CONFIG.Data_Format {SignedFraction} \
    CONFIG.Functional_Selection {Translate} \
-   CONFIG.Input_Width {29} \
+   CONFIG.Input_Width {28} \
    CONFIG.Output_Width {16} \
    CONFIG.cartesian_has_tlast {true} \
    CONFIG.out_tlast_behv {Pass_Cartesian_TLAST} \
@@ -256,8 +256,8 @@ proc create_root_design { parentCell } {
    CONFIG.scaling_options {unscaled} \
    CONFIG.target_clock_frequency {125} \
    CONFIG.target_data_throughput {125} \
-   CONFIG.throttle_scheme {nonrealtime} \
-   CONFIG.transform_length {16384} \
+   CONFIG.throttle_scheme {realtime} \
+   CONFIG.transform_length {8192} \
  ] $xfft_0
 
   # Create interface connections
