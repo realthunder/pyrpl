@@ -69,6 +69,7 @@ read_verilog                      $path_rtl/axi_slave.v
 read_verilog                      $path_rtl/axi_wr_fifo.v
 
 read_verilog                      $path_rtl/peak_detector.sv
+read_verilog                      $path_rtl/fft_proc.sv
 
 read_verilog                      $path_rtl/red_pitaya_ams.v
 read_verilog                      $path_rtl/red_pitaya_asg_ch.v
@@ -80,7 +81,7 @@ read_verilog                      $path_rtl/red_pitaya_dsp.v
 read_verilog                      $path_rtl/red_pitaya_pll.sv
 read_verilog                      $path_rtl/red_pitaya_ps.v
 read_verilog                      $path_rtl/red_pitaya_pwm.sv
-read_verilog                      $path_rtl/red_pitaya_scope.v
+read_verilog                      $path_rtl/red_pitaya_scope.sv
 read_verilog                      $path_rtl/red_pitaya_top.v
 
 #custom modules
