@@ -376,33 +376,27 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_enable = BoolRegister(0x0, 5, doc="Enable fft")
 
-    _fft_out_busy = BoolRegister(0x0, 4, doc="FFT output busy")
-
     _status = IntRegister(0x00)
 
-    _fft_rp_last = IntRegister(0x30, doc="FFT last write pointer")
+    fft_frame_cnt = IntRegister(0x30, doc="FFT frame counter")
 
-    _fft_frame_cnt = IntRegister(0x34, doc="FFT frame counter")
+    fft_hist_length = IntRegister(0x34, doc="FFT history buffer size")
 
-    fft_hist_length = IntRegister(0x38, doc="FFT history buffer size")
+    fft_peak_start = IntRegister(0x38, doc="FFT peak detection start index")
 
-    fft_peak_start = IntRegister(0x3C, doc="FFT peak detection start index")
+    fft_peak_threshold = IntRegister(0x3C, doc="FFT peak detection threshold")
 
-    fft_peak_threshold = IntRegister(0x40, doc="FFT peak detection threshold")
+    fft_peak_minimum = IntRegister(0x40, doc="FFT peak detection lower bound")
 
-    fft_peak_minimum = IntRegister(0x44, doc="FFT peak detection lower bound")
+    fft_peak_idx = IntRegister(0x44, doc="FFT peak indices")
 
-    fft_peak_idx = IntRegister(0x48, doc="FFT peak indices")
+    fft_peak = IntRegister(0x48, doc="FFT peak value")
 
-    fft_peak = IntRegister(0x4C, doc="FFT peak value")
+    fft_sum = IntRegister(0x4C, doc="Sum of all valid data fot FFT peak detection")
 
-    fft_sum = IntRegister(0x50, doc="Sum of all valid data fot FFT peak detection")
+    fft_count = IntRegister(0x50, doc="Data count for FFT peak detection")
 
-    fft_count = IntRegister(0x54, doc="Data count for FFT peak detection")
-
-    fft_hist_count = IntRegister(0x58, doc="Total sample count FFT analysis for FFT peak detection")
-
-    fft_peak_state = IntRegister(0x5C, doc="FFT Peak detection state")
+    fft_peak_state = IntRegister(0x54, doc="FFT Peak detection state")
 
     _adc_we_cnt = IntRegister(0x2C, doc="Number of samles that have passed "
                                         "since trigger was armed (adc_we_cnt)")
