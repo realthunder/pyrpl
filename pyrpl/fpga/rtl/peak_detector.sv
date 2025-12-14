@@ -43,17 +43,16 @@ module peak_detector #(
 
 // --- FSM STATES ---
 typedef enum logic [3:0] {
-    S_IDLE    = 1,
-    S_STREAM  = 2,  // Continuous calculation and peak check
-    S_DETECT1 = 3,  // Peak detection with threshold calculation steps
-    S_DETECT2 = 4,  // Peak detection with threshold calculation steps
-    S_DETECT3 = 5,  // Peak detection with threshold calculation steps
-    S_DETECT4 = 6,  // Peak detection with threshold calculation steps
-    S_DETECT5 = 7,  // Peak detection with threshold calculation steps
-    S_DETECT6 = 8,  // Peak detection with threshold calculation steps
-    S_DETECT7 = 9,  // Peak detection with threshold calculation steps
-    S_DETECT8 = 10,  // Peak detection with threshold calculation steps
-    S_DONE    = 11  // Peak detected
+    S_IDLE    = 0,
+    S_STREAM  = 1,  // Continuous calculation and peak check
+    S_DETECT1 = 2,  // Peak detection with threshold calculation steps
+    S_DETECT2 = 3,  // Peak detection with threshold calculation steps
+    S_DETECT3 = 4,  // Peak detection with threshold calculation steps
+    S_DETECT4 = 5,  // Peak detection with threshold calculation steps
+    S_DETECT5 = 6,  // Peak detection with threshold calculation steps
+    S_DETECT6 = 7,  // Peak detection with threshold calculation steps
+    S_DETECT7 = 8,  // Peak detection with threshold calculation steps
+    S_DETECT8 = 9   // Peak detection with threshold calculation steps
 } state_t;
 
 state_t current_state;
@@ -83,7 +82,7 @@ logic [(SSZ+DSZ)*2-1:0] scaled_diff2_sq [4-1: 0]; // scaled_diff2 ^2, 4-stage pi
 
 logic [(SSZ+DSZ)*2-1:0] threshold;
 
-assign ready = current_state==S_DONE;
+assign ready = current_state==S_IDLE;
 
 assign state = current_state;
 
@@ -155,7 +154,7 @@ end else begin
             peak2_idx <= 0;
         sum_o <= sum;
         count_o <= count;
-        current_state <= S_DONE;
+        current_state <= S_IDLE;
     end
 end
 

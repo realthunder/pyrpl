@@ -376,6 +376,8 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_enable = BoolRegister(0x0, 5, doc="Enable fft")
 
+    fft_trigger_sync = BoolRegister(0x0, 6, doc='Sync fft trigger to scope')
+
     _status = IntRegister(0x00)
 
     fft_frame_cnt = IntRegister(0x30, doc="FFT frame counter")
@@ -397,6 +399,25 @@ class Scope(HardwareModule, AcquisitionModule):
     fft_count = IntRegister(0x50, doc="Data count for FFT peak detection")
 
     fft_peak_state = IntRegister(0x54, doc="FFT Peak detection state")
+
+    fft_wait1_cnt = IntRegister(0x58, doc="FFT first stage wait time counter")
+
+    fft_wait2_cnt = IntRegister(0x5C, doc="FFT second stage wait time counter")
+
+    fft_acq1_cnt = IntRegister(0x60, doc="FFT first stage acquisition time counter")
+
+    fft_acq2_cnt = IntRegister(0x64, doc="FFT second stage acquisition time counter")
+
+    fft_wp_last = IntRegister(0x68, doc="FFT last write size")
+
+    fft_state = IntRegister(0x6C, doc="FFT last write size")
+
+    fft_cnt = IntRegister(0x70, doc="FFT cycle count")
+    fft_cnt2 = IntRegister(0x78, doc="FFT cycle count")
+    fft_cnt3 = IntRegister(0x7C, doc="FFT cycle count")
+    fft_cnt4 = IntRegister(0x80, doc="FFT cycle count")
+
+    fft_we_cnt = IntRegister(0x74, doc="FFT write count")
 
     _adc_we_cnt = IntRegister(0x2C, doc="Number of samles that have passed "
                                         "since trigger was armed (adc_we_cnt)")
@@ -498,13 +519,24 @@ class Scope(HardwareModule, AcquisitionModule):
             self.stop()
 
     @property
+    def _fft_length(self):
+        wp_last = self.fft_wp_last
+        length1 = max(2, (wp_last & 0x10000) + 1)
+        length2 = max(2, (wp_last >> 16) + 1)
+        return min(length1, length2)
+
+    @property
     def _fftdata(self):
         """raw data from fft"""
-        length = max(2, self._fft_rp_last + 1)
-        x = np.array(self._reads(0x30000, length//2), dtype=np.int32)
-        x[x >= 2 ** 15] -= 2 ** 16
-        x = np.array(x, dtype=float) / 2**15
-        return x
+        length = self._fft_length
+        d = np.array(self._reads(0x30000, length//2), dtype=np.uint32)
+        d1 = np.array(d & 0xffff, dtype=np.int32)
+        d2 = np.array(d >> 16, dtype=np.int32)
+        d1[d1 >= 2 ** 15] -= 2 ** 16
+        d2[d2 >= 2 ** 15] -= 2 ** 16
+        d1 = np.array(d1, dtype=float) / 2**15
+        d2 = np.array(d2, dtype=float) / 2**15
+        return d1, d2
 
     @property
     def _ffthist(self):
