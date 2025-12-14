@@ -33,10 +33,9 @@ module fft_proc #(
   output logic [ 32-1: 0] fft_peak_indices,
   output logic [ 32-1: 0] fft_peaks,
   output logic [ 32-1: 0] fft_frame_cnt,
-  output logic [ 32-1: 0] fft_we_cnt
+  output logic [ 32-1: 0] fft_we_cnt,
+  output logic [ HSZ-1:0] fft_hist_wp
 );
-
-// logic [ 32-1: 0] fft_we_cnt;
 
 logic [ 14-1: 0] fft_queue[0:(1<<QSZ)-1];
 logic [ 14-1: 0] fft_last_data;
@@ -52,7 +51,6 @@ logic            fft_saxi_valid;
 logic [ 32-1:0]     fft_hist[0:(1<<HSZ)-1];
 logic [ 16-1:  0]   fft_buf [0:(1<<FSZ)-1];
 
-logic [ HSZ-1: 0]   fft_hist_wp;
 logic [ HSZ-1: 0]   fft_hist_wp_next;
 logic [ 32-1:  0]   fft_peak_last_indices;
 logic [ FSZ-1: 0]   fft_peak_idx;
@@ -101,7 +99,6 @@ if (rstn_i == 1'b0) begin
     fft_we_cnt <= 0;
     fft_q_wp <= 0;
     fft_q_rp <= 0;
-    fft_frame_cnt <= 0 ;
     fft_last_data <= 0 ;
 end else begin
     if (fft_frame_start)

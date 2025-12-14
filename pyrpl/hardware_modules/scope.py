@@ -410,14 +410,11 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_wp_last = IntRegister(0x68, doc="FFT last write size")
 
-    fft_state = IntRegister(0x6C, doc="FFT last write size")
+    fft_state = IntRegister(0x6C, doc="FFT internal state")
 
-    fft_cnt = IntRegister(0x70, doc="FFT cycle count")
-    fft_cnt2 = IntRegister(0x78, doc="FFT cycle count")
-    fft_cnt3 = IntRegister(0x7C, doc="FFT cycle count")
-    fft_cnt4 = IntRegister(0x80, doc="FFT cycle count")
+    fft_we_cnt = IntRegister(0x70, doc="FFT write count")
 
-    fft_we_cnt = IntRegister(0x74, doc="FFT write count")
+    fft_hist_wp = IntRegister(0x74, doc="FFT history write point")
 
     _adc_we_cnt = IntRegister(0x2C, doc="Number of samles that have passed "
                                         "since trigger was armed (adc_we_cnt)")
