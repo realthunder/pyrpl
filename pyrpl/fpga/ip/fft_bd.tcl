@@ -256,7 +256,7 @@ proc create_root_design { parentCell } {
    CONFIG.scaling_options {unscaled} \
    CONFIG.target_clock_frequency {125} \
    CONFIG.target_data_throughput {125} \
-   CONFIG.throttle_scheme {realtime} \
+   CONFIG.throttle_scheme {nonrealtime} \
    CONFIG.transform_length {8192} \
  ] $xfft_0
 
