@@ -535,14 +535,16 @@ class Scope(HardwareModule, AcquisitionModule):
         d2 = np.array(d2, dtype=float) / 2**15
         return d1, d2
 
-    @property
-    def _ffthist(self):
+    def _ffthist(self, length=None):
         """raw data from fft history"""
-        length = self.fft_hist_length
+        if length is None:
+            length = self.fft_hist_length
         if not length:
             return []
-        x = np.array(self._reads(0x40000, length), dtype=np.int32)
-        return x
+        d = np.array(self._reads(0x40000, length), dtype=np.uint32)
+        d1 = np.array(d & 0xffff, dtype=np.int32)
+        d2 = np.array(d >> 16, dtype=np.int32)
+        return d1, d2
 
     @property
     def _rawdata_ch1(self):

@@ -7,6 +7,7 @@ module fft_proc #(
   input logic             clk_i,
   input logic             rstn_i,
   input logic  [ 14-1: 0] data_i,
+  input logic             enable_i,
   input logic             dvalid_i, 
   input logic             trig_i,
   input logic             wrap_i,
@@ -42,6 +43,7 @@ logic [ 14-1: 0] fft_last_data;
 logic [ 14-1: 0] fft_data;
 logic [ QSZ-1:0] fft_q_wp;
 logic [ QSZ-1:0] fft_q_rp;
+logic [ QSZ-1:0] fft_q_size;
 logic [ 14-1: 0] fft_data_i;
 logic [ 16-14:0] fft_data_ext;
 logic            fft_saxi_last;
@@ -80,9 +82,9 @@ logic [ FSZ-1: 0]   fft_raddr2;
 // sign extend the data for padding according to xfft requirement
 assign fft_data_ext = {16-14{fft_data_i[13]}};
 assign fft_saxi_last = fft_we_cnt == 1;
-assign fft_saxi_valid = fft_we_cnt > 0 && fft_we_cnt <= 2**FSZ;
+assign fft_saxi_valid = fft_q_size > 0 && fft_we_cnt > 0 && fft_we_cnt <= 2**FSZ;
 assign fft_done = fft_peak_ready_last && fft_we_cnt==0;
-assign fft_data = dvalid_i ? data_i : fft_last_data;
+assign fft_data = enable_i ? data_i : fft_last_data;
 
 always @(posedge clk_i) begin
    fft_raddr1   <= fft_raddr_i;
@@ -100,26 +102,31 @@ if (rstn_i == 1'b0) begin
     fft_q_wp <= 0;
     fft_q_rp <= 0;
     fft_last_data <= 0 ;
+    fft_q_size <= 0;
 end else begin
     if (fft_frame_start)
         fft_frame_cnt = fft_frame_cnt + 1 ;
 
-    fft_queue[fft_q_wp] <= fft_data ;
-    fft_q_wp <= fft_q_wp + 1;
-    if (dvalid_i)
-        fft_last_data <= data_i;
+    if (dvalid_i) begin
+        fft_queue[fft_q_wp] <= fft_data ;
+        fft_q_wp <= fft_q_wp + 1;
+        fft_last_data <= fft_data;
+        if (~&fft_q_size) // prevent wrap around
+            fft_q_size <= fft_q_size + 1;
+    end
 
     if (trig_i && fft_done) begin
+        fft_q_size <= 0;
         fft_we_cnt <= set_dly;
         fft_q_rp <= fft_q_wp;
         fft_data_i <= fft_data;
-    end else if (fft_we_cnt > 0 && (fft_we_cnt > 2*FSZ || fft_saxi_rdy)) begin
-        // NOTE: there might be buffer overrun if sizeof(fft_queue)
-        // < sizeof(adc buf). The overrun is less likely the larger of
-        // fft_queue
-        fft_data_i <= fft_q_rp == fft_q_wp ? fft_data : fft_queue[fft_q_rp];
+    end else if (fft_q_size > 0 && fft_we_cnt > 0 && (fft_we_cnt > 2**FSZ || fft_saxi_rdy)) begin
+        // NOTE: there might be buffer overrun if sizeof(fft_queue) < sizeof(adc_buf)
+        // The overrun is less likely the larger of fft_queue
+        fft_data_i <= fft_queue[fft_q_rp];
         fft_q_rp <= fft_q_rp + 1;
         fft_we_cnt <= fft_we_cnt - 1;
+        fft_q_size <= fft_q_size - 1;
     end
 end
 

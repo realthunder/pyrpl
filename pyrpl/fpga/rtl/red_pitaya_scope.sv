@@ -377,10 +377,11 @@ logic               fft_dvalid;
 
 typedef enum logic [2:0] {
     S_IDLE  = 0,
-    S_WAIT1 = 1,
-    S_FFT_A = 2,
-    S_WAIT2 = 3,
-    S_FFT_B = 4
+    S_DELAY = 1,
+    S_WAIT1 = 2,
+    S_FFT_A = 3,
+    S_WAIT2 = 4,
+    S_FFT_B = 5
 } fft_state_t;
 
 fft_state_t         fft_state;
@@ -436,7 +437,8 @@ fft_proc #(.FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_a (
    .clk_i (adc_clk_i),
    .rstn_i (fft_rstn_i),
    .data_i (adc_a_dat),
-   .dvalid_i (fft_dvalid && fft_state == S_FFT_A),
+   .enable_i (fft_state == S_FFT_A),
+   .dvalid_i (fft_dvalid),
    .trig_i (fft_trig_i),
    .wrap_i (asg_trig2_p),
    .set_dly (set_dly),
@@ -469,7 +471,8 @@ fft_proc #(.FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_b (
    .clk_i (adc_clk_i),
    .rstn_i (fft_rstn_i),
    .data_i (adc_a_dat),
-   .dvalid_i (fft_dvalid && fft_state == S_FFT_B),
+   .enable_i (fft_state == S_FFT_B),
+   .dvalid_i (fft_dvalid),
    .trig_i (fft_trig_i),
    .wrap_i (asg_trig2_p),
    .set_dly (set_dly),
@@ -530,32 +533,35 @@ end else begin
     case (fft_state)
     S_IDLE: 
         if (fft_trig_i && &fft_done) begin
-            fft_state <= S_WAIT1;
+            fft_state <= S_DELAY;
             fft_state_cnt <= 0;
         end
+    S_DELAY:
+        if (fft_we_cnt[0] <= 2**FSZ)
+            fft_state <= S_WAIT1;
     S_WAIT1:
         if (fft_state_cnt >= fft_wait1_cnt) begin
             fft_state_cnt <= 0;
             fft_state <= S_FFT_A;
-        end else
+        end else if (fft_dvalid)
             fft_state_cnt <= fft_state_cnt + 1;
     S_FFT_A:
         if (fft_state_cnt >= fft_acq1_cnt) begin
             fft_state_cnt <= 0;
             fft_state <= S_WAIT2;
-        end else
+        end else if (fft_dvalid)
             fft_state_cnt <= fft_state_cnt + 1;
     S_WAIT2:
         if (fft_state_cnt >= fft_wait2_cnt) begin
             fft_state_cnt <= 0;
             fft_state <= S_FFT_B;
-        end else
+        end else if (fft_dvalid)
             fft_state_cnt <= fft_state_cnt + 1;
     S_FFT_B:
         if (fft_state_cnt >= fft_acq2_cnt) begin
             fft_state_cnt <= 0;
             fft_state <= S_IDLE;
-        end else
+        end else if (fft_dvalid)
             fft_state_cnt <= fft_state_cnt + 1;
     endcase
 end
