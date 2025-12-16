@@ -375,7 +375,7 @@ end
 //////////////// FFT /////////////////////
 
 logic               fft_enable;
-logic               fft_dvalid;
+logic               fft_trig_sync;
 
 typedef enum logic [2:0] {
     S_IDLE  = 0,
@@ -430,17 +430,20 @@ end
 
 assign fft_rstn_i = adc_rstn_i && ~|fft_rst_i;
 
-logic               fft_trig_i;
-logic               fft_trig_sync;
+logic fft_trig_i = fft_trig_sync ? (adc_trig && !adc_dly_do && pretrig_ok) : fft_trig;
 
-assign fft_trig_i = fft_trig_sync ? (adc_trig && !adc_dly_do && pretrig_ok) : fft_trig;
-assign fft_dvalid = (!fft_trig_sync || adc_we) && adc_dv; 
+(* mark_debug = "true" *) wire fft_dvalid;
+assign fft_davlid = (!fft_trig_sync || adc_we) && adc_dv; 
+(* mark_debug = "true" *) wire fft_a_enable;
+assign fft_a_enable = fft_state == S_FFT_A;
+(* mark_debug = "true" *) wire fft_b_enable;
+assign fft_b_enable = fft_state == S_FFT_B;
 
 fft_proc #(.FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_a (
    .clk_i (adc_clk_i),
    .rstn_i (fft_rstn_i),
    .data_i (adc_a_dat),
-   .enable_i (fft_state == S_FFT_A),
+   .enable_i (fft_a_enable),
    .dvalid_i (fft_dvalid),
    .trig_i (fft_trig_i),
    .wrap_i (asg_trig2_p),
@@ -475,7 +478,7 @@ fft_proc #(.FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_b (
    .clk_i (adc_clk_i),
    .rstn_i (fft_rstn_i),
    .data_i (adc_a_dat),
-   .enable_i (fft_state == S_FFT_B),
+   .enable_i (fft_b_enable),
    .dvalid_i (fft_dvalid),
    .trig_i (fft_trig_i),
    .wrap_i (asg_trig2_p),
@@ -805,8 +808,8 @@ reg   [   4-1: 0] set_trig_src     ;
 wire              ext_trig_p       ;
 wire              ext_trig_n       ;
 wire              asg_trig_p       ;
-wire              asg_trig_n       ;
-wire              asg_trig2_p      ;
+(* mark_debug = "true" *) wire              asg_trig_n       ;
+(* mark_debug = "true" *) wire              asg_trig2_p      ;
 wire              asg_trig2_n      ;
 
 logic             fft_trig         ;

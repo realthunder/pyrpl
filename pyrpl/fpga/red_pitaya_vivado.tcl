@@ -113,8 +113,8 @@ read_xdc                          $path_sdc/red_pitaya.xdc
 #synth_design -top red_pitaya_top
 synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivalent_registers
 
-# set debug_nets {fft_maxi_last fft_sum_reg_n_0_*}
-set debug_nets {}
+set debug_nets {asg_trig_n asg_trig2_p fft_dvalid fft_a_enable fft_b_enable}
+# set debug_nets {}
 
 if {[llength $debug_nets] > 0} {
     create_debug_core u_ila_0 ila
