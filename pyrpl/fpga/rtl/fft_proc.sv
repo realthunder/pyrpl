@@ -33,17 +33,24 @@ module fft_proc #(
   output logic [  4-1: 0] fft_peak_state,
   output logic [ 32-1: 0] fft_peak_indices,
   output logic [ 32-1: 0] fft_peaks,
-  output logic [ 32-1: 0] fft_frame_cnt,
+  output logic [ 16-1: 0] fft_frame_cnt,
   output logic [ 32-1: 0] fft_we_cnt,
-  output logic [ HSZ-1:0] fft_hist_wp
+  output logic [ HSZ-1:0] fft_hist_wp,
+  output logic [ 16-1: 0] fft_skip_cnt
 );
+
+logic [ 16-1: 0] skip_cnt;
+logic [ 16-1: 0] frame_cnt;
+logic [ 32-1: 0] clk_cnt;
 
 logic [ 14-1: 0] fft_queue[0:(1<<QSZ)-1];
 logic [ 14-1: 0] fft_last_data;
 logic [ 14-1: 0] fft_data;
+
 logic [ QSZ-1:0] fft_q_wp;
 logic [ QSZ-1:0] fft_q_rp;
-logic [ QSZ-1:0] fft_q_size;
+logic [ QSZ-1:0] fft_q_size = fft_q_wp - fft_q_rp;
+
 logic [ 14-1: 0] fft_data_i;
 logic [ 16-14:0] fft_data_ext;
 logic            fft_saxi_last;
@@ -97,36 +104,61 @@ always @(posedge clk_i) begin
 end
 
 always @(posedge clk_i)
+if (clk_cnt >= 125000000) begin
+    clk_cnt <= 0;
+    fft_skip_cnt <= skip_cnt;
+    fft_frame_cnt <= frame_cnt;
+    if (trig_i && !fft_done)
+        skip_cnt <= 1;
+    else
+        skip_cnt <= 0;
+    if (fft_frame_start)
+        frame_cnt <= 1;
+    else
+        frame_cnt <= 0;
+end else begin
+    clk_cnt <= clk_cnt + 1;
+    if (trig_i && !fft_done && ~&skip_cnt)
+        skip_cnt <= skip_cnt + 1;
+    if (fft_frame_start && ~&frame_cnt)
+        frame_cnt <= frame_cnt + 1;
+end
+
+always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
     fft_we_cnt <= 0;
     fft_q_wp <= 0;
     fft_q_rp <= 0;
     fft_last_data <= 0 ;
-    fft_q_size <= 0;
+
 end else begin
-    if (fft_frame_start)
-        fft_frame_cnt = fft_frame_cnt + 1 ;
 
     if (dvalid_i) begin
         fft_queue[fft_q_wp] <= fft_data ;
+        if (fft_q_wp + 1 == fft_q_rp)
+            fft_q_rp <= fft_q_rp + 1;
         fft_q_wp <= fft_q_wp + 1;
         fft_last_data <= fft_data;
-        if (~&fft_q_size) // prevent wrap around
-            fft_q_size <= fft_q_size + 1;
     end
 
     if (trig_i && fft_done) begin
-        fft_q_size <= 0;
-        fft_we_cnt <= set_dly;
-        fft_q_rp <= fft_q_wp;
-        fft_data_i <= fft_data;
+        if (set_dly >= 2**FSZ) begin
+            fft_q_rp <= fft_q_wp;
+            fft_we_cnt <= set_dly;
+        end else begin
+            fft_we_cnt <= 2**FSZ;
+            fft_q_rp <= fft_q_wp - (2**FSZ - set_dly);
+            fft_data_i <= fft_queue[fft_q_wp - (2**FSZ - set_dly)];
+        end
     end else if (fft_q_size > 0 && fft_we_cnt > 0 && (fft_we_cnt > 2**FSZ || fft_saxi_rdy)) begin
         // NOTE: there might be buffer overrun if sizeof(fft_queue) < sizeof(adc_buf)
         // The overrun is less likely the larger of fft_queue
-        fft_data_i <= fft_queue[fft_q_rp];
+        if (fft_q_rp == fft_q_wp)
+            fft_data_i <= fft_data;
+        else
+            fft_data_i <= fft_queue[fft_q_rp];
         fft_q_rp <= fft_q_rp + 1;
         fft_we_cnt <= fft_we_cnt - 1;
-        fft_q_size <= fft_q_size - 1;
     end
 end
 

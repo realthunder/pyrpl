@@ -223,6 +223,7 @@ def make_asg(channel=0):
                            'sync_on',
                            "reverse_on",
                            "slave",
+                           "scope",
                            "amplitude",
                            "offset",
                            "frequency",
@@ -282,6 +283,8 @@ def make_asg(channel=0):
         reverse_on = BoolRegister(_START_OFFSET, 14 + _BIT_OFFSET, doc='If True, reverse play data buffer on each repetition')
 
         slave = BoolRegister(_START_OFFSET, 13 + _BIT_OFFSET, doc='If True, use neighbour asg done signal as clock enable')
+
+        scope = BoolRegister(_START_OFFSET, 3 + _BIT_OFFSET, doc='If True, use scope done signal as clock enable')
 
         # register set_a_rgate
         _counter_wrap = IntRegister(0x8 + _VALUE_OFFSET,
