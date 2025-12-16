@@ -423,6 +423,7 @@ IOBUF i_iobufn [8-1:0] (.O(exp_n_in), .IO(exp_n_io), .I(exp_n_out), .T(~exp_n_di
 
 wire    [  4-1:0] trig_asg_out;
 wire trig_scope_out;
+wire scope_done_out;
 wire    [14-1: 0] to_scope_a;
 wire    [14-1: 0] to_scope_b;
 wire dsp_trigger;
@@ -438,6 +439,7 @@ red_pitaya_scope i_scope (
   .trig_asg_i      (  trig_asg_out               ),  // ASG trigger
   .trig_dsp_i      (  dsp_trigger                ),
   .trig_scope_o    (  trig_scope_out             ),  // scope trigger to feed other instruments
+  .scope_done_o    (  scope_done_out             ),  // scope acquisition done signal
   .sync_rst_i      (  asg_sync_rst_o             ),
 
 
@@ -483,6 +485,7 @@ red_pitaya_asg i_asg (
   .trig_d_i        (  exp_p_in[0]                ),
   .trig_out_o      (  trig_asg_out               ),
   .trig_scope_i    (  trig_scope_out             ),
+  .scope_done_i    (  scope_done_out             ),
   .sync_rst_o      (  asg_sync_rst_o             ),
   .asg1phase_o     (  asg1phase_o                ),
   
