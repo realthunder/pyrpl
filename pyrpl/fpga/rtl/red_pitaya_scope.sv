@@ -432,12 +432,9 @@ assign fft_rstn_i = adc_rstn_i && ~|fft_rst_i;
 
 logic fft_trig_i = fft_trig_sync ? (adc_trig && !adc_dly_do && pretrig_ok) : fft_trig;
 
-(* mark_debug = "true" *) wire fft_dvalid;
-assign fft_davlid = (!fft_trig_sync || adc_we) && adc_dv; 
-(* mark_debug = "true" *) wire fft_a_enable;
-assign fft_a_enable = fft_state == S_FFT_A;
-(* mark_debug = "true" *) wire fft_b_enable;
-assign fft_b_enable = fft_state == S_FFT_B;
+(* mark_debug = "true" *) logic fft_dvalid = (!fft_trig_sync || adc_we) && adc_dv; 
+(* mark_debug = "true" *) logic fft_a_enable = fft_state == S_FFT_A;
+(* mark_debug = "true" *) logic fft_b_enable = fft_state == S_FFT_B;
 
 fft_proc #(.FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_a (
    .clk_i (adc_clk_i),
@@ -541,8 +538,11 @@ end else begin
     case (fft_state)
     S_IDLE: 
         if (fft_trig_i && &fft_done) begin
-            fft_state <= S_DELAY;
             fft_state_cnt <= 0;
+            if (fft_we_cnt[0] <= 2**FSZ)
+                fft_state <= S_WAIT1;
+            else
+                fft_state <= S_DELAY;
         end
     S_DELAY:
         if (fft_we_cnt[0] <= 2**FSZ)
