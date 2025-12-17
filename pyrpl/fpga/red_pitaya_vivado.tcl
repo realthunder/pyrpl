@@ -113,8 +113,9 @@ read_xdc                          $path_sdc/red_pitaya.xdc
 #synth_design -top red_pitaya_top
 synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivalent_registers
 
-set debug_nets {asg_trig_n asg_trig2_p fft_dvalid fft_a_enable fft_b_enable}
+# set debug_nets {asg_trig_n asg_trig2_p fft_dvalid fft_a_enable fft_b_enable}
 # set debug_nets {}
+set debug_nets [get_nets -hierarchical -filter {MARK_DEBUG == 1}]
 
 if {[llength $debug_nets] > 0} {
     create_debug_core u_ila_0 ila
@@ -126,7 +127,7 @@ if {[llength $debug_nets] > 0} {
     set probe_idx 0
     foreach net $debug_nets {
         set nets [get_nets -hier $net]
-        set_property mark_debug true $nets
+        # set_property mark_debug true $nets
         set net_width [llength $nets]
         set probe_port_name "probe$probe_idx"
         if {$probe_idx > 0} {
