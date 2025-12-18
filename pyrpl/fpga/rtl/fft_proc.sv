@@ -1,5 +1,7 @@
 module fft_proc #(
+  parameter DSZ = 28,  // FFT_output width
   parameter FSZ = 13,  // FFT transform length 2^FSZ
+
   parameter QSZ = 12,  // FFT queue size 2^QSZ
   parameter RSZ = 14,  // RAM size 2^RSZ
   parameter HSZ = 12  // fft history buffer size 2^HSZ (Note: consider word size of 32bit, better not exceed 64KBytes in total)
@@ -20,19 +22,19 @@ module fft_proc #(
 
 
   input logic  [FSZ-1: 0] fft_raddr_i,
-  output logic [ 16-1: 0] fft_rdata_o,
-  output logic [ FSZ-1:0] fft_wp_last,
+  output logic [DSZ-1: 0] fft_rdata_o,
+  output logic [FSZ-1: 0] fft_wp_last,
 
   input logic  [ HSZ-1:0] fft_hist_raddr_i,
-  output logic [ 32-1: 0] fft_hist_rdata_o,
+  output logic [ FSZ-1:0] fft_hist_rdata_o,
 
   output logic [  6-1: 0] status_o,
   output logic            fft_done,
   output logic [ FSZ: 0]  fft_count,
-  output logic [ FSZ+16-1: 0]fft_sum,
+  output logic [ FSZ+DSZ-1: 0]fft_sum,
   output logic [  4-1: 0] fft_peak_state,
-  output logic [ 32-1: 0] fft_peak_indices,
-  output logic [ 32-1: 0] fft_peaks,
+  output logic [ FSZ-1:0] fft_peak_index,
+  output logic [ DSZ-1:0] fft_peak_value,
   output logic [ 16-1: 0] fft_frame_cnt,
   output logic [ 32-1: 0] fft_we_cnt,
   output logic [ HSZ-1:0] fft_hist_wp,
@@ -52,31 +54,30 @@ logic [ QSZ-1:0] fft_q_rp;
 logic [ QSZ-1:0] fft_q_size = fft_q_wp - fft_q_rp;
 
 logic [ 14-1: 0] fft_data_i;
-logic [ 16-14:0] fft_data_ext;
+logic [ 16-14-1:0] fft_data_ext;
 logic            fft_saxi_last;
 logic            fft_saxi_rdy;
 logic            fft_saxi_valid;
 
-logic [ 32-1:0]     fft_hist[0:(1<<HSZ)-1];
-logic [ 16-1:  0]   fft_buf [0:(1<<FSZ)-1];
+logic [ FSZ-1: 0]   fft_hist[0:(1<<HSZ)-1];
+logic [ DSZ-1: 0]   fft_buf [0:(1<<FSZ)-1];
 
 logic [ HSZ-1: 0]   fft_hist_wp_next;
 logic [ 32-1:  0]   fft_peak_last_indices;
 logic [ FSZ-1: 0]   fft_peak_idx;
-logic [ 16-1:  0]   fft_peak;
+logic [ DSZ-1: 0]   fft_peak;
 logic [ FSZ-1: 0]   fft_peak2_idx;
-logic [ 16-1:  0]   fft_peak2;
-logic [ FSZ+16-1:0] _fft_sum;
+logic [ DSZ-1: 0]   fft_peak2;
+logic [ FSZ+DSZ-1:0]_fft_sum;
 logic [ FSZ: 0]     _fft_count;
 logic               fft_peak_ready_last;
 logic [ FSZ-1: 0]   fft_peak_rp;
 logic               fft_peak_data_valid;
-logic [ 16-1:  0]   fft_peak_data;
-logic [ 16-1:  0]   fft_peak_data_abs;
-logic [ 32-1: 0]    _fft_peak_indices;
+logic [ DSZ-1: 0]   fft_peak_data;
+logic [ DSZ-1: 0]   fft_peak_data_abs;
 
-logic [ 16-1:  0]   fft_maxi_msb;
-logic [ 16-1:  0]   fft_maxi_lsb;
+logic [ 32-1:  0]   fft_maxi_phase;
+logic [ 32-1:  0]   fft_maxi_data;
 logic               fft_maxi_valid;
 logic               fft_maxi_last;
 logic [ FSZ-1: 0]   fft_wp;
@@ -87,7 +88,7 @@ logic [ FSZ-1: 0]   fft_raddr1;
 logic [ FSZ-1: 0]   fft_raddr2;
 
 // sign extend the data for padding according to xfft requirement
-assign fft_data_ext = {16-14{fft_data_i[13]}};
+assign fft_data_ext = {16-14{fft_data_i[14-1]}};
 assign fft_saxi_last = fft_we_cnt == 1;
 assign fft_saxi_valid = fft_q_size > 0 && fft_we_cnt > 0 && fft_we_cnt <= 2**FSZ;
 assign fft_done = fft_peak_ready_last && fft_we_cnt==0;
@@ -167,7 +168,7 @@ if (rstn_i == 1'b0) begin
     fft_wp <= 0;
     fft_wp_last <= 0;
 end else if (fft_maxi_valid) begin
-    fft_buf[fft_wp] <= fft_maxi_lsb;
+    fft_buf[fft_wp] <= fft_maxi_data[DSZ-1:0];
     if (fft_maxi_last) begin
         fft_wp_last <= fft_wp;
         fft_wp <= 0;
@@ -176,10 +177,9 @@ end else if (fft_maxi_valid) begin
 end
 
 assign fft_peak_rp = fft_wp;
-assign fft_peak_data = fft_maxi_lsb;
-assign fft_peak_data_abs = fft_peak_data[16-1] ? -fft_peak_data : fft_peak_data;
+assign fft_peak_data = fft_maxi_data[DSZ-1:0];
+assign fft_peak_data_abs = fft_peak_data[DSZ-1] ? -fft_peak_data : fft_peak_data;
 assign fft_peak_data_valid = fft_maxi_valid && fft_peak_rp>=fft_peak_start && fft_peak_rp[FSZ-1]==0 && fft_peak_data_abs>fft_peak_minimum;
-assign _fft_peak_indices = {{16-FSZ{1'b0}}, fft_peak2_idx, {16-FSZ{1'b0}}, fft_peak_idx};
 
 always @(posedge clk_i) begin
     if (rstn_i == 1'b0) begin
@@ -190,9 +190,9 @@ always @(posedge clk_i) begin
     end else begin
         fft_peak_ready_last <= fft_peak_ready;
         if (!fft_peak_ready_last && fft_peak_ready) begin
-            fft_hist[fft_hist_wp] <= _fft_peak_indices;
-            fft_peak_indices <= _fft_peak_indices;
-            fft_peaks <= {fft_peak2, fft_peak};
+            fft_hist[fft_hist_wp] <= fft_peak_idx;
+            fft_peak_index <= fft_peak_idx;
+            fft_peak_value <= fft_peak;
             fft_sum <= _fft_sum;
             fft_count <= _fft_count;
             fft_hist_wp <= fft_hist_wp_next;
@@ -207,7 +207,7 @@ always @(posedge clk_i) begin
     end
 end
 
-peak_detector #(.SSZ(FSZ), .DSZ(16)) peak_detector_i (
+peak_detector #(.SSZ(FSZ), .DSZ(DSZ)) peak_detector_i (
     .clk            (clk_i),
     .resetn         (rstn_i),
     .data_valid     (fft_peak_data_valid),
@@ -227,13 +227,13 @@ peak_detector #(.SSZ(FSZ), .DSZ(16)) peak_detector_i (
 );
 
 fft_wrapper fft_i (
-   .M_AXIS_DOUT_0_tdata         ({fft_maxi_msb, fft_maxi_lsb}),
+   .M_AXIS_DOUT_0_tdata         ({fft_maxi_phase, fft_maxi_data}),
    .M_AXIS_DOUT_0_tlast         (fft_maxi_last    ),
    .M_AXIS_DOUT_0_tvalid        (fft_maxi_valid   ),
    .S_AXIS_CONFIG_0_tdata       ( ),
    .S_AXIS_CONFIG_0_tready      ( ),
    .S_AXIS_CONFIG_0_tvalid      ( ),
-   .S_AXIS_DATA_0_tdata         ({fft_data_ext, fft_data_i, 16'b0}),
+   .S_AXIS_DATA_0_tdata         ({16'b0, fft_data_ext, fft_data_i}),
    .S_AXIS_DATA_0_tlast         (fft_saxi_last    ),
    .S_AXIS_DATA_0_tready        (fft_saxi_rdy     ),
    .S_AXIS_DATA_0_tvalid        (fft_saxi_valid   ),

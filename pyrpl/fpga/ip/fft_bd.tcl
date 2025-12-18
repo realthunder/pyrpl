@@ -236,7 +236,7 @@ proc create_root_design { parentCell } {
    CONFIG.Data_Format {SignedFraction} \
    CONFIG.Functional_Selection {Translate} \
    CONFIG.Input_Width {28} \
-   CONFIG.Output_Width {16} \
+   CONFIG.Output_Width {28} \
    CONFIG.cartesian_has_tlast {true} \
    CONFIG.out_tlast_behv {Pass_Cartesian_TLAST} \
  ] $cordic_0

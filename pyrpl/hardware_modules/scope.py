@@ -392,13 +392,13 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_peak_idx = IntRegister(0x44, doc="FFT peak indices")
 
-    fft_peak = IntRegister(0x48, doc="FFT peak value")
+    fft_peak_a = IntRegister(0x48, doc="FFT up peak value")
 
-    fft_sum = IntRegister(0x4C, doc="Sum of all valid data fot FFT peak detection")
+    fft_peak_b = IntRegister(0x4C, doc="FFT down peak value")
 
-    fft_count = IntRegister(0x50, doc="Data count for FFT peak detection")
+    fft_sum = IntRegister(0x50, doc="Sum of all valid data fot FFT peak detection")
 
-    fft_peak_state = IntRegister(0x54, doc="FFT Peak detection state")
+    fft_count = IntRegister(0x54, doc="Data count for FFT peak detection")
 
     fft_wait1_cnt = IntRegister(0x58, doc="FFT first stage wait time counter")
 
@@ -524,18 +524,23 @@ class Scope(HardwareModule, AcquisitionModule):
         length2 = max(2, (wp_last >> 16) + 1)
         return min(length1, length2)
 
+    _fft_data_width = 28
     @property
     def _fftdata(self):
         """raw data from fft"""
         length = self._fft_length
+        #  d = d1 = np.array(self._reads(0x30000, length), dtype=np.uint32)
+        #  d1 = d[np.arange(0, self._fft_length, 2)]
+        #  d2 = d[np.arange(1, self._fft_length, 2)]
+
         d = np.array(self._reads(0x30000, length//2), dtype=np.uint32)
-        d1 = np.array(d & 0xffff, dtype=np.int32)
-        d2 = np.array(d >> 16, dtype=np.int32)
-        d1[d1 >= 2 ** 15] -= 2 ** 16
-        d2[d2 >= 2 ** 15] -= 2 ** 16
-        d1 = np.array(d1, dtype=float) / 2**15
-        d2 = np.array(d2, dtype=float) / 2**15
-        return d1, d2
+        d[d >= 2 ** (self._fft_data_width-1)] -= 2 ** self._fft_data_width
+        d1 = np.array(d, dtype=float) / 2**(self._fft_data_width-1)
+
+        d = np.array(self._reads(0x50000, length//2), dtype=np.uint32)
+        d[d >= 2 ** (self._fft_data_width-1)] -= 2 ** self._fft_data_width
+        d2 = np.array(d, dtype=float) / 2**(self._fft_data_width-1)
+        return d2, d1
 
     def _ffthist(self, length=None):
         """raw data from fft history"""
@@ -546,7 +551,7 @@ class Scope(HardwareModule, AcquisitionModule):
         d = np.array(self._reads(0x40000, length), dtype=np.uint32)
         d1 = np.array(d & 0xffff, dtype=np.int32)
         d2 = np.array(d >> 16, dtype=np.int32)
-        return d1, d2
+        return d2, d1
 
     @property
     def _rawdata_ch1(self):
