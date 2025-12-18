@@ -18,7 +18,7 @@ module fft_proc #(
   input logic  [ HSZ-1:0] fft_hist_length,
   input logic  [ 16-1: 0] fft_threshold_k,
   input logic  [ FSZ-1:0] fft_peak_start,
-  input logic  [ 16-1: 0] fft_peak_minimum,
+  input logic  [ DSZ-1:0] fft_peak_minimum,
 
 
   input logic  [FSZ-1: 0] fft_raddr_i,
