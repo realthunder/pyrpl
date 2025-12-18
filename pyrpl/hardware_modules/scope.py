@@ -529,17 +529,19 @@ class Scope(HardwareModule, AcquisitionModule):
     def _fftdata(self):
         """raw data from fft"""
         length = self._fft_length
-        #  d = d1 = np.array(self._reads(0x30000, length), dtype=np.uint32)
-        #  d1 = d[np.arange(0, self._fft_length, 2)]
-        #  d2 = d[np.arange(1, self._fft_length, 2)]
-
-        d = np.array(self._reads(0x30000, length//2), dtype=np.uint32)
+        d = np.array(self._reads(0x30000, length), dtype=np.uint32)
         d[d >= 2 ** (self._fft_data_width-1)] -= 2 ** self._fft_data_width
-        d1 = np.array(d, dtype=float) / 2**(self._fft_data_width-1)
+        d = np.array(d, dtype=float) / 2**(self._fft_data_width-1)
+        d1 = d[np.arange(0, self._fft_length, 2)]
+        d2 = d[np.arange(1, self._fft_length, 2)]
 
-        d = np.array(self._reads(0x50000, length//2), dtype=np.uint32)
-        d[d >= 2 ** (self._fft_data_width-1)] -= 2 ** self._fft_data_width
-        d2 = np.array(d, dtype=float) / 2**(self._fft_data_width-1)
+        #  d = np.array(self._reads(0x30000, length//2), dtype=np.uint32)
+        #  d[d >= 2 ** (self._fft_data_width-1)] -= 2 ** self._fft_data_width
+        #  d1 = np.array(d, dtype=float) / 2**(self._fft_data_width-1)
+        #
+        #  d = np.array(self._reads(0x50000, length//2), dtype=np.uint32)
+        #  d[d >= 2 ** (self._fft_data_width-1)] -= 2 ** self._fft_data_width
+        #  d2 = np.array(d, dtype=float) / 2**(self._fft_data_width-1)
         return d2, d1
 
     def _ffthist(self, length=None):

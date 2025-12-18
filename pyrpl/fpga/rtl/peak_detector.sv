@@ -19,7 +19,7 @@ module peak_detector #(
     output logic [SSZ+DSZ-1:0] sum_o, 
     output logic [SSZ:0]   count_o,
     output logic           ready,
-    output logic [3:0]     state
+    output logic [5-1:0]   state
 );
 
 // This module detects two peaks (two maximum values) of a given stream of data. 
@@ -41,21 +41,15 @@ module peak_detector #(
 //      (peak * N - mean*N)^2  >  k^2 * (N * N * mean_of_square - square_of_mean * N * N)
 //         (peak * N - sum)^2  >  k^2 * ( N * sum_of_square - square_of_sum)
 
-// --- FSM STATES ---
-typedef enum logic [3:0] {
-    S_IDLE    = 0,
-    S_STREAM  = 1,  // Continuous calculation and peak check
-    S_DETECT1 = 2,  // Peak detection with threshold calculation steps
-    S_DETECT2 = 3,  // Peak detection with threshold calculation steps
-    S_DETECT3 = 4,  // Peak detection with threshold calculation steps
-    S_DETECT4 = 5,  // Peak detection with threshold calculation steps
-    S_DETECT5 = 6,  // Peak detection with threshold calculation steps
-    S_DETECT6 = 7,  // Peak detection with threshold calculation steps
-    S_DETECT7 = 8,  // Peak detection with threshold calculation steps
-    S_DETECT8 = 9   // Peak detection with threshold calculation steps
-} state_t;
+localparam PIPLINE = 8-1;
+localparam S_IDLE = 0;
+localparam S_STREAM = 1;
+localparam S_DETECT = 2;
+localparam S_DETECT2 = S_DETECT+PIPLINE;
+localparam S_DETECT3 = S_DETECT2+1;
+localparam S_DETECT4 = S_DETECT3+PIPLINE;
 
-state_t current_state;
+logic [5-1: 0] current_state;
 
 logic [SSZ+DSZ-1:0] sum; // sum of all data. Max value: 2^SSZ * 2^DSZ
 logic [SSZ:0] count;
@@ -64,21 +58,21 @@ logic [SSZ:0] count;
 logic [SSZ+DSZ*2-1:0] sum_sq;      // Max value: 2^SSZ * 2^DSZ * 2^DSZ
 
 // square of sum
-logic [(SSZ+DSZ)*2-1:0] S_sq [4-1: 0]; // 4-stage piplining
+logic [(SSZ+DSZ)*2-1:0] S_sq [PIPLINE: 0]; // n-stage piplining
 // N * sum_of_square
-logic [(SSZ+DSZ)*2-1:0] N_S2 [4-1: 0]; // 4-stage piplining
+logic [(SSZ+DSZ)*2-1:0] N_S2 [PIPLINE: 0]; // n-stage piplining
 
 // Scaled variance, i.e. N^2 * Variance = (N * sum_of_squrae - square_of_sum)
 logic [(SSZ+DSZ)*2-1:0] V_scaled;
-assign V_scaled = N_S2[3] - S_sq[3];
+assign V_scaled = N_S2[PIPLINE] - S_sq[PIPLINE];
 
 // peak * N - sum
 logic [SSZ+DSZ-1:0] scaled_diff;
 // peak2 * N - sum
 logic [SSZ+DSZ-1:0] scaled_diff2; 
 
-logic [(SSZ+DSZ)*2-1:0] scaled_diff_sq  [4-1: 0]; // scaled_diff ^ 2, 4-stage piplining
-logic [(SSZ+DSZ)*2-1:0] scaled_diff2_sq [4-1: 0]; // scaled_diff2 ^2, 4-stage piplining
+logic [(SSZ+DSZ)*2-1:0] scaled_diff_sq  [PIPLINE: 0]; // scaled_diff ^ 2, n-stage piplining
+logic [(SSZ+DSZ)*2-1:0] scaled_diff2_sq [PIPLINE: 0]; // scaled_diff2 ^2, n-stage piplining
 
 logic [(SSZ+DSZ)*2-1:0] threshold;
 
@@ -86,10 +80,20 @@ assign ready = current_state==S_IDLE;
 
 assign state = current_state;
 
+integer i;
+
 always @(posedge clk)
 if (resetn == 0) begin
     current_state <= S_IDLE;
 end else begin
+
+    for (i=0; i<PIPLINE; i=i+1) begin
+        S_sq[i+1] <= S_sq[i];
+        N_S2[i+1] <= N_S2[i];
+        scaled_diff_sq[i+1] <= scaled_diff_sq[i];
+        scaled_diff2_sq[i+1] <= scaled_diff2_sq[i];
+    end
+
     if (frame_start) begin
         // Yes, we may be discarding the first incoming data, because data_valid might be on.
         // But that's okay.
@@ -105,7 +109,7 @@ end else begin
         if (frame_end) begin
             // Yes, we may be discarding the last data.
             // But that's okay.
-            current_state <= S_DETECT1;
+            current_state <= S_DETECT;
             S_sq[0] <= sum * sum; // S^2
             N_S2[0] <= count * sum_sq; // N * S2
 
@@ -126,31 +130,19 @@ end else begin
             sum_sq <= sum_sq + data_in * data_in;
             count <= count + 1;
         end
-    end else if (current_state >= S_DETECT1 && current_state < S_DETECT4) begin
-        S_sq[1] <= S_sq[0];
-        S_sq[2] <= S_sq[1];
-        S_sq[3] <= S_sq[2];
-        N_S2[1] <= N_S2[0];
-        N_S2[2] <= N_S2[1];
-        N_S2[3] <= N_S2[2];
-        current_state <= state_t'(current_state + 1);
-    end else if (current_state == S_DETECT4) begin
+    end else if (current_state >= S_DETECT && current_state < S_DETECT2) begin
+        current_state <= current_state + 1;
+    end else if (current_state == S_DETECT2) begin
         threshold <= threshold_k_sq * V_scaled;
         scaled_diff_sq[0] <= scaled_diff * scaled_diff;
         scaled_diff2_sq[0] <= scaled_diff2 * scaled_diff2;
-        current_state <= state_t'(current_state + 1);
-    end else if (current_state >= S_DETECT5 && current_state < S_DETECT8) begin
-        scaled_diff_sq[1] <= scaled_diff_sq[0];
-        scaled_diff_sq[2] <= scaled_diff_sq[1];
-        scaled_diff_sq[3] <= scaled_diff_sq[2];
-        scaled_diff2_sq[1] <= scaled_diff2_sq[0];
-        scaled_diff2_sq[2] <= scaled_diff2_sq[1];
-        scaled_diff2_sq[3] <= scaled_diff2_sq[2];
-        current_state <= state_t'(current_state + 1);
-    end else if (current_state == S_DETECT8) begin
-        if (scaled_diff_sq[3] < threshold)
+        current_state <= current_state + 1;
+    end else if (current_state >= S_DETECT3 && current_state < S_DETECT4) begin
+        current_state <= current_state + 1;
+    end else if (current_state == S_DETECT4) begin
+        if (scaled_diff_sq[PIPLINE] < threshold)
             peak_idx <= 0;
-        if (scaled_diff2_sq[3] < threshold)
+        if (scaled_diff2_sq[PIPLINE] < threshold)
             peak2_idx <= 0;
         sum_o <= sum;
         count_o <= count;

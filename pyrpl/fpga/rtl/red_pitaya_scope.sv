@@ -403,20 +403,20 @@ logic [ FSZ-1: 0]   fft_wp_last[1:0];
 logic [ DSZ-1: 0]   fft_rdata_a;
 logic [ DSZ-1: 0]   fft_rdata_b;
 
-assign fft_raddr = sys_addr[FSZ-1+2:2] ;
+assign fft_raddr = sys_addr[FSZ-1+3:3] ;
 assign fft_hist_raddr = sys_addr[HSZ-1+2:2]  ;
 
 logic [ HSZ-1:0]    fft_hist_length;
 logic [ 16-1: 0]    fft_threshold_k;
 logic [ FSZ-1:0]    fft_peak_start;
-logic [ 16-1: 0]    fft_peak_minimum;
+logic [ DSZ-1: 0]   fft_peak_minimum;
 
 logic [ 6-1 :  0]   fft_status[1:0];
 logic [ 2-1 :  0]   fft_done;
 logic [ FSZ: 0]     fft_count[1:0];
 logic [FSZ+DSZ-1:0] fft_sum[1:0];
 logic [ HSZ-1: 0]   fft_hist_wp[1:0];
-logic [ 4-1 : 0]    fft_peak_state[1:0];
+logic [ 5-1 : 0]    fft_peak_state[1:0];
 logic [ 16-1: 0]    fft_peak_index_a;
 logic [ 16-1: 0]    fft_peak_index_b;
 logic [ DSZ-1: 0]   fft_peak_a;
@@ -528,7 +528,7 @@ end else if (sys_wen) begin
     if (sys_addr[19:0]==20'h34) fft_hist_length <= sys_wdata[HSZ-1:0];
     if (sys_addr[19:0]==20'h38) fft_peak_start <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h3C) fft_threshold_k <= sys_wdata[16-1:0];
-    if (sys_addr[19:0]==20'h40) fft_peak_minimum <= sys_wdata[16-1:0];
+    if (sys_addr[19:0]==20'h40) fft_peak_minimum <= sys_wdata[DSZ-1:0];
     if (sys_addr[19:0]==20'h58) fft_wait1_cnt <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h5C) fft_wait2_cnt <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h60) fft_acq1_cnt <= sys_wdata[FSZ-1:0];
@@ -543,7 +543,7 @@ end else begin
     S_IDLE: 
         if (fft_trig_i && &fft_done) begin
             fft_state_cnt <= 0;
-            if (fft_we_cnt[0] <= 2**FSZ)
+            if (set_dly <= 2**FSZ)
                 fft_state <= S_WAIT1;
             else
                 fft_state <= S_DELAY;
@@ -1225,11 +1225,9 @@ end else begin
      20'h1???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_a_rd}              ; end
      20'h2???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_b_rd}              ; end
 
-     20'h3???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_rdata_a                         ; end
+     20'h3???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= sys_addr[2] ? fft_rdata_b : fft_rdata_a; end
 
      20'h4???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {fft_hist_rdata_b, fft_hist_rdata_a}; end
-
-     20'h5???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_rdata_b                         ; end
 
        default : begin sys_ack <= sys_en;          sys_rdata <=  32'h0                              ; end
    endcase
