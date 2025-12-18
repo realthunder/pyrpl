@@ -118,6 +118,7 @@ synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivale
 set debug_nets [get_nets -hierarchical -filter {MARK_DEBUG == 1}]
 
 if {[llength $debug_nets] > 0} {
+    puts "INFO: debug probe nets $debug_nets"
     create_debug_core u_ila_0 ila
     set_property C_DATA_DEPTH 1024 [get_debug_cores u_ila_0]
 

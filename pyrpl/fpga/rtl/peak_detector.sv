@@ -1,16 +1,16 @@
 module peak_detector #(
     // --- PARAMETERS ---
     parameter SSZ = 14, // maximum stream length in bit size (2^14 = 16k)
-    parameter DSZ = 16  // data bit size
+    parameter DSZ = 28  // data bit size
 )(
-    input logic         clk,
-    input logic         resetn,
-    input logic         data_valid,
+    input logic           clk,
+    input logic           resetn,
+    input logic           data_valid,
     input logic [DSZ-1:0] data_in,
     input logic [SSZ-1:0] data_index,
-    input logic         frame_start,
-    input logic         frame_end,
-    input logic         threshold_k_sq,
+    input logic           frame_start,
+    input logic           frame_end,
+    input logic [16-1: 0] threshold_k_sq,
     
     output logic [SSZ-1:0] peak_idx,
     output logic [DSZ-1:0] peak,
