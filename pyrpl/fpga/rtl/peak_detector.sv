@@ -140,9 +140,10 @@ end else begin
     end else if (current_state >= S_DETECT3 && current_state < S_DETECT4) begin
         current_state <= current_state + 1;
     end else if (current_state == S_DETECT4) begin
-        if (scaled_diff_sq[PIPLINE] < threshold)
+        if (scaled_diff_sq[PIPLINE] < threshold) begin
             peak_idx <= 0;
-        if (scaled_diff2_sq[PIPLINE] < threshold)
+            peak2_idx <= 0;
+        else if (scaled_diff2_sq[PIPLINE] < threshold)
             peak2_idx <= 0;
         sum_o <= sum;
         count_o <= count;

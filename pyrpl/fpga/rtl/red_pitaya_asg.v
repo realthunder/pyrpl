@@ -122,6 +122,7 @@ reg               buf_a_we     , buf_b_we     , buf_c_we     , buf_d_we     ;
 reg   [ RSZ-1: 0] buf_a_addr   , buf_b_addr   , buf_c_addr   , buf_d_addr   ;
 wire  [  14-1: 0] buf_a_rdata  , buf_b_rdata  , buf_c_rdata  , buf_d_rdata  ;
 wire  [ RSZ-1: 0] buf_a_rpnt   , buf_b_rpnt   , buf_c_rpnt   , buf_d_rpnt   ;
+wire  [ RSZ-1: 0] step_a_o     , step_b_o     , step_c_o     , step_d_o     ;
 reg   [  32-1: 0] buf_a_rpnt_rd, buf_b_rpnt_rd, buf_c_rpnt_rd, buf_d_rpnt_rd;
 reg               trig_a_sw    , trig_b_sw    , trig_c_sw    , trig_d_sw    ;
 reg   [   3-1: 0] trig_a_src   , trig_b_src   , trig_c_src   , trig_d_src   ;
@@ -238,6 +239,7 @@ red_pitaya_asg_ch  #(.RSZ (RSZ)) ch [4-1:0] (
   .buf_wdata_i     ({sys_wdata[14-1:0], sys_wdata[14-1:0], sys_wdata[14-1:0], sys_wdata[14-1:0]}),  // buffer write data
   .buf_rdata_o     ({buf_d_rdata      , buf_c_rdata      , buf_b_rdata      , buf_a_rdata      }),  // buffer read data
   .buf_rpnt_o      ({buf_d_rpnt       , buf_c_rpnt       , buf_b_rpnt       , buf_a_rpnt       }),  // buffer current read pointer
+  .step_o          ({step_d_o         , step_c_o         , step_b_o         , step_a_o         }),  // buffer current step
   // configuration
   .set_size_i      ({set_d_size       , set_c_size       , set_b_size       , set_a_size       }),  // set table data size
   .set_step_i      ({set_d_step       , set_c_step       , set_b_step       , set_a_step       }),  // set pointer step

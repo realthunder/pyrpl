@@ -55,6 +55,7 @@ module red_pitaya_asg_ch #(
    input      [ 14-1: 0] buf_wdata_i     ,  //!< buffer write data
    output reg [ 14-1: 0] buf_rdata_o     ,  //!< buffer read data
    output reg [RSZ-1: 0] buf_rpnt_o      ,  //!< buffer current read pointer
+   output reg [RSZ-1: 0] step_o          ,  //!< buffer current step
 
    // configuration
    input     [RSZ+16-1: 0] set_size_i      ,  //!< set table data size
@@ -241,6 +242,7 @@ if (dac_rstn_i == 1'b0) begin
    reverse_run  <=  1'b0 ;
    reverse_prev <=  1'b0 ;
    trig_done_prev <= 1'b0 ;
+   step_o <= 1'b0 ;
 end else begin
     trig_done_prev <= trig_done ;
     reverse_prev <= reverse_run;
@@ -251,6 +253,7 @@ end else begin
       end else begin
          dac_pnt <= set_ofs_i;
          dac_npnt <= set_ofs_i + set_step_i;
+         step_o <= 1'b0 ;
       end
    else if (dac_do && trig_slave_i) begin
       if (reverse_run && reverse_on_i) begin
@@ -258,8 +261,10 @@ end else begin
          if (dac_npnt2 < set_ofs_i + set_step_i) begin
             reverse_run <= 1'b0;
             dac_npnt <= {1'b0, dac_npnt2 + set_step_i};
+            step_o <= 0;
          end else begin
             dac_npnt <= {1'b0, dac_npnt2 - set_step_i};
+            step_o <= step_o - 1;
          end
       end else begin
          if (~dac_npnt_sub_neg) begin
@@ -270,10 +275,12 @@ end else begin
                reverse_run <= 1'b0;
                dac_pnt <= set_wrap_i ? dac_npnt_sub : set_ofs_i; // wrap or go to start
                dac_npnt <= (set_wrap_i ? dac_npnt_sub : set_ofs_i) + set_step_i;
+               step_o <= 0;
             end
          end else begin
             dac_pnt <= dac_npnt2; // normal increase
             dac_npnt <= dac_npnt + set_step_i;
+            step_o <= step_o + 1;
          end
       end
    end
