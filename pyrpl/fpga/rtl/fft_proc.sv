@@ -91,7 +91,8 @@ logic [ FSZ-1: 0]   fft_raddr2;
 assign fft_data_ext = {16-14{fft_data_i[14-1]}};
 assign fft_saxi_last = fft_we_cnt == 1;
 assign fft_saxi_valid = fft_q_size > 0 && fft_we_cnt > 0 && fft_we_cnt <= 2**FSZ;
-assign fft_done = fft_peak_ready_last && fft_we_cnt==0;
+// assign fft_done = fft_peak_ready_last && fft_we_cnt==0;
+assign fft_done = fft_we_cnt==0;
 assign fft_data = enable_i ? data_i : fft_last_data;
 
 always @(posedge clk_i) begin

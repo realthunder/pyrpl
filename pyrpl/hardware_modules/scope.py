@@ -531,7 +531,7 @@ class Scope(HardwareModule, AcquisitionModule):
         length = self._fft_length
         d = np.array(self._reads(0x30000, length), dtype=np.uint32)
         d[d >= 2 ** (self._fft_data_width-1)] -= 2 ** self._fft_data_width
-        d = np.array(d, dtype=float) / 2**(self._fft_data_width-1)
+        d = np.array(d, dtype=float) / 2**(self._fft_data_width-3)
         d1 = d[np.arange(0, self._fft_length, 2)]
         d2 = d[np.arange(1, self._fft_length, 2)]
 

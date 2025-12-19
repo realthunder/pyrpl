@@ -246,9 +246,9 @@ proc create_root_design { parentCell } {
   set_property -dict [ list \
    CONFIG.aresetn {true} \
    CONFIG.data_format {fixed_point} \
-   CONFIG.implementation_options {radix_4_burst_io} \
+   CONFIG.implementation_options {pipelined_streaming_io} \
    CONFIG.input_width {14} \
-   CONFIG.number_of_stages_using_block_ram_for_data_and_phase_factors {0} \
+   CONFIG.number_of_stages_using_block_ram_for_data_and_phase_factors {6} \
    CONFIG.output_ordering {natural_order} \
    CONFIG.phase_factor_width {8} \
    CONFIG.rounding_modes {convergent_rounding} \
