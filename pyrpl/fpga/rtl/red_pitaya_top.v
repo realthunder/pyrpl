@@ -428,6 +428,8 @@ wire    [14-1: 0] to_scope_a;
 wire    [14-1: 0] to_scope_b;
 wire dsp_trigger;
 
+wire    [14-1: 0] asg2_step;
+wire    [14-1: 0] asg3_step;
 
 red_pitaya_scope i_scope (
   // ADC
@@ -442,6 +444,8 @@ red_pitaya_scope i_scope (
   .scope_done_o    (  scope_done_out             ),  // scope acquisition done signal
   .sync_rst_i      (  asg_sync_rst_o             ),
 
+  .asg2_step_i     (  asg2_step                  ),
+  .asg3_step_i     (  asg3_step                  ),
 
   // AXI0 master                 // AXI1 master
   .axi0_clk_o    (axi0_clk   ),  .axi1_clk_o    (axi1_clk   ),
@@ -488,6 +492,8 @@ red_pitaya_asg i_asg (
   .scope_done_i    (  scope_done_out             ),
   .sync_rst_o      (  asg_sync_rst_o             ),
   .asg1phase_o     (  asg1phase_o                ),
+  .asg2_step_o     (  asg2_step                  ),
+  .asg3_step_o     (  asg3_step                  ),
   
   // System bus
   .sys_addr        (  sys_addr                   ),  // address

@@ -12,10 +12,8 @@ module fft_proc #(
   input logic             enable_i,
   input logic             dvalid_i, 
   input logic             trig_i,
-  input logic             wrap_i,
   input logic  [ 32-1: 0] set_dly,
 
-  input logic  [ HSZ-1:0] fft_hist_length,
   input logic  [ 16-1: 0] fft_threshold_k,
   input logic  [ FSZ-1:0] fft_peak_start,
   input logic  [ DSZ-1:0] fft_peak_minimum,
@@ -25,19 +23,22 @@ module fft_proc #(
   output logic [DSZ-1: 0] fft_rdata_o,
   output logic [FSZ-1: 0] fft_wp_last,
 
+  input logic             fft_index_flush_i,
+  input logic  [ HSZ-1:0] fft_hist_index_i,
+
   input logic  [ HSZ-1:0] fft_hist_raddr_i,
   output logic [ FSZ-1:0] fft_hist_rdata_o,
 
   output logic [  6-1: 0] status_o,
   output logic            fft_done,
-  output logic [ FSZ: 0]  fft_count,
+  output logic [ 2-1 : 0] fft_peak_ready,
+  output logic [ FSZ : 0] fft_count,
   output logic [ FSZ+DSZ-1: 0]fft_sum,
-  output logic [  4-1: 0] fft_peak_state,
+  output logic [  8-1: 0] fft_peak_state,
   output logic [ FSZ-1:0] fft_peak_index,
   output logic [ DSZ-1:0] fft_peak_value,
   output logic [ 16-1: 0] fft_frame_cnt,
   output logic [ 32-1: 0] fft_we_cnt,
-  output logic [ HSZ-1:0] fft_hist_wp,
   output logic [ 16-1: 0] fft_skip_cnt
 );
 
@@ -45,24 +46,29 @@ logic [ 16-1: 0] skip_cnt;
 logic [ 16-1: 0] frame_cnt;
 logic [ 32-1: 0] clk_cnt;
 
+localparam ISZ = 6-1;
+logic [ ISZ  :0] index_valid;
+logic [ HSZ-1:0] fft_index_q[0:(1<<QSZ)-1];
+logic [ HSZ-1:0] fft_hist_index;
+logic [ QSZ-1:0] index_wp;
+logic [ QSZ-1:0] index_rp;
+
 logic [ 14-1: 0] fft_queue[0:(1<<QSZ)-1];
 logic [ 14-1: 0] fft_last_data;
 logic [ 14-1: 0] fft_data;
-
 logic [ QSZ-1:0] fft_q_wp;
 logic [ QSZ-1:0] fft_q_rp;
 logic [ QSZ-1:0] fft_q_size = fft_q_wp - fft_q_rp;
 
-logic [ 14-1: 0] fft_data_i;
-logic [ 16-14-1:0] fft_data_ext;
-logic            fft_saxi_last;
-logic            fft_saxi_rdy;
-logic            fft_saxi_valid;
+logic [ 14-1: 0]    fft_data_i;
+logic [ 16-14-1:0]  fft_data_ext;
+logic               fft_saxi_last;
+logic               fft_saxi_rdy;
+logic               fft_saxi_valid;
 
 logic [ FSZ-1: 0]   fft_hist[0:(1<<HSZ)-1];
 logic [ DSZ-1: 0]   fft_buf [0:(1<<FSZ)-1];
 
-logic [ HSZ-1: 0]   fft_hist_wp_next;
 logic [ 32-1:  0]   fft_peak_last_indices;
 logic [ FSZ-1: 0]   fft_peak_idx;
 logic [ DSZ-1: 0]   fft_peak;
@@ -70,7 +76,6 @@ logic [ FSZ-1: 0]   fft_peak2_idx;
 logic [ DSZ-1: 0]   fft_peak2;
 logic [ FSZ+DSZ-1:0]_fft_sum;
 logic [ FSZ: 0]     _fft_count;
-logic               fft_peak_ready_last;
 logic [ FSZ-1: 0]   fft_peak_rp;
 logic               fft_peak_data_valid;
 logic [ DSZ-1: 0]   fft_peak_data;
@@ -79,6 +84,7 @@ logic [ DSZ-1: 0]   fft_peak_data_abs;
 logic [ 32-1:  0]   fft_maxi_phase;
 logic [ 32-1:  0]   fft_maxi_data;
 logic               fft_maxi_valid;
+logic               fft_maxi_rdy;
 logic               fft_maxi_last;
 logic [ FSZ-1: 0]   fft_wp;
 
@@ -91,7 +97,6 @@ logic [ FSZ-1: 0]   fft_raddr2;
 assign fft_data_ext = {16-14{fft_data_i[14-1]}};
 assign fft_saxi_last = fft_we_cnt == 1;
 assign fft_saxi_valid = fft_q_size > 0 && fft_we_cnt > 0 && fft_we_cnt <= 2**FSZ;
-// assign fft_done = fft_peak_ready_last && fft_we_cnt==0;
 assign fft_done = fft_we_cnt==0;
 assign fft_data = enable_i ? data_i : fft_last_data;
 
@@ -131,7 +136,7 @@ if (rstn_i == 1'b0) begin
     fft_we_cnt <= 0;
     fft_q_wp <= 0;
     fft_q_rp <= 0;
-    fft_last_data <= 0 ;
+    fft_last_data <= 0;
 
 end else begin
 
@@ -182,30 +187,48 @@ assign fft_peak_data = fft_maxi_data[DSZ-1:0];
 assign fft_peak_data_abs = fft_peak_data[DSZ-1] ? -fft_peak_data : fft_peak_data;
 assign fft_peak_data_valid = fft_maxi_valid && fft_peak_rp>=fft_peak_start && fft_peak_rp[FSZ-1]==0 && fft_peak_data_abs>fft_peak_minimum;
 
-always @(posedge clk_i) begin
-    if (rstn_i == 1'b0) begin
-        fft_hist_wp <= 0;
-        fft_hist_wp_next <= 1;
-        fft_peak_last_indices <= 0;
-        fft_peak_ready_last <= 1;
+logic peak_ready;
+
+always @(posedge clk_i)
+if (rstn_i == 1'b0) begin
+    fft_peak_last_indices <= 0;
+    fft_peak_ready <= 2'b11;
+    index_valid <= 0;
+    index_wp <= 0;
+    index_rp <= 0;
+end else begin
+    if (fft_index_flush_i) begin
+        index_valid <= 0;
+        index_wp <= 0;
+        index_rp <= 0;
     end else begin
-        fft_peak_ready_last <= fft_peak_ready;
-        if (!fft_peak_ready_last && fft_peak_ready) begin
-            fft_hist[fft_hist_wp] <= fft_peak_idx;
+        // Delay index queueing for a few cycles
+        index_valid = {index_valid[ISZ-1: 0], trig_i && fft_done};
+
+        if (index_valid[ISZ]) begin
+            fft_index_q[index_wp] <= fft_hist_index_i;
+            index_wp <= index_wp + 1;
+        end
+
+        if ({fft_peak_ready[0], peak_ready} == 2'b01) begin
+            if (index_rp == index_wp)
+                fft_hist_index <= fft_hist_index_i;
+            else
+                fft_hist_index <= fft_index_q[index_rp];
+            index_rp <= index_rp + 1;
+
             fft_peak_index <= fft_peak_idx;
             fft_peak_value <= fft_peak;
             fft_sum <= _fft_sum;
             fft_count <= _fft_count;
-            fft_hist_wp <= fft_hist_wp_next;
+        end else if (index_wp + 1 == index_rp)
+            index_rp <= index_rp + 1;
 
-            if (fft_hist_length == 0 && wrap_i || fft_hist_length > 0 && fft_hist_wp_next >= fft_hist_length-1)
-                fft_hist_wp_next <= 0;
-            else
-                fft_hist_wp_next <= fft_hist_wp_next + 1;
-
-        end else if (fft_hist_length == 0 && wrap_i)
-            fft_hist_wp_next <= 0;
+        if (fft_peak_ready == 2'b01)
+            fft_hist[fft_hist_index] <= fft_peak_index;
     end
+
+    fft_peak_ready = {fft_peak_ready[0], peak_ready};
 end
 
 peak_detector #(.SSZ(FSZ), .DSZ(DSZ)) peak_detector_i (
@@ -214,8 +237,9 @@ peak_detector #(.SSZ(FSZ), .DSZ(DSZ)) peak_detector_i (
     .data_valid     (fft_peak_data_valid),
     .data_in        (fft_peak_data_abs),
     .data_index     (fft_peak_rp),
-    .frame_start    (fft_frame_start),
-    .frame_end      (fft_maxi_last),
+    .maxi_rdy       (fft_maxi_rdy),
+    .maxi_valid     (fft_maxi_valid),
+    .maxi_last      (fft_maxi_last),
     .threshold_k_sq (fft_threshold_k),
     .peak_idx       (fft_peak_idx),
     .peak           (fft_peak),
@@ -223,7 +247,7 @@ peak_detector #(.SSZ(FSZ), .DSZ(DSZ)) peak_detector_i (
     .peak2          (fft_peak2),
     .sum_o          (_fft_sum),
     .count_o        (_fft_count),
-    .ready          (fft_peak_ready),
+    .ready          (peak_ready),
     .state          (fft_peak_state)
 );
 
@@ -231,6 +255,7 @@ fft_wrapper fft_i (
    .M_AXIS_DOUT_0_tdata         ({fft_maxi_phase, fft_maxi_data}),
    .M_AXIS_DOUT_0_tlast         (fft_maxi_last    ),
    .M_AXIS_DOUT_0_tvalid        (fft_maxi_valid   ),
+   .M_AXIS_DOUT_0_tready        (fft_maxi_rdy     ),
    .S_AXIS_CONFIG_0_tdata       ( ),
    .S_AXIS_CONFIG_0_tready      ( ),
    .S_AXIS_CONFIG_0_tvalid      ( ),

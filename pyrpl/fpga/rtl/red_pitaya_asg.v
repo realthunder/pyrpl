@@ -67,7 +67,9 @@
  * 
  */
 
-module red_pitaya_asg (
+module red_pitaya_asg  #(
+  parameter RSZ = 14  // RAM size 2^RSZ
+)(
   // DAC
   output     [ 14-1: 0] dac_a_o   ,  // DAC data CHA
   output     [ 14-1: 0] dac_b_o   ,  // DAC data CHB
@@ -88,6 +90,9 @@ module red_pitaya_asg (
 
   output     [ 14-1: 0] asg1phase_o,
 
+  output     [RSZ-1: 0] asg2_step_o,
+  output     [RSZ-1: 0] asg3_step_o,
+
   // System bus
   input      [ 32-1: 0] sys_addr  ,  // bus address
   input      [ 32-1: 0] sys_wdata ,  // bus write data
@@ -102,8 +107,6 @@ module red_pitaya_asg (
 //---------------------------------------------------------------------------------
 //
 // generating signal from DAC table 
-
-localparam RSZ = 14 ;  // RAM size 2^RSZ
 
 reg   [RSZ+15: 0] set_a_size   , set_b_size   , set_c_size   , set_d_size   ;
 reg   [RSZ+15: 0] set_a_step   , set_b_step   , set_c_step   , set_d_step   ;
@@ -134,6 +137,9 @@ reg               reverse_a_on , reverse_b_on , reverse_c_on , reverse_d_on ;
 reg               sync_a_on    , sync_b_on    , sync_c_on    , sync_d_on    ;
 reg               rand_a_on    , rand_b_on    , rand_c_on    , rand_d_on    ;
 wire  [ RSZ-1: 0] rand_pnt;
+
+assign asg2_step_o = step_b_o;
+assign asg3_step_o = step_c_o;
 
 wire              _set_a_rst   , _set_b_rst   , _set_c_rst   , _set_d_rst    ;
 assign sync_rst_o = (sync_a_on & set_a_rst) | (sync_b_on & set_b_rst) | (sync_c_on & set_c_rst) | (sync_d_on & set_d_rst) ;

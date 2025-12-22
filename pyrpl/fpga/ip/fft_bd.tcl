@@ -238,7 +238,9 @@ proc create_root_design { parentCell } {
    CONFIG.Input_Width {28} \
    CONFIG.Output_Width {28} \
    CONFIG.cartesian_has_tlast {true} \
+   CONFIG.flow_control {Blocking} \
    CONFIG.out_tlast_behv {Pass_Cartesian_TLAST} \
+   CONFIG.out_tready {true} \
  ] $cordic_0
 
   # Create instance: xfft_0, and set properties
