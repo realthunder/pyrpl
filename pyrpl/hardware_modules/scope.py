@@ -382,8 +382,6 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_frame_cnt = IntRegister(0x30, doc="FFT frame counter")
 
-    fft_hist_length = IntRegister(0x34, doc="FFT history buffer size")
-
     fft_peak_start = IntRegister(0x38, doc="FFT peak detection start index")
 
     fft_peak_threshold = IntRegister(0x3C, doc="FFT peak detection threshold")
@@ -414,9 +412,9 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_we_cnt = IntRegister(0x70, doc="FFT write count")
 
-    fft_hist_wp = IntRegister(0x74, doc="FFT history write point")
+    fft_skip_cnt = IntRegister(0x74, doc="FFT skipped frame counter")
 
-    fft_skip_cnt = IntRegister(0x78, doc="FFT skipped frame counter")
+    fft_peak_state = IntRegister(0x78, doc="FFT peak detection internal state")
 
     _adc_we_cnt = IntRegister(0x2C, doc="Number of samles that have passed "
                                         "since trigger was armed (adc_we_cnt)")
@@ -544,12 +542,8 @@ class Scope(HardwareModule, AcquisitionModule):
         #  d2 = np.array(d, dtype=float) / 2**(self._fft_data_width-1)
         return d2, d1
 
-    def _ffthist(self, length=None):
+    def _ffthist(self, length):
         """raw data from fft history"""
-        if length is None:
-            length = self.fft_hist_length
-        if not length:
-            return []
         d = np.array(self._reads(0x40000, length), dtype=np.uint32)
         d1 = np.array(d & 0xffff, dtype=np.int32)
         d2 = np.array(d >> 16, dtype=np.int32)

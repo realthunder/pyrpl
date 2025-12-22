@@ -244,16 +244,22 @@ if (dac_rstn_i == 1'b0) begin
    trig_done_prev <= 1'b0 ;
    step_o <= 1'b0 ;
 end else begin
-    trig_done_prev <= trig_done ;
-    reverse_prev <= reverse_run;
+   if (set_rst_i) begin
+      trig_done_prev <= 0;
+      reverse_prev <= 0;
+      reverse_run <= 0;
+   end else begin
+      trig_done_prev <= trig_done;
+      reverse_prev <= reverse_run;
+   end
    if (set_rst_i || (dac_trig && !dac_do)) // manual reset or start
-      if (reverse_run && reverse_on_i) begin
-          dac_pnt <= set_size_i - 1;
-          dac_npnt <= {1'b0, set_size_i - 1 - set_step_i};
+      if (!set_rst_i && reverse_run && reverse_on_i) begin
+         dac_pnt <= set_size_i - 1;
+         dac_npnt <= {1'b0, set_size_i - 1 - set_step_i};
       end else begin
          dac_pnt <= set_ofs_i;
          dac_npnt <= set_ofs_i + set_step_i;
-         step_o <= 1'b0 ;
+         step_o <= 0;
       end
    else if (dac_do && trig_slave_i) begin
       if (reverse_run && reverse_on_i) begin
