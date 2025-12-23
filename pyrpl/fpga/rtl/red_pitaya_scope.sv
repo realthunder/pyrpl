@@ -398,7 +398,8 @@ logic [ RSZ-1: 0]   fft_acq1_cnt;
 logic [ RSZ-1: 0]   fft_acq2_cnt;
 logic [ RSZ-1: 0]   fft_state_cnt;
 
-logic [ HSZ-1: 0]   fft_hist_index[2-1 : 0];
+localparam IDX_PIPELINE = 4-1;
+logic [ HSZ-1: 0]   fft_hist_index[IDX_PIPELINE : 0];
 logic [ HSZ-1: 0]   fft_hist_step;
 
 logic [ HSZ-1: 0]   fft_hist_raddr;
@@ -452,21 +453,49 @@ logic fft_dvalid = (!fft_trig_sync || adc_we) && adc_dv;
 logic fft_a_enable = fft_state == S_FFT_A;
 logic fft_b_enable = fft_state == S_FFT_B;
 
+integer i;
+logic [ RSZ*2-1 :0]  fft_indices[0:(1<<HSZ)-1];
+logic [ HSZ-1   :0]  fft_index_raddr2;
+logic [ HSZ-1   :0]  fft_index_raddr1;
+logic [ 32-1    :0]  fft_index_rdata;
+logic [ HSZ-1   :0]  fft_indices_pos;
+
+localparam ISZ = 6-1;
+logic [ ISZ  :0]    fft_index_valid;
+
+
 always @(posedge adc_clk_i)
 if (fft_index_flush) begin
    fft_hist_step <= 0;
+   fft_indices[0] <= 0;
    fft_hist_index[0] <= 0;
-   fft_hist_index[1] <= 0;
+   fft_indices_pos <= 1;
+   fft_index_valid <= 0;
 end else begin
     if (asg3_step_i == 0 && asg2_step_i == 0) begin
+        fft_indices_pos <= 0;
         fft_hist_step <= 0;
-        fft_hist_index[0] <= 0;
+        for (int i=0; i<=IDX_PIPELINE; i=i+1)
+            fft_hist_index[0] <= 0;
     end else begin
         fft_hist_index[0] <= asg3_step_i * fft_hist_step + asg2_step_i;
+        for (int i=0; i<IDX_PIPELINE; i=i+1)
+            fft_hist_index[i+1] = fft_hist_index[i];
         if (fft_hist_step < asg2_step_i + 1)
             fft_hist_step = asg2_step_i + 1; 
     end
-    fft_hist_index[1] <= fft_hist_index[0];
+
+    fft_index_valid = {fft_index_valid[ISZ-1: 0], fft_trig_i && fft_done[0]};
+    if (fft_index_valid[ISZ]) begin
+        fft_indices[fft_indices_pos] <= {asg2_step_i, asg3_step_i};
+        fft_indices_pos <= fft_indices_pos + 1;
+    end
+end
+
+always @(posedge adc_clk_i) begin
+   fft_index_raddr1 <= sys_addr[HSZ-1+2:2] ;
+   fft_index_raddr2  <= fft_index_raddr1;
+   fft_index_rdata <= {2'b0, fft_indices[fft_index_raddr2][2*RSZ-1 : RSZ], 2'b0, fft_indices[fft_index_raddr2][RSZ-1: 0]};
 end
 
 
@@ -488,7 +517,7 @@ fft_proc #(.DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_a (
    .fft_wp_last (fft_wp_last[0]),
 
    .fft_index_flush_i (fft_index_flush),
-   .fft_hist_index_i (fft_hist_index[1]),
+   .fft_hist_index_i (fft_hist_index[IDX_PIPELINE]),
 
    .fft_hist_raddr_i (fft_hist_raddr),
    .fft_hist_rdata_o (fft_hist_rdata_a[FSZ-1:0]),
@@ -524,7 +553,7 @@ fft_proc #(.DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_b (
    .fft_wp_last (fft_wp_last[1]),
 
    .fft_index_flush_i (fft_index_flush),
-   .fft_hist_index_i (fft_hist_index[1]),
+   .fft_hist_index_i (fft_hist_index[IDX_PIPELINE]),
 
    .fft_hist_raddr_i (fft_hist_raddr),
    .fft_hist_rdata_o (fft_hist_rdata_b[FSZ-1:0]),
@@ -1267,6 +1296,8 @@ end else begin
      20'h3???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= sys_addr[2] ? fft_rdata_b : fft_rdata_a; end
 
      20'h4???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {fft_hist_rdata_b, fft_hist_rdata_a}; end
+
+     20'h5???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_index_rdata                     ; end
 
        default : begin sys_ack <= sys_en;          sys_rdata <=  32'h0                              ; end
    endcase
