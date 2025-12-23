@@ -95,9 +95,6 @@ logic [ FSZ-1: 0]   fft_raddr2;
 
 // sign extend the data for padding according to xfft requirement
 assign fft_data_ext = {16-14{fft_data_i[14-1]}};
-assign fft_saxi_last = fft_we_cnt == 1;
-assign fft_saxi_valid = fft_q_size > 0 && fft_we_cnt > 0 && fft_we_cnt <= 2**FSZ;
-assign fft_done = fft_we_cnt==0;
 assign fft_data = enable_i ? data_i : fft_last_data;
 
 always @(posedge clk_i) begin
@@ -137,11 +134,12 @@ if (rstn_i == 1'b0) begin
     fft_q_wp <= 0;
     fft_q_rp <= 0;
     fft_last_data <= 0;
+    fft_done <= 1;
 
 end else begin
 
     if (dvalid_i) begin
-        fft_queue[fft_q_wp] <= fft_data ;
+        fft_queue[fft_q_wp] <= fft_data;
         if (fft_q_wp + 1 == fft_q_rp)
             fft_q_rp <= fft_q_rp + 1;
         fft_q_wp <= fft_q_wp + 1;
@@ -155,7 +153,6 @@ end else begin
         end else begin
             fft_we_cnt <= 2**FSZ;
             fft_q_rp <= fft_q_wp - (2**FSZ - set_dly);
-            fft_data_i <= fft_queue[fft_q_wp - (2**FSZ - set_dly)];
         end
     end else if (fft_q_size > 0 && fft_we_cnt > 0 && (fft_we_cnt > 2**FSZ || fft_saxi_rdy)) begin
         // NOTE: there might be buffer overrun if sizeof(fft_queue) < sizeof(adc_buf)
@@ -167,6 +164,10 @@ end else begin
         fft_q_rp <= fft_q_rp + 1;
         fft_we_cnt <= fft_we_cnt - 1;
     end
+
+    fft_done <= fft_we_cnt==0;
+    fft_saxi_last <= fft_we_cnt == 1;
+    fft_saxi_valid <= fft_q_size > 0 && fft_we_cnt > 0 && fft_we_cnt <= 2**FSZ;
 end
 
 always @(posedge clk_i)
@@ -212,11 +213,12 @@ end else begin
 
         if ({fft_peak_ready[0], peak_ready} == 2'b01) begin
             if (index_rp == index_wp)
-                fft_hist_index <= fft_hist_index_i;
+                fft_hist_index = fft_hist_index_i;
             else
-                fft_hist_index <= fft_index_q[index_rp];
+                fft_hist_index = fft_index_q[index_rp];
             index_rp <= index_rp + 1;
 
+            fft_hist[fft_hist_index] <= fft_peak_idx;
             fft_peak_index <= fft_peak_idx;
             fft_peak_value <= fft_peak;
             fft_sum <= _fft_sum;
@@ -224,8 +226,6 @@ end else begin
         end else if (index_wp + 1 == index_rp)
             index_rp <= index_rp + 1;
 
-        if (fft_peak_ready == 2'b01)
-            fft_hist[fft_hist_index] <= fft_peak_index;
     end
 
     fft_peak_ready = {fft_peak_ready[0], peak_ready};

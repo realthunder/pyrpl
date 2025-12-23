@@ -532,14 +532,6 @@ class Scope(HardwareModule, AcquisitionModule):
         d = np.array(d, dtype=float) / 2**(self._fft_data_width-3)
         d1 = d[np.arange(0, self._fft_length, 2)]
         d2 = d[np.arange(1, self._fft_length, 2)]
-
-        #  d = np.array(self._reads(0x30000, length//2), dtype=np.uint32)
-        #  d[d >= 2 ** (self._fft_data_width-1)] -= 2 ** self._fft_data_width
-        #  d1 = np.array(d, dtype=float) / 2**(self._fft_data_width-1)
-        #
-        #  d = np.array(self._reads(0x50000, length//2), dtype=np.uint32)
-        #  d[d >= 2 ** (self._fft_data_width-1)] -= 2 ** self._fft_data_width
-        #  d2 = np.array(d, dtype=float) / 2**(self._fft_data_width-1)
         return d2, d1
 
     def _ffthist(self, length):
@@ -548,6 +540,10 @@ class Scope(HardwareModule, AcquisitionModule):
         d1 = np.array(d & 0xffff, dtype=np.int32)
         d2 = np.array(d >> 16, dtype=np.int32)
         return d2, d1
+
+    def _fftidx(self, length):
+        d = np.array(self._reads(0x50000, length), dtype=np.uint32)
+        return np.stack((d&0xffff, d>>16), axis=1)
 
     @property
     def _rawdata_ch1(self):
