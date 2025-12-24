@@ -399,14 +399,14 @@ logic [ RSZ-1: 0]   fft_acq2_cnt;
 logic [ RSZ-1: 0]   fft_state_cnt;
 
 localparam IDX_PIPELINE = 4-1;
-logic [ HSZ-1: 0]   fft_hist_index[IDX_PIPELINE : 0];
+logic [ HSZ-1: 0]   fft_hist_index[0:IDX_PIPELINE];
 logic [ HSZ-1: 0]   fft_hist_step;
 
 logic [ HSZ-1: 0]   fft_hist_raddr;
 logic [ 16-1:  0]   fft_hist_rdata_a;
 logic [ 16-1:  0]   fft_hist_rdata_b;
 logic [ FSZ-1: 0]   fft_raddr;
-logic [ FSZ-1: 0]   fft_wp_last[1:0];
+logic [ FSZ-1: 0]   fft_wp_last[0:1];
 logic [ DSZ-1: 0]   fft_rdata_a;
 logic [ DSZ-1: 0]   fft_rdata_b;
 
@@ -417,13 +417,14 @@ logic [ 16-1: 0]    fft_threshold_k;
 logic [ FSZ-1:0]    fft_peak_start;
 logic [ DSZ-1: 0]   fft_peak_minimum;
 
-logic [ 6-1 :  0]   fft_status[1:0];
+logic [ 6-1 :  0]   fft_status[0:1];
 logic [ 2-1 :  0]   fft_done;
-// (* mark_debug = "true" *)
 logic [ FSZ: 0]     fft_count_a;
 logic [ FSZ: 0]     fft_count_b;
-logic [FSZ+DSZ-1:0] fft_sum[1:0];
-logic [ 8-1 : 0]    fft_peak_state[1:0];
+logic [FSZ+DSZ-1:0] fft_sum_a;
+logic [FSZ+DSZ-1:0] fft_sum_b;
+logic [ 8-1 : 0]    fft_peak_state_a;
+logic [ 8-1 : 0]    fft_peak_state_b;
 logic [ 16-1: 0]    fft_peak_index_a;
 logic [ 16-1: 0]    fft_peak_index_b;
 logic [ DSZ-1: 0]   fft_peak_a;
@@ -431,9 +432,9 @@ logic [ DSZ-1: 0]   fft_peak_b;
 logic [ 32-1: 0]    fft_frame_cnt;
 logic [ 32-1: 0]    fft_we_cnt[1:0];
 logic [ 32-1: 0]    fft_skip_cnt;
-logic               fft_index_flush = adc_rstn_i == 1'b0 || sync_rst_i;
+// logic               fft_index_flush = adc_rstn_i == 1'b0 || sync_rst_i;
+logic               fft_index_flush = sync_rst_i;
 
-// (* mark_debug = "true" *)
 logic [ 2-1 :  0]   fft_peak_ready_a;
 logic [ 2-1 :  0]   fft_peak_ready_b;
 logic [ 2-1 :  0]   fft_peak_ready;
@@ -444,7 +445,8 @@ always @(posedge adc_clk_i) begin
     fft_rst_i <= {fft_rst_i[0], (fft_trig_sync && adc_rst_do) || sync_rst_i};
 end
 
-assign fft_rstn_i = adc_rstn_i && ~|fft_rst_i;
+// assign fft_rstn_i = adc_rstn_i && ~|fft_rst_i;
+assign fft_rstn_i = ~|fft_rst_i;
 
 logic fft_trig_i = fft_trig_sync ? (adc_trig && !adc_dly_do && pretrig_ok) : fft_trig;
 
@@ -454,9 +456,13 @@ logic fft_a_enable = fft_state == S_FFT_A;
 logic fft_b_enable = fft_state == S_FFT_B;
 
 integer i;
-logic [ RSZ*2-1 :0]  fft_indices[0:(1<<HSZ)-1];
-logic [ HSZ-1   :0]  fft_index_raddr2;
+localparam IDXSZ = 8;
+// logic [ IDXSZ-1 :0]  fft_indices_x[0:(1<<HSZ)-1];
+// logic [ IDXSZ-1 :0]  fft_indices_y[0:(1<<HSZ)-1];
+logic [ IDXSZ-1 :0]  fft_index_wx;
+logic [ IDXSZ-1 :0]  fft_index_wy;
 logic [ HSZ-1   :0]  fft_index_raddr1;
+logic [ HSZ-1   :0]  fft_index_raddr2;
 logic [ 32-1    :0]  fft_index_rdata;
 logic [ HSZ-1   :0]  fft_indices_pos;
 
@@ -467,7 +473,6 @@ logic [ ISZ  :0]    fft_index_valid;
 always @(posedge adc_clk_i)
 if (fft_index_flush) begin
    fft_hist_step <= 0;
-   fft_indices[0] <= 0;
    fft_hist_index[0] <= 0;
    fft_indices_pos <= 1;
    fft_index_valid <= 0;
@@ -486,17 +491,20 @@ end else begin
     end
 
     fft_index_valid = {fft_index_valid[ISZ-1: 0], fft_trig_i && fft_done[0]};
-    if (fft_index_valid[ISZ]) begin
-        fft_indices[fft_indices_pos] <= {asg2_step_i, asg3_step_i};
-        fft_indices_pos <= fft_indices_pos + 1;
-    end
+    fft_index_wx <= asg2_step_i;
+    fft_index_wy <= asg3_step_i;
+    // if (fft_index_valid[ISZ]) begin
+    //     fft_indices_x[fft_indices_pos] <= fft_index_wx;
+    //     fft_indices_y[fft_indices_pos] <= fft_index_wy;
+    //     fft_indices_pos <= fft_indices_pos + 1;
+    // end
 end
 
-always @(posedge adc_clk_i) begin
-   fft_index_raddr1 <= sys_addr[HSZ-1+2:2] ;
-   fft_index_raddr2  <= fft_index_raddr1;
-   fft_index_rdata <= {2'b0, fft_indices[fft_index_raddr2][2*RSZ-1 : RSZ], 2'b0, fft_indices[fft_index_raddr2][RSZ-1: 0]};
-end
+// always @(posedge adc_clk_i) begin
+//    fft_index_raddr1 <= sys_addr[HSZ-1+2:2] ;
+//    fft_index_raddr2  <= fft_index_raddr1;
+//    fft_index_rdata <= {{16-IDXSZ{1'b0}}, fft_indices_x[fft_index_raddr1], {16-IDXSZ{1'b0}}, fft_indices_y[fft_index_raddr1]};
+// end
 
 
 fft_proc #(.DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_a (
@@ -526,8 +534,8 @@ fft_proc #(.DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_a (
    .fft_done (fft_done[0]),
    .fft_peak_ready (fft_peak_ready_a),
    .fft_count (fft_count_a),
-   .fft_sum (fft_sum[0]),
-   .fft_peak_state (fft_peak_state[0]),
+   .fft_sum (fft_sum_a),
+   .fft_peak_state (fft_peak_state_a),
    .fft_peak_index (fft_peak_index_a[FSZ-1:0]),
    .fft_peak_value (fft_peak_a),
    .fft_frame_cnt (fft_frame_cnt[15:0]),
@@ -562,8 +570,8 @@ fft_proc #(.DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_b (
    .fft_done (fft_done[1]),
    .fft_peak_ready (fft_peak_ready_b),
    .fft_count (fft_count_b),
-   .fft_sum (fft_sum[1]),
-   .fft_peak_state (fft_peak_state[1]),
+   .fft_sum (fft_sum_b),
+   .fft_peak_state (fft_peak_state_b),
    .fft_peak_index (fft_peak_index_b[FSZ-1:0]),
    .fft_peak_value (fft_peak_b),
    .fft_frame_cnt (fft_frame_cnt[31:16]),
@@ -1238,7 +1246,7 @@ end else begin
      20'h00044 : begin sys_ack <= sys_en;          sys_rdata <= {fft_peak_index_b, fft_peak_index_a}; end
      20'h00048 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_a                          ; end
      20'h0004C : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_b                          ; end
-     20'h00050 : begin sys_ack <= sys_en;          sys_rdata <= fft_sum[0]                          ; end
+     20'h00050 : begin sys_ack <= sys_en;          sys_rdata <= fft_sum_a                           ; end
      20'h00054 : begin sys_ack <= sys_en;          sys_rdata <= fft_count_a                         ; end
      20'h00058 : begin sys_ack <= sys_en;          sys_rdata <= fft_wait1_cnt                       ; end
      20'h0005C : begin sys_ack <= sys_en;          sys_rdata <= fft_wait2_cnt                       ; end
@@ -1248,7 +1256,7 @@ end else begin
      20'h0006C : begin sys_ack <= sys_en;          sys_rdata <= fft_state                           ; end
      20'h00070 : begin sys_ack <= sys_en;          sys_rdata <= fft_we_cnt[0]                       ; end
      20'h00074 : begin sys_ack <= sys_en;          sys_rdata <= fft_skip_cnt                        ; end
-     20'h00078 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_state[0]                   ; end
+     20'h00078 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_state_a                    ; end
 
      /*
      20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= {{32-18{1'b0}}, set_a_filt_aa}      ; end
