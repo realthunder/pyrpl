@@ -269,9 +269,8 @@ end else begin
             dac_npnt <= {1'b0, dac_npnt2 + set_step_i};
             step_o <= 0;
          end else begin
-            if (step_o > 0)
-                step_o <= step_o - 1;
             dac_npnt <= {1'b0, dac_npnt2 - set_step_i};
+            step_o <= step_o - 1;
          end
       end else begin
          if (~dac_npnt_sub_neg) begin

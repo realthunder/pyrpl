@@ -208,7 +208,7 @@ XADC #(
   .INIT_5B(16'h6aaa), // VCCDdro upper alarm limit
   .INIT_5F(16'h6666), // VCCDdro lower alarm limit
   // Simulation attributes: Set for proper simulation behavior
-  .SIM_DEVICE("7SERIES"),            // Select target device (values)
+  .SIM_DEVICE("ZYNQ"),            // Select target device (values)
   .SIM_MONITOR_FILE("../../../../code/bench/xadc_sim_values.txt")  // Analog simulation data file name
 ) XADC_inst (
   // ALARMS: 8-bit (each) output: ALM, OT

@@ -81,7 +81,7 @@ assign ready = current_state==S_IDLE;
 
 assign state = current_state;
 
-assign maxi_rdy = current_state==S_IDLE || current_state==S_STREAM;
+assign maxi_rdy = current_state==S_STREAM;
 
 integer i;
 
@@ -89,39 +89,41 @@ always @(posedge clk)
 if (resetn == 0) begin
     current_state <= S_IDLE;
 end else begin
-    if (current_state == S_IDLE && maxi_valid) begin
-        // Yes, we may be discarding the first incoming data, because data_valid
-        // might be on.  But that's okay.
-        peak_idx <= 0;
-        peak2_idx <= 0;
-        peak <= 0;
-        peak2 <= 0;
-        count <= 0;
-        sum <= 0;
-        for (i=0; i<=PIPELINE; i=i+1) begin
-            sum_sq[i] <= 0;
+    if (current_state == S_IDLE) begin
+        if (maxi_valid) begin
+            peak_idx <= 0;
+            peak2_idx <= 0;
+            peak <= 0;
+            peak2 <= 0;
+            count <= 0;
+            sum <= 0;
+            for (i=0; i<=PIPELINE; i=i+1) begin
+                sum_sq[i] <= 0;
+            end
+            current_state <= S_STREAM;
         end
-        current_state <= S_STREAM;
-    end else if (maxi_valid && current_state == S_STREAM) begin
-        if (maxi_last)
-            current_state <= S_DETECT;
-        if (data_valid) begin
-            if (peak <= data_in) begin
-                peak2 <= peak;
-                peak2_idx <= peak_idx;
-                peak <= data_in;
-                peak_idx <= data_index;
-            end else if (peak2 <= data_in) begin
-                peak2 <= data_in;
-                peak2_idx <= data_index;
+    end else if (current_state == S_STREAM) begin
+        if (maxi_valid) begin
+            if (maxi_last)
+                current_state <= S_DETECT;
+            if (data_valid) begin
+                if (peak <= data_in) begin
+                    peak2 <= peak;
+                    peak2_idx <= peak_idx;
+                    peak <= data_in;
+                    peak_idx <= data_index;
+                end else if (peak2 <= data_in) begin
+                    peak2 <= data_in;
+                    peak2_idx <= data_index;
+                end
+                sum <= sum + data_in;
+                sum_sq[0] <= data_in * data_in;
+                for (i=0; i<PIPELINE-1; i=i+1) begin
+                    sum_sq[i+1] <= sum_sq[i];
+                end
+                sum_sq[PIPELINE] <= sum_sq[PIPELINE] + sum_sq[PIPELINE-1];
+                count <= count + 1;
             end
-            sum <= sum + data_in;
-            sum_sq[0] <= data_in * data_in;
-            for (i=0; i<PIPELINE-1; i=i+1) begin
-                sum_sq[i+1] <= sum_sq[i];
-            end
-            sum_sq[PIPELINE] <= sum_sq[PIPELINE] + sum_sq[PIPELINE-1];
-            count <= count + 1;
         end
 
     end else if (current_state >= S_DETECT && current_state < S_DETECT1) begin

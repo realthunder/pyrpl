@@ -9,6 +9,8 @@
 # define paths
 ################################################################################
 
+set_param general.maxThreads 8
+
 set path_rtl rtl
 set path_ip  ip
 set path_sdc sdc
