@@ -562,15 +562,22 @@ end else begin
      20'h00114 : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ-2{1'b0}},trigbuf_rp_a}    ; end
      20'h00118 : begin sys_ack <= sys_en;          sys_rdata <= at_counts_a[32-1:0]                ; end
      20'h0011C : begin sys_ack <= sys_en;          sys_rdata <= at_counts_a[64-1:32]               ; end
+     20'h00120 : begin sys_ack <= sys_en;          sys_rdata <= step_a_o                           ; end
+
      20'h00134 : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ-2{1'b0}},trigbuf_rp_b}    ; end
      20'h00138 : begin sys_ack <= sys_en;          sys_rdata <= at_counts_b[32-1:0]                ; end
      20'h0013C : begin sys_ack <= sys_en;          sys_rdata <= at_counts_b[64-1:32]               ; end
+     20'h00140 : begin sys_ack <= sys_en;          sys_rdata <= step_b_o                           ; end
+
      20'h00154 : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ-2{1'b0}},trigbuf_rp_c}    ; end
      20'h00158 : begin sys_ack <= sys_en;          sys_rdata <= at_counts_c[32-1:0]                ; end
      20'h0015C : begin sys_ack <= sys_en;          sys_rdata <= at_counts_c[64-1:32]               ; end
+     20'h00160 : begin sys_ack <= sys_en;          sys_rdata <= step_c_o                           ; end
+
      20'h00174 : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ-2{1'b0}},trigbuf_rp_d}    ; end
      20'h00178 : begin sys_ack <= sys_en;          sys_rdata <= at_counts_d[32-1:0]                ; end
      20'h0017C : begin sys_ack <= sys_en;          sys_rdata <= at_counts_d[64-1:32]               ; end
+     20'h00180 : begin sys_ack <= sys_en;          sys_rdata <= step_d_o                           ; end
 
 	 20'h1zzzz : begin sys_ack <= ack_dly;         sys_rdata <= {{32-14{1'b0}},buf_a_rdata}        ; end
      20'h2zzzz : begin sys_ack <= ack_dly;         sys_rdata <= {{32-14{1'b0}},buf_b_rdata}        ; end
