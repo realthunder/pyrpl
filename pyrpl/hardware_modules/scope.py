@@ -442,6 +442,8 @@ class Scope(HardwareModule, AcquisitionModule):
                                     options=_decimations,
                                     call_setup=True)
 
+    _decimation_register = IntRegister(0x14, doc="decimation register value", call_setup=True)
+
     sampling_times = [8e-9 * dec for dec in decimations]
 
     sampling_time = SamplingTimeProperty(options=sampling_times)

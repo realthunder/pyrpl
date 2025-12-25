@@ -1,10 +1,9 @@
 module fft_proc #(
-  parameter DSZ = 28,  // FFT_output width
-  parameter FSZ = 13,  // FFT transform length 2^FSZ
-
-  parameter QSZ = 12,  // FFT queue size 2^QSZ
-  parameter RSZ = 14,  // RAM size 2^RSZ
-  parameter HSZ = 12  // fft history buffer size 2^HSZ (Note: consider word size of 32bit, better not exceed 64KBytes in total)
+  parameter DSZ,        // FFT_output width
+  parameter FSZ,        // FFT transform length 2^FSZ
+  parameter RSZ,        // RAM size 2^RSZ
+  parameter HSZ,        // fft history buffer size 2^HSZ (Note: consider word size of 32bit, better not exceed 64KBytes in total)
+  parameter QSZ = 10    // FFT queue size 2^QSZ
 )(
   input logic             clk_i,
   input logic             rstn_i,
@@ -24,6 +23,7 @@ module fft_proc #(
   output logic [FSZ-1: 0] fft_wp_last,
 
   input logic             fft_index_flush_i,
+  input logic             fft_index_valid_i,
   input logic  [ HSZ-1:0] fft_hist_index_i,
 
   input logic  [ HSZ-1:0] fft_hist_raddr_i,
@@ -46,8 +46,6 @@ logic [ 16-1: 0] skip_cnt;
 logic [ 16-1: 0] frame_cnt;
 logic [ 32-1: 0] clk_cnt;
 
-localparam ISZ = 6-1;
-logic [ ISZ  :0] index_valid;
 logic [ HSZ-1:0] fft_index_q[0:(1<<QSZ)-1];
 logic [ HSZ-1:0] fft_hist_index;
 logic [ QSZ-1:0] index_wp;
@@ -74,7 +72,7 @@ logic [ DSZ-1: 0]   fft_peak;
 logic [ FSZ-1: 0]   fft_peak2_idx;
 logic [ DSZ-1: 0]   fft_peak2;
 logic [ FSZ+DSZ-1:0]_fft_sum;
-// logic [ FSZ: 0]     _fft_count;
+logic [ FSZ: 0]     _fft_count;
 logic [ FSZ-1: 0]   fft_peak_rp;
 logic               fft_peak_data_valid;
 logic [ DSZ-1: 0]   fft_peak_data;
@@ -187,19 +185,14 @@ logic peak_ready;
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
     fft_peak_ready <= 2'b11;
-    index_valid <= 0;
     index_wp <= 0;
     index_rp <= 0;
 end else begin
     if (fft_index_flush_i) begin
-        index_valid <= 0;
         index_wp <= 0;
         index_rp <= 0;
     end else begin
-        // Delay index queueing for a few cycles
-        index_valid = {index_valid[ISZ-1: 0], trig_i && fft_done};
-
-        if (index_valid[ISZ]) begin
+        if (fft_index_valid_i) begin
             fft_index_q[index_wp] <= fft_hist_index_i;
             index_wp <= index_wp + 1;
         end
@@ -258,7 +251,7 @@ fft_wrapper fft_i (
    .S_AXIS_DATA_0_tready        (fft_saxi_rdy     ),
    .S_AXIS_DATA_0_tvalid        (fft_saxi_valid   ),
    .aclk_0                      (clk_i            ),
-   .aresetn_0                   (rstn_i           ),
+   .aresetn_0                   (1'b1             ),
    .event_data_in_channel_halt_0(fft_in_halt      ),
    .event_data_out_channel_halt_0(fft_out_halt    ),
    .event_status_channel_halt_0 (fft_status_halt  ),

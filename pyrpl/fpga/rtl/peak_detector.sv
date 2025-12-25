@@ -1,7 +1,7 @@
 module peak_detector #(
     // --- PARAMETERS ---
-    parameter SSZ = 14, // maximum stream length in bit size (2^14 = 16k)
-    parameter DSZ = 28  // data bit size
+    parameter SSZ, // maximum stream length in bit size (2^14 = 16k)
+    parameter DSZ  // data bit size
 )(
     input logic           clk,
     input logic           resetn,
@@ -46,9 +46,10 @@ localparam PIPELINE = 4-1;
 localparam S_IDLE = 0;
 localparam S_STREAM = 1;
 localparam S_DETECT = 2;
-localparam S_DETECT1 = S_DETECT+PIPELINE+1;
-localparam S_DETECT2 = S_DETECT1+PIPELINE+1;
+localparam S_DETECT1 = S_DETECT +PIPELINE+1;
+localparam S_DETECT2 = S_DETECT1+1;
 localparam S_DETECT3 = S_DETECT2+PIPELINE+1;
+localparam S_DETECT4 = S_DETECT3+PIPELINE+1;
 
 logic [8-1: 0] current_state;
 
@@ -57,6 +58,7 @@ logic [SSZ:0] count;
 
 // sum of square of each data
 logic [SSZ+DSZ*2-1:0] sum_sq[PIPELINE: 0];      // Max value: 2^SSZ * 2^DSZ * 2^DSZ
+logic [SSZ+DSZ*2-1:0] sum_sq_reg;
 
 // square of sum
 logic [(SSZ+DSZ)*2-1:0] S_sq [PIPELINE: 0]; // n-stage piplining
@@ -134,9 +136,13 @@ end else begin
 
         current_state <= current_state + 1;
 
-    end else if (current_state >= S_DETECT1 && current_state < S_DETECT2) begin
+    end else if (current_state == S_DETECT1) begin
+        sum_sq_reg <= sum_sq[PIPELINE];
+        current_state <= current_state + 1;
+
+    end else if (current_state >= S_DETECT2 && current_state < S_DETECT3) begin
         S_sq[0] <= sum * sum; // S^2
-        N_S2[0] <= count * sum_sq[PIPELINE]; // N * S2
+        N_S2[0] <= count * sum_sq_reg; // N * S2
 
         // TODO: do we need to worry about signess?
         scaled_diff[0] <= peak * count - sum;
@@ -151,7 +157,7 @@ end else begin
 
         current_state <= current_state + 1;
 
-    end else if (current_state >= S_DETECT2 && current_state < S_DETECT3) begin
+    end else if (current_state >= S_DETECT3 && current_state < S_DETECT4) begin
         threshold[0] <= threshold_k_sq * V_scaled;
         scaled_diff_sq[0] <= scaled_diff[PIPELINE] * scaled_diff[PIPELINE];
         scaled_diff2_sq[0] <= scaled_diff2[PIPELINE] * scaled_diff2[PIPELINE];
@@ -164,7 +170,7 @@ end else begin
 
         current_state <= current_state + 1;
 
-    end else if (current_state == S_DETECT3) begin
+    end else if (current_state == S_DETECT4) begin
         if (scaled_diff_sq[PIPELINE] < threshold[PIPELINE]) begin
             peak_idx <= 0;
             peak2_idx <= 0;

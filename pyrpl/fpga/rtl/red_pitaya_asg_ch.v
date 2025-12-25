@@ -156,7 +156,6 @@ wire             dac_trig     ;
 reg              dac_trigr    ;
 
 reg              reverse_run  ;
-reg              reverse_prev ;
 
 // state machine
 always @(posedge dac_clk_i) begin
@@ -230,29 +229,21 @@ assign dac_trig = (!dac_rep && trig_in) || (dac_rep && |rep_cnt && (dly_cnt == 3
 assign dac_npnt_sub = dac_npnt - {1'b0,set_size_i} - 1;
 assign dac_npnt_sub_neg = dac_npnt_sub[RSZ+16];
 
-reg trig_done_prev ;
 wire trig_done     ;
-assign trig_done = (!dac_rep && trig_in) | (~dac_npnt_sub_neg) | (reverse_run != reverse_prev && reverse_on_i);
-assign trig_done_o = (trig_done && !trig_done_prev);
+assign trig_done = ((~dac_npnt_sub_neg) | (reverse_run && reverse_on_i && dac_npnt2 < set_ofs_i + set_step_i)) && (!dac_do | trig_slave_i);
+reg trig_done_prev ;
+assign trig_done_o = (!dac_rep && trig_in) | (trig_done && !trig_done_prev);
 
 // read pointer logic
 always @(posedge dac_clk_i)
 if (dac_rstn_i == 1'b0) begin
    dac_pnt  <= {RSZ+16{1'b0}};
-   reverse_run  <=  1'b0 ;
-   reverse_prev <=  1'b0 ;
-   trig_done_prev <= 1'b0 ;
+   reverse_run  <=  0 ;
    step_o <= 1'b0 ;
+   trig_done_prev <= 0;
 end else begin
-   if (set_rst_i) begin
-      trig_done_prev <= 0;
-      reverse_prev <= 0;
-      reverse_run <= 0;
-   end else begin
-      trig_done_prev <= trig_done;
-      reverse_prev <= reverse_run;
-   end
-   if (set_rst_i || (dac_trig && !dac_do)) // manual reset or start
+   trig_done_prev <= trig_done;
+   if (set_rst_i || (dac_trig && !dac_do)) begin// manual reset or start
       if (!set_rst_i && reverse_run && reverse_on_i) begin
          dac_pnt <= set_size_i - 1;
          dac_npnt <= {1'b0, set_size_i - 1 - set_step_i};
@@ -261,33 +252,34 @@ end else begin
          dac_npnt <= set_ofs_i + set_step_i;
          step_o <= 0;
       end
-   else if (dac_do && trig_slave_i) begin
+      if (set_rst_i) begin
+         reverse_run <= 0;
+      end
+   end else if (dac_do && trig_slave_i) begin
       if (reverse_run && reverse_on_i) begin
          dac_pnt <= dac_npnt2;
          if (dac_npnt2 < set_ofs_i + set_step_i) begin
-            reverse_run <= 1'b0;
+            reverse_run <= 0;
             dac_npnt <= {1'b0, dac_npnt2 + set_step_i};
             step_o <= 0;
          end else begin
             dac_npnt <= {1'b0, dac_npnt2 - set_step_i};
             step_o <= step_o - 1;
          end
-      end else begin
-         if (~dac_npnt_sub_neg) begin
-            if (reverse_on_i) begin
-               reverse_run <= 1'b1;
-               dac_npnt <= dac_pnt - set_step_i;
-            end else begin
-               reverse_run <= 1'b0;
-               dac_pnt <= set_wrap_i ? dac_npnt_sub : set_ofs_i; // wrap or go to start
-               dac_npnt <= (set_wrap_i ? dac_npnt_sub : set_ofs_i) + set_step_i;
-               step_o <= 0;
-            end
+      end else if (~dac_npnt_sub_neg) begin
+         if (reverse_on_i) begin
+            reverse_run <= 1;
+            dac_npnt <= dac_pnt - set_step_i;
          end else begin
-            dac_pnt <= dac_npnt2; // normal increase
-            dac_npnt <= dac_npnt + set_step_i;
-            step_o <= step_o + 1;
+            reverse_run <= 0;
+            dac_pnt <= set_wrap_i ? dac_npnt_sub : set_ofs_i; // wrap or go to start
+            dac_npnt <= (set_wrap_i ? dac_npnt_sub : set_ofs_i) + set_step_i;
+            step_o <= 0;
          end
+      end else begin
+         dac_pnt <= dac_npnt2; // normal increase
+         dac_npnt <= dac_npnt + set_step_i;
+         step_o <= step_o + 1;
       end
    end
 end

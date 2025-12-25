@@ -457,6 +457,8 @@ def make_asg(channel=0):
         advanced_trigger_delay = LongRegister(0x118 + _VALUE_OFFSET, bits=64,
                                               doc='delay of the advanced trigger - 1 [cycles]')
 
+        cur_step = IntRegister(0x120 + _VALUE_OFFSET, doc = 'current step index')
+
         def enable_advanced_trigger(self,
                                     frequency,
                                     amplitude,
