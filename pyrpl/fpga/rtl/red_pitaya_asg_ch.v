@@ -230,7 +230,7 @@ assign dac_npnt_sub = dac_npnt - {1'b0,set_size_i} - 1;
 assign dac_npnt_sub_neg = dac_npnt_sub[RSZ+16];
 
 wire trig_done     ;
-assign trig_done = ((~dac_npnt_sub_neg) | (reverse_run && reverse_on_i && dac_npnt2 < set_ofs_i + set_step_i)) && (!dac_do | trig_slave_i);
+assign trig_done = ((~dac_npnt_sub_neg) | (reverse_run && reverse_on_i && step_o==0)) && trig_slave_i;
 reg trig_done_prev ;
 assign trig_done_o = (!dac_rep && trig_in) | (trig_done && !trig_done_prev);
 
@@ -257,13 +257,16 @@ end else begin
       end
    end else if (dac_do && trig_slave_i) begin
       if (reverse_run && reverse_on_i) begin
-         dac_pnt <= dac_npnt2;
-         if (dac_npnt2 < set_ofs_i + set_step_i) begin
+         if (step_o == 0) begin
             reverse_run <= 0;
-            dac_npnt <= {1'b0, dac_npnt2 + set_step_i};
-            step_o <= 0;
+            dac_pnt <= set_ofs_i;
+            dac_npnt <= set_ofs_i + set_step_i;
          end else begin
-            dac_npnt <= {1'b0, dac_npnt2 - set_step_i};
+            dac_pnt <= dac_npnt2;
+            if (dac_npnt2 > set_ofs_i + set_step_i)
+                dac_npnt <= {1'b0, dac_npnt2 - set_step_i};
+            else
+                dac_npnt <= {1'b0, set_ofs_i};
             step_o <= step_o - 1;
          end
       end else if (~dac_npnt_sub_neg) begin
