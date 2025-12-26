@@ -303,7 +303,8 @@ end
 
 assign trig_out_o = {trig_d_done, trig_c_done, trig_b_done, trig_a_done};
 
-assign trig_a_slave = (!slave_a_trig && !scope_a_trig) || (slave_a_trig && trig_d_done) || (scope_a_trig && scope_done_i);
+// assign trig_a_slave = (!slave_a_trig && !scope_a_trig) || (slave_a_trig && trig_d_done) || (scope_a_trig && scope_done_i);
+assign trig_a_slave = (!slave_a_trig && !scope_a_trig) ||  (scope_a_trig && scope_done_i);
 assign trig_b_slave = (!slave_b_trig && !scope_b_trig) || (slave_b_trig && trig_a_done) || (scope_b_trig && scope_done_i);
 assign trig_c_slave = (!slave_c_trig && !scope_c_trig) || (slave_c_trig && trig_b_done) || (scope_c_trig && scope_done_i);
 assign trig_d_slave = (!slave_d_trig && !scope_d_trig) || (slave_d_trig && trig_c_done) || (scope_d_trig && scope_done_i);
@@ -569,15 +570,15 @@ end else begin
      20'h0013C : begin sys_ack <= sys_en;          sys_rdata <= at_counts_b[64-1:32]               ; end
      20'h00140 : begin sys_ack <= sys_en;          sys_rdata <= step_b_o                           ; end
 
-     20'h00154 : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ-2{1'b0}},trigbuf_rp_c}    ; end
-     20'h00158 : begin sys_ack <= sys_en;          sys_rdata <= at_counts_c[32-1:0]                ; end
-     20'h0015C : begin sys_ack <= sys_en;          sys_rdata <= at_counts_c[64-1:32]               ; end
-     20'h00160 : begin sys_ack <= sys_en;          sys_rdata <= step_c_o                           ; end
+     20'h00164 : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ-2{1'b0}},trigbuf_rp_c}    ; end
+     20'h00168 : begin sys_ack <= sys_en;          sys_rdata <= at_counts_c[32-1:0]                ; end
+     20'h0016C : begin sys_ack <= sys_en;          sys_rdata <= at_counts_c[64-1:32]               ; end
+     20'h00170 : begin sys_ack <= sys_en;          sys_rdata <= step_c_o                           ; end
 
-     20'h00174 : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ-2{1'b0}},trigbuf_rp_d}    ; end
-     20'h00178 : begin sys_ack <= sys_en;          sys_rdata <= at_counts_d[32-1:0]                ; end
-     20'h0017C : begin sys_ack <= sys_en;          sys_rdata <= at_counts_d[64-1:32]               ; end
-     20'h00180 : begin sys_ack <= sys_en;          sys_rdata <= step_d_o                           ; end
+     20'h00184 : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ-2{1'b0}},trigbuf_rp_d}    ; end
+     20'h00188 : begin sys_ack <= sys_en;          sys_rdata <= at_counts_d[32-1:0]                ; end
+     20'h0018C : begin sys_ack <= sys_en;          sys_rdata <= at_counts_d[64-1:32]               ; end
+     20'h00190 : begin sys_ack <= sys_en;          sys_rdata <= step_d_o                           ; end
 
 	 20'h1zzzz : begin sys_ack <= ack_dly;         sys_rdata <= {{32-14{1'b0}},buf_a_rdata}        ; end
      20'h2zzzz : begin sys_ack <= ack_dly;         sys_rdata <= {{32-14{1'b0}},buf_b_rdata}        ; end
