@@ -3,7 +3,7 @@ module fft_proc #(
   parameter FSZ,        // FFT transform length 2^FSZ
   parameter RSZ,        // RAM size 2^RSZ
   parameter HSZ,        // fft history buffer size 2^HSZ (Note: consider word size of 32bit, better not exceed 64KBytes in total)
-  parameter QSZ = 10    // FFT queue size 2^QSZ
+  parameter QSZ = 12    // FFT queue size 2^QSZ
 )(
   input logic             clk_i,
   input logic             rstn_i,
@@ -125,6 +125,8 @@ end else begin
         frame_cnt <= frame_cnt + 1;
 end
 
+logic pre_size = 2**FSZ - set_dly;
+
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
     fft_we_cnt <= 0;
@@ -137,8 +139,6 @@ end else begin
 
     if (dvalid_i) begin
         fft_queue[fft_q_wp] <= fft_data;
-        if (fft_q_wp + 1 == fft_q_rp)
-            fft_q_rp <= fft_q_rp + 1;
         fft_q_wp <= fft_q_wp + 1;
         fft_last_data <= fft_data;
     end
@@ -149,13 +149,15 @@ end else begin
             fft_we_cnt <= set_dly;
         end else begin
             fft_we_cnt <= 2**FSZ;
-            fft_q_rp <= fft_q_wp - (2**FSZ - set_dly);
+            if (fft_q_size > pre_size) 
+                fft_q_rp <= fft_q_wp - pre_size;
         end
     end else if (fft_q_size > 0 && fft_we_cnt > 0 && (fft_we_cnt > 2**FSZ || fft_saxi_rdy)) begin
         fft_data_i <= fft_queue[fft_q_rp];
         fft_q_rp <= fft_q_rp + 1;
         fft_we_cnt <= fft_we_cnt - 1;
-    end
+    end else if (fft_q_wp + 1 == fft_q_rp)
+        fft_q_rp <= fft_q_rp + 1;
 
     fft_done <= fft_we_cnt==0;
     fft_saxi_last <= fft_we_cnt == 1;
