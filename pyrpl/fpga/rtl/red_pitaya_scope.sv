@@ -460,8 +460,8 @@ logic fft_b_enable = fft_state == S_FFT_B;
 integer i;
 localparam IDXSZ = 8;
 localparam IHSZ = 10;
-logic [ IDXSZ-1 :0]  fft_indices_x[0:(1<<IHSZ)-1];
-logic [ IDXSZ-1 :0]  fft_indices_y[0:(1<<IHSZ)-1];
+// logic [ IDXSZ-1 :0]  fft_indices_x[0:(1<<IHSZ)-1];
+// logic [ IDXSZ-1 :0]  fft_indices_y[0:(1<<IHSZ)-1];
 logic [ IHSZ-1   :0]  fft_index_raddr1;
 logic [ IHSZ-1   :0]  fft_index_raddr2;
 logic [ 32-1     :0]  fft_index_rdata;
@@ -496,8 +496,8 @@ end else begin
         fft_hist_index[i+1] <= fft_hist_index[i];
 
     if (fft_index_valid[IDX_PIPELINE+2]) begin
-        fft_indices_x[fft_indices_pos] <= x_step;
-        fft_indices_y[fft_indices_pos] <= y_step;
+        // fft_indices_x[fft_indices_pos] <= x_step;
+        // fft_indices_y[fft_indices_pos] <= y_step;
         fft_indices_pos <= fft_indices_pos + 1;
     end
 end
@@ -505,7 +505,7 @@ end
 always @(posedge adc_clk_i) begin
    fft_index_raddr1 <= sys_addr[IHSZ-1+2:2] ;
    fft_index_raddr2  <= fft_index_raddr1;
-   fft_index_rdata <= {{16-IDXSZ{1'b0}}, fft_indices_x[fft_index_raddr1], {16-IDXSZ{1'b0}}, fft_indices_y[fft_index_raddr1]};
+   // fft_index_rdata <= {{16-IDXSZ{1'b0}}, fft_indices_x[fft_index_raddr1], {16-IDXSZ{1'b0}}, fft_indices_y[fft_index_raddr1]};
 end
 
 
