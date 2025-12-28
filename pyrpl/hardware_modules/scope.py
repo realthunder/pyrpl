@@ -520,7 +520,7 @@ class Scope(HardwareModule, AcquisitionModule):
     @property
     def _fft_length(self):
         wp_last = self.fft_wp_last
-        length1 = max(2, (wp_last & 0x10000) + 1)
+        length1 = max(2, (wp_last & 0xffff) + 1)
         length2 = max(2, (wp_last >> 16) + 1)
         return min(length1, length2)
 
@@ -532,8 +532,8 @@ class Scope(HardwareModule, AcquisitionModule):
         d = np.array(self._reads(0x30000, length), dtype=np.uint32)
         d[d >= 2 ** (self._fft_data_width-1)] -= 2 ** self._fft_data_width
         d = np.array(d, dtype=float) / 2**(self._fft_data_width-3)
-        d1 = d[np.arange(0, self._fft_length, 2)]
-        d2 = d[np.arange(1, self._fft_length, 2)]
+        d1 = d[np.arange(0, length, 2)]
+        d2 = d[np.arange(1, length, 2)]
         return d2, d1
 
     def _ffthist(self, length):
@@ -561,6 +561,7 @@ class Scope(HardwareModule, AcquisitionModule):
         """raw data from ch2"""
         # return np.array([self.to_pyint(v) for v in self._reads(0x20000,
         # self.data_length)],dtype=np.int32)
+
         x = np.array(self._reads(0x20000, self.data_length), dtype=np.int16)
         x[x >= 2 ** 13] -= 2 ** 14
         return x
@@ -580,6 +581,13 @@ class Scope(HardwareModule, AcquisitionModule):
             np.roll(self._rawdata_ch2, - (self._write_pointer_trigger +
                                           self._trigger_delay_register + 1)),
             dtype=float) / 2 ** 13
+
+        #  x = np.array(self._reads(0x60000, self.data_length//2), dtype=np.int16)
+        #  y = np.array(self._reads(0x70000, self.data_length//2), dtype=np.int16)
+        #  d = np.concatenate((x, y), axis=0)
+        #  d[d >= 2 ** 13] -= 2 ** 14
+        #  d = np.array(d, dtype=float) / 2 ** 13
+        #  return d;
 
     @property
     def _data_ch1_current(self):

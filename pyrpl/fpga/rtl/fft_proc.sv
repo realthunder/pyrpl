@@ -3,7 +3,7 @@ module fft_proc #(
   parameter FSZ,        // FFT transform length 2^FSZ
   parameter RSZ,        // RAM size 2^RSZ
   parameter HSZ,        // fft history buffer size 2^HSZ (Note: consider word size of 32bit, better not exceed 64KBytes in total)
-  parameter QSZ = 12    // FFT queue size 2^QSZ
+  parameter QSZ         // FFT queue size 2^QSZ
 )(
   input logic             clk_i,
   input logic             rstn_i,
@@ -18,7 +18,8 @@ module fft_proc #(
   input logic  [ DSZ-1:0] fft_peak_minimum,
 
 
-  input logic  [FSZ-1: 0] fft_raddr_i,
+  input logic  [ 32-1: 0] sys_addr,
+
   output logic [DSZ-1: 0] fft_rdata_o,
   output logic [FSZ-1: 0] fft_wp_last,
 
@@ -26,7 +27,6 @@ module fft_proc #(
   input logic             fft_index_valid_i,
   input logic  [ HSZ-1:0] fft_hist_index_i,
 
-  input logic  [ HSZ-1:0] fft_hist_raddr_i,
   output logic [ FSZ-1:0] fft_hist_rdata_o,
 
   output logic [  6-1: 0] status_o,
@@ -39,7 +39,12 @@ module fft_proc #(
   output logic [ DSZ-1:0] fft_peak_value,
   output logic [ 16-1: 0] fft_frame_cnt,
   output logic [ 32-1: 0] fft_we_cnt,
-  output logic [ 16-1: 0] fft_skip_cnt
+  output logic [ 16-1: 0] fft_skip_cnt,
+
+  output logic [ QSZ-1:0] fft_q_wp,
+  output logic [ QSZ-1:0] fft_q_rp,
+  output logic [ QSZ-1:0] fft_q_rp_save,
+  output logic [ 14-1:0]  fft_q_rdata_o
 );
 
 logic [ 16-1: 0] skip_cnt;
@@ -49,13 +54,15 @@ logic [ 32-1: 0] clk_cnt;
 logic [ HSZ-1:0] fft_index_q[0:(1<<QSZ)-1];
 logic [ HSZ-1:0] fft_hist_index;
 logic [ QSZ-1:0] index_wp;
+logic [ QSZ-1:0] index_wp_plus_one = index_wp + 1;
 logic [ QSZ-1:0] index_rp;
 
 logic [ 14-1: 0] fft_queue[0:(1<<QSZ)-1];
+// logic [ 14-1: 0] fft_queue2[0:(1<<QSZ)-1];
 logic [ 14-1: 0] fft_last_data;
+logic            fft_inited;
 logic [ 14-1: 0] fft_data;
-logic [ QSZ-1:0] fft_q_wp;
-logic [ QSZ-1:0] fft_q_rp;
+logic [ QSZ-1:0] fft_q_wp_plus_one = fft_q_wp + 1;
 logic [ QSZ-1:0] fft_q_size = fft_q_wp - fft_q_rp;
 
 logic [ 14-1: 0]    fft_data_i;
@@ -89,19 +96,25 @@ logic [ HSZ-1: 0]   fft_hist_raddr1;
 logic [ HSZ-1: 0]   fft_hist_raddr2;
 logic [ FSZ-1: 0]   fft_raddr1;
 logic [ FSZ-1: 0]   fft_raddr2;
+logic [ HSZ-1: 0]   fft_q_raddr1;
+logic [ HSZ-1: 0]   fft_q_raddr2;
 
 // sign extend the data for padding according to xfft requirement
 assign fft_data_ext = {16-14{fft_data_i[14-1]}};
-assign fft_data = enable_i ? data_i : fft_last_data;
+assign fft_data = (enable_i || !fft_inited) ? data_i : fft_last_data;
 
 always @(posedge clk_i) begin
-   fft_raddr1   <= fft_raddr_i;
-   fft_raddr2   <= fft_raddr1;
+   fft_raddr1 <= sys_addr[FSZ-1+3:3] ;
+   fft_raddr2 <= fft_raddr1;
    fft_rdata_o <= fft_buf[fft_raddr2];
 
-   fft_hist_raddr1 <= fft_hist_raddr_i;
+   fft_hist_raddr1 <= sys_addr[HSZ-1+2:2]  ;
    fft_hist_raddr2 <= fft_hist_raddr1;
    fft_hist_rdata_o <= fft_hist[fft_hist_raddr2] ;
+
+   // fft_q_raddr1 <= sys_addr[QSZ-1+2:2]  ;
+   // fft_q_raddr2 <= fft_q_raddr1;
+   // fft_q_rdata_o <= fft_queue2[fft_q_rp_save + fft_q_raddr2];
 end
 
 always @(posedge clk_i)
@@ -132,31 +145,37 @@ if (rstn_i == 1'b0) begin
     fft_we_cnt <= 0;
     fft_q_wp <= 0;
     fft_q_rp <= 0;
-    fft_last_data <= 0;
     fft_done <= 1;
+    // fft_last_data <= 1;
+    // fft_inited <= 0;
 
 end else begin
-
     if (dvalid_i) begin
         fft_queue[fft_q_wp] <= fft_data;
-        fft_q_wp <= fft_q_wp + 1;
+        // fft_queue2[fft_q_wp] <= fft_data;
+        fft_q_wp <= fft_q_wp_plus_one;
         fft_last_data <= fft_data;
+        fft_inited <= 1;
     end
 
     if (trig_i && fft_done) begin
         if (set_dly >= 2**FSZ) begin
             fft_q_rp <= fft_q_wp;
+            fft_q_rp_save <= fft_q_wp;
             fft_we_cnt <= set_dly;
         end else begin
             fft_we_cnt <= 2**FSZ;
-            if (fft_q_size > pre_size) 
+            if (fft_q_size > pre_size) begin
                 fft_q_rp <= fft_q_wp - pre_size;
+                fft_q_rp_save <= fft_q_wp - pre_size;
+            end else
+                fft_q_rp_save <= fft_q_rp;
         end
     end else if (fft_q_size > 0 && fft_we_cnt > 0 && (fft_we_cnt > 2**FSZ || fft_saxi_rdy)) begin
         fft_data_i <= fft_queue[fft_q_rp];
         fft_q_rp <= fft_q_rp + 1;
         fft_we_cnt <= fft_we_cnt - 1;
-    end else if (fft_q_wp + 1 == fft_q_rp)
+    end else if (dvalid_i && fft_q_wp_plus_one == fft_q_rp)
         fft_q_rp <= fft_q_rp + 1;
 
     fft_done <= fft_we_cnt==0;
@@ -196,7 +215,7 @@ end else begin
     end else begin
         if (fft_index_valid_i) begin
             fft_index_q[index_wp] <= fft_hist_index_i;
-            index_wp <= index_wp + 1;
+            index_wp <= index_wp_plus_one;
         end
 
         if ({fft_peak_ready[0], peak_ready} == 2'b01) begin
@@ -210,7 +229,8 @@ end else begin
             fft_peak_value <= fft_peak;
             fft_sum <= _fft_sum;
             fft_count <= _fft_count;
-        end else if (index_wp + 1 == index_rp)
+
+        end else if (index_wp_plus_one == index_rp)
             index_rp <= index_rp + 1;
 
         if (fft_peak_ready == 2'b01)
@@ -253,7 +273,7 @@ fft_wrapper fft_i (
    .S_AXIS_DATA_0_tready        (fft_saxi_rdy     ),
    .S_AXIS_DATA_0_tvalid        (fft_saxi_valid   ),
    .aclk_0                      (clk_i            ),
-   .aresetn_0                   (1'b1             ),
+   .aresetn_0                   (rstn_i           ),
    .event_data_in_channel_halt_0(fft_in_halt      ),
    .event_data_out_channel_halt_0(fft_out_halt    ),
    .event_status_channel_halt_0 (fft_status_halt  ),
