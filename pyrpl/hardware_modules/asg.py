@@ -170,7 +170,7 @@ class AsgCounterProperty(FloatProperty):
     def set_value(self, obj, val):
         res = 2**obj.__class__.frequency.bits
         if (val > epsilon):
-            res /= val
+            res = res // val
         obj.frequency = obj.__class__.frequency.to_python(obj, res)
 
     def value_updated(self, obj, val):
