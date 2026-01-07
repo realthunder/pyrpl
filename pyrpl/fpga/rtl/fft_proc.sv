@@ -1,4 +1,5 @@
 module fft_proc #(
+  parameter ASZ,        // ADC input sample width
   parameter DSZ,        // FFT_output width
   parameter FSZ,        // FFT transform length 2^FSZ
   parameter RSZ,        // RAM size 2^RSZ
@@ -7,7 +8,7 @@ module fft_proc #(
 )(
   input logic             clk_i,
   input logic             rstn_i,
-  input logic  [ 14-1: 0] data_i,
+  input logic  [ ASZ-1:0] data_i,
   input logic             enable_i,
   input logic             dvalid_i, 
   input logic             trig_i,
@@ -44,7 +45,7 @@ module fft_proc #(
   output logic [ QSZ-1:0] fft_q_wp,
   output logic [ QSZ-1:0] fft_q_rp,
   output logic [ QSZ-1:0] fft_q_rp_save,
-  output logic [ 14-1:0]  fft_q_rdata_o
+  output logic [ ASZ-1:0] fft_q_rdata_o
 );
 
 logic [ 16-1: 0] skip_cnt;
@@ -57,16 +58,16 @@ logic [ QSZ-1:0] index_wp;
 logic [ QSZ-1:0] index_wp_plus_one = index_wp + 1;
 logic [ QSZ-1:0] index_rp;
 
-logic [ 14-1: 0] fft_queue[0:(1<<QSZ)-1];
-// logic [ 14-1: 0] fft_queue2[0:(1<<QSZ)-1];
-logic [ 14-1: 0] fft_last_data;
+logic [ASZ-1: 0] fft_queue[0:(1<<QSZ)-1];
+// logic [ASZ-1: 0] fft_queue2[0:(1<<QSZ)-1];
+logic [ASZ-1: 0] fft_last_data;
 logic            fft_inited;
-logic [ 14-1: 0] fft_data;
-logic [ QSZ-1:0] fft_q_wp_plus_one = fft_q_wp + 1;
-logic [ QSZ-1:0] fft_q_size = fft_q_wp - fft_q_rp;
+logic [ASZ-1: 0] fft_data;
+logic [QSZ-1: 0] fft_q_wp_plus_one = fft_q_wp + 1;
+logic [QSZ-1: 0] fft_q_size = fft_q_wp - fft_q_rp;
 
-logic [ 14-1: 0]    fft_data_i;
-logic [ 16-14-1:0]  fft_data_ext;
+logic [ASZ-1: 0]    fft_data_i;
+logic [16-ASZ-1:0]  fft_data_ext;
 logic               fft_saxi_last;
 logic               fft_saxi_rdy;
 logic               fft_saxi_valid;
@@ -100,7 +101,7 @@ logic [ HSZ-1: 0]   fft_q_raddr1;
 logic [ HSZ-1: 0]   fft_q_raddr2;
 
 // sign extend the data for padding according to xfft requirement
-assign fft_data_ext = {16-14{fft_data_i[14-1]}};
+assign fft_data_ext = {16-ASZ{fft_data_i[ASZ-1]}};
 assign fft_data = (enable_i || !fft_inited) ? data_i : fft_last_data;
 
 always @(posedge clk_i) begin

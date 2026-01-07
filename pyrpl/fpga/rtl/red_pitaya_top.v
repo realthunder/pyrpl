@@ -80,7 +80,13 @@
  * 
  */
 
-module red_pitaya_top (
+module red_pitaya_top #(
+    CLK_DIFF = 1,
+    CLK_DIV = 1,
+    CLK_MULT = 8,
+    CLK_ADC_DIV = 8,
+    ADC_SZ = 14
+)(
    // PS connections
    inout  [54-1: 0] FIXED_IO_mio       ,
    inout            FIXED_IO_ps_clk    ,
@@ -303,10 +309,14 @@ wire                  digital_loop;
 // PLL (clock and reaset)
 ////////////////////////////////////////////////////////////////////////////////
 
-// diferential clock input
-IBUFDS i_clk (.I (adc_clk_p_i), .IB (adc_clk_n_i), .O (adc_clk_in));  // differential clock input
+if (CLK_DIFF) begin
+    // diferential clock input
+    IBUFDS i_clk (.I (adc_clk_p_i), .IB (adc_clk_n_i), .O (adc_clk_in));  // differential clock input
+end else begin
+    assign adc_clk_in = adc_clk_p_i;
+end
 
-red_pitaya_pll pll (
+red_pitaya_pll #(.DIV(CLK_DIV), .MULT(CLK_MULT), .DIV_ADC(CLK_ADC_DIV)) pll (
   // inputs
   .clk         (adc_clk_in),  // clock
   .rstn        (frstn[0]  ),  // reset - active low
@@ -431,10 +441,10 @@ wire dsp_trigger;
 wire    [14-1: 0] asg2_step;
 wire    [14-1: 0] asg3_step;
 
-red_pitaya_scope i_scope (
+red_pitaya_scope #(.ASZ(ADC_SZ)) i_scope (
   // ADC
-  .adc_a_i         (  to_scope_a /*adc_a*/       ),  // CH 1
-  .adc_b_i         (  to_scope_b /*adc_a*/       ),  // CH 2
+  .adc_a_i         (  to_scope_a[14-1:14-ADC_SZ]   ),  // CH 1
+  .adc_b_i         (  to_scope_b[14-1:14-ADC_SZ]   ),  // CH 2
   .adc_clk_i       (  adc_clk                    ),  // clock
   .adc_rstn_i      (  adc_rstn                   ),  // reset - active low
   .trig_ext_i      (  exp_p_in[0]                ),  // external trigger
