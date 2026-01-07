@@ -21,14 +21,16 @@ module fft_proc #(
 
   input logic  [ 32-1: 0] sys_addr,
 
-  output logic [DSZ-1: 0] fft_rdata_o,
+  output logic [DSZ-1: 0] fft_rdata_up_o,
+  output logic [DSZ-1: 0] fft_rdata_down_o,
   output logic [FSZ-1: 0] fft_wp_last,
 
   input logic             fft_index_flush_i,
   input logic             fft_index_valid_i,
   input logic  [ HSZ-1:0] fft_hist_index_i,
 
-  output logic [ FSZ-1:0] fft_hist_rdata_o,
+  output logic [ FSZ-1:0] fft_hist_rdata_up_o,
+  output logic [ FSZ-1:0] fft_hist_rdata_down_o,
 
   output logic [  6-1: 0] status_o,
   output logic            fft_done,
@@ -36,8 +38,10 @@ module fft_proc #(
   output logic [ FSZ : 0] fft_count,
   output logic [ FSZ+DSZ-1: 0]fft_sum,
   output logic [  8-1: 0] fft_peak_state,
-  output logic [ FSZ-1:0] fft_peak_index,
-  output logic [ DSZ-1:0] fft_peak_value,
+  output logic [ FSZ-1:0] fft_peak_index_up,
+  output logic [ FSZ-1:0] fft_peak_index_down,
+  output logic [ DSZ-1:0] fft_peak_value_up,
+  output logic [ DSZ-1:0] fft_peak_value_down,
   output logic [ 16-1: 0] fft_frame_cnt,
   output logic [ 32-1: 0] fft_we_cnt,
   output logic [ 16-1: 0] fft_skip_cnt,
@@ -72,8 +76,11 @@ logic               fft_saxi_last;
 logic               fft_saxi_rdy;
 logic               fft_saxi_valid;
 
-logic [ FSZ-1: 0]   fft_hist[0:(1<<HSZ)-1];
-logic [ DSZ-1: 0]   fft_buf [0:(1<<FSZ)-1];
+logic [ FSZ-1: 0]   fft_hist_up[0:(1<<HSZ)-1];
+logic [ FSZ-1: 0]   fft_hist_down[0:(1<<HSZ)-1];
+
+logic [ DSZ-1: 0]   fft_buf_up[0:(1<<FSZ)-1];
+logic [ DSZ-1: 0]   fft_buf_down[0:(1<<FSZ)-1];
 
 logic [ FSZ-1: 0]   fft_peak_idx;
 logic [ DSZ-1: 0]   fft_peak;
@@ -107,11 +114,13 @@ assign fft_data = (enable_i || !fft_inited) ? data_i : fft_last_data;
 always @(posedge clk_i) begin
    fft_raddr1 <= sys_addr[FSZ-1+3:3] ;
    fft_raddr2 <= fft_raddr1;
-   fft_rdata_o <= fft_buf[fft_raddr2];
+   fft_rdata_up_o <= fft_buf_up[fft_raddr2];
+   fft_rdata_down_o <= fft_buf_down[fft_raddr2];
 
    fft_hist_raddr1 <= sys_addr[HSZ-1+2:2]  ;
    fft_hist_raddr2 <= fft_hist_raddr1;
-   fft_hist_rdata_o <= fft_hist[fft_hist_raddr2] ;
+   fft_hist_rdata_down_o <= fft_hist_down[fft_hist_raddr2];
+   fft_hist_rdata_up_o <= fft_hist_up[fft_hist_raddr2];
 
    // fft_q_raddr1 <= sys_addr[QSZ-1+2:2]  ;
    // fft_q_raddr2 <= fft_q_raddr1;
@@ -141,15 +150,15 @@ end
 
 logic pre_size = 2**FSZ - set_dly;
 
+logic up_in;
+
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
     fft_we_cnt <= 0;
     fft_q_wp <= 0;
     fft_q_rp <= 0;
     fft_done <= 1;
-    // fft_last_data <= 1;
-    // fft_inited <= 0;
-
+    up_in <= 1;
 end else begin
     if (dvalid_i) begin
         fft_queue[fft_q_wp] <= fft_data;
@@ -159,7 +168,7 @@ end else begin
         fft_inited <= 1;
     end
 
-    if (trig_i && fft_done) begin
+    if (trig_i && fft_done && up_in == 1) begin
         if (set_dly >= 2**FSZ) begin
             fft_q_rp <= fft_q_wp;
             fft_q_rp_save <= fft_q_wp;
@@ -175,7 +184,15 @@ end else begin
     end else if (fft_q_size > 0 && fft_we_cnt > 0 && (fft_we_cnt > 2**FSZ || fft_saxi_rdy)) begin
         fft_data_i <= fft_queue[fft_q_rp];
         fft_q_rp <= fft_q_rp + 1;
-        fft_we_cnt <= fft_we_cnt - 1;
+        if (fft_we_cnt > 1) begin
+            fft_we_cnt <= fft_we_cnt - 1;
+        end else begin
+            if (up_in)
+                fft_we_cnt <= 2**FSZ;
+            else
+                fft_we_cnt <= 0;
+            up_in <= !up_in;
+        end
     end else if (dvalid_i && fft_q_wp_plus_one == fft_q_rp)
         fft_q_rp <= fft_q_rp + 1;
 
@@ -184,15 +201,22 @@ end else begin
     fft_saxi_valid <= fft_q_size > 0 && fft_we_cnt > 0 && fft_we_cnt <= 2**FSZ;
 end
 
+logic up_out;
+
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
     fft_wp <= 0;
     fft_wp_last <= 0;
+    up_out <= 1;
 end else if (fft_maxi_valid && fft_maxi_rdy) begin
-    fft_buf[fft_wp] <= fft_maxi_data[DSZ-1:0];
+    if (up_out)
+        fft_buf_up[fft_wp] <= fft_maxi_data[DSZ-1:0];
+    else
+        fft_buf_down[fft_wp] <= fft_maxi_data[DSZ-1:0];
     if (fft_maxi_last) begin
         fft_wp_last <= fft_wp;
         fft_wp <= 0;
+        up_out <= !up_out;
     end else
         fft_wp = fft_wp + 1;
 end
@@ -202,6 +226,7 @@ assign fft_peak_data = fft_maxi_data[DSZ-1:0];
 assign fft_peak_data_abs = fft_peak_data[DSZ-1] ? -fft_peak_data : fft_peak_data;
 assign fft_peak_data_valid = fft_maxi_valid && fft_peak_rp>=fft_peak_start && fft_peak_rp[FSZ-1]==0 && fft_peak_data_abs>fft_peak_minimum;
 
+logic peak_up;
 logic peak_ready;
 
 always @(posedge clk_i)
@@ -209,33 +234,45 @@ if (rstn_i == 1'b0) begin
     fft_peak_ready <= 2'b11;
     index_wp <= 0;
     index_rp <= 0;
+    peak_up <= 1;
 end else begin
     if (fft_index_flush_i) begin
         index_wp <= 0;
         index_rp <= 0;
+        peak_up <= 1;
     end else begin
         if (fft_index_valid_i) begin
             fft_index_q[index_wp] <= fft_hist_index_i;
             index_wp <= index_wp_plus_one;
-        end
-
-        if ({fft_peak_ready[0], peak_ready} == 2'b01) begin
+        end else if ({fft_peak_ready[0], peak_ready} == 2'b01) begin
             if (index_rp == index_wp)
                 fft_hist_index <= fft_hist_index_i;
             else
                 fft_hist_index <= fft_index_q[index_rp];
-            index_rp <= index_rp + 1;
 
-            fft_peak_index <= fft_peak_idx;
-            fft_peak_value <= fft_peak;
+            if (peak_up == 0)
+                index_rp <= index_rp + 1;
+            peak_up <= !peak_up;
+
+            if (peak_up) begin
+                fft_peak_index_up <= fft_peak_idx;
+                fft_peak_value_up <= fft_peak;
+            end else begin
+                fft_peak_index_down <= fft_peak_idx;
+                fft_peak_value_down <= fft_peak;
+            end
             fft_sum <= _fft_sum;
             fft_count <= _fft_count;
 
-        end else if (index_wp_plus_one == index_rp)
+        end else if (peak_up == 0 && index_wp_plus_one == index_rp)
             index_rp <= index_rp + 1;
 
-        if (fft_peak_ready == 2'b01)
-            fft_hist[fft_hist_index] <= fft_peak_index;
+        if (fft_peak_ready == 2'b01) begin
+            if (peak_up)
+                fft_hist_up[fft_hist_index] <= fft_peak_index_up;
+            else
+                fft_hist_down[fft_hist_index] <= fft_peak_index_down;
+        end
     end
 
     fft_peak_ready = {fft_peak_ready[0], peak_ready};
