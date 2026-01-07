@@ -134,6 +134,37 @@ logger = logging.getLogger(name=__name__)
 
 data_length = 2**14
 
+class StatusBitsProperty(StringProperty):
+    names = {
+        0:'busy',
+        2:'adc_dly_do',
+        3:'adc_we_keep',
+        5:'fft_enable',
+        6:'fft_trig_sync',
+        7:'fft_a_done',
+        8:'fft_b_done',
+        16:'fft_a_tlast_unexp',
+        17:'fft_a_tlast_missing',
+        18:'fft_a_frame_start',
+        19:'fft_a_status_halt',
+        20:'fft_a_in_halt',
+        21:'fft_a_out_halt',
+        24:'fft_b_tlast_unexp',
+        25:'fft_b_tlast_missing',
+        26:'fft_b_frame_start',
+        27:'fft_b_status_halt',
+        28:'fft_b_in_halt',
+        29:'fft_b_out_halt',
+    }
+    def set_value(self, obj):
+        pass
+
+    def get_value(self, obj):
+        bits = []
+        for i,j in enumerate(reversed(bin(obj._status))):
+            if j == '1':
+                bits.append(f'{i}: {self.names.get(i, "?")}')
+        return '\n'.join(bits)
 
 # ==========================================
 # The following properties are all linked:
@@ -380,6 +411,8 @@ class Scope(HardwareModule, AcquisitionModule):
 
     _status = IntRegister(0x00)
 
+    status_bits = StatusBitsProperty()
+
     fft_frame_cnt = IntRegister(0x30, doc="FFT frame counter")
 
     fft_peak_start = IntRegister(0x38, doc="FFT peak detection start index")
@@ -524,27 +557,43 @@ class Scope(HardwareModule, AcquisitionModule):
         length2 = max(2, (wp_last >> 16) + 1)
         return min(length1, length2)
 
-    _fft_data_width = 28
-    @property
-    def _fftdata(self):
+    _fft_data_width = 27
+    def get_fft_data(self, addr):
         """raw data from fft"""
         length = self._fft_length
-        d = np.array(self._reads(0x30000, length), dtype=np.uint32)
+        d = np.array(self._reads(addr, length), dtype=np.uint32)
         d[d >= 2 ** (self._fft_data_width-1)] -= 2 ** self._fft_data_width
         d = np.array(d, dtype=float) / 2**(self._fft_data_width-3)
         d1 = d[np.arange(0, length, 2)]
         d2 = d[np.arange(1, length, 2)]
         return d2, d1
 
-    def _ffthist(self, length):
+    def get_fft_history(self, addr, length):
         """raw data from fft history"""
-        d = np.array(self._reads(0x40000, length), dtype=np.uint32)
+        d = np.array(self._reads(addr, length), dtype=np.uint32)
         d1 = np.array(d & 0xffff, dtype=np.int32)
         d2 = np.array(d >> 16, dtype=np.int32)
         return d2, d1
 
+    @property
+    def _fftdata_ch1(self):
+        return self.get_fft_data(0x30000)
+
+    @property
+    def _fftdata_ch2(self):
+        return self.get_fft_data(0x40000)
+
+    def _ffthist_ch1(self, length):
+        return self.get_fft_history(0x50000, length)
+
+    def _ffthist_ch2(self, length):
+        return self.get_fft_history(0x60000, length)
+
+    _fftdata = _fftdata_ch1
+    _ffthist = _ffthist_ch1
+
     def _fftidx(self, length):
-        d = np.array(self._reads(0x50000, length), dtype=np.uint32)
+        d = np.array(self._reads(0x70000, length), dtype=np.uint32)
         return np.stack((d&0xffff, d>>16), axis=1)
 
     @property

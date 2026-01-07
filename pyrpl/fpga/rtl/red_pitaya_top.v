@@ -443,8 +443,8 @@ wire    [14-1: 0] asg3_step;
 
 red_pitaya_scope #(.ASZ(ADC_SZ)) i_scope (
   // ADC
-  .adc_a_i         (  to_scope_a[14-1:14-ADC_SZ]   ),  // CH 1
-  .adc_b_i         (  to_scope_b[14-1:14-ADC_SZ]   ),  // CH 2
+  .adc_a_i         (  to_scope_a[14-1:14-ADC_SZ] ),  // CH 1
+  .adc_b_i         (  to_scope_b[14-1:14-ADC_SZ] ),  // CH 2
   .adc_clk_i       (  adc_clk                    ),  // clock
   .adc_rstn_i      (  adc_rstn                   ),  // reset - active low
   .trig_ext_i      (  exp_p_in[0]                ),  // external trigger

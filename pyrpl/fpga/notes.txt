@@ -1,0 +1,8 @@
+resource usage command
+
+    report_utilization -hierarchical -hierarchical_depth 3
+
+
+python one liner for printing non zero bit in a binary number
+
+    [i for i, j in enumerate(reversed(bin(rp.scope._status)[2:])) if j=='1']
