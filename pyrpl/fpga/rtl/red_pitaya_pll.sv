@@ -10,7 +10,11 @@
  * for more details on the language used herein.
  */
 
-module red_pitaya_pll (
+module red_pitaya_pll #(
+  parameter DIV = 1,
+  parameter MULT = 8,
+  parameter DIV_ADC = 8
+)(
   // inputs
   input  logic clk       ,  // clock
   input  logic rstn      ,  // reset - active low
@@ -30,10 +34,10 @@ logic clk_fb;
 PLLE2_ADV #(
    .BANDWIDTH            ("OPTIMIZED"),
    .COMPENSATION         ("ZHOLD"    ),
-   .DIVCLK_DIVIDE        ( 1         ),
-   .CLKFBOUT_MULT        ( 8         ),
+   .DIVCLK_DIVIDE        ( DIV       ),
+   .CLKFBOUT_MULT        ( MULT      ),
    .CLKFBOUT_PHASE       ( 0.000     ),
-   .CLKOUT0_DIVIDE       ( 8         ),
+   .CLKOUT0_DIVIDE       ( DIV_ADC   ),
    .CLKOUT0_PHASE        ( 0.000     ),
    .CLKOUT0_DUTY_CYCLE   ( 0.5       ),
    .CLKOUT1_DIVIDE       ( 8         ),

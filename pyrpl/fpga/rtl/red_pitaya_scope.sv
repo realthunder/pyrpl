@@ -67,6 +67,7 @@
  */
 
 module red_pitaya_scope #(
+  parameter ASZ = 14,  // ADC input sample data width
   parameter QSZ = 10,  // FFT buffer queue size 2^QSZ
   parameter DSZ = 28,  // FFT_output width
   parameter FSZ = 13,  // FFT transform length 2^FSZ
@@ -77,8 +78,8 @@ module red_pitaya_scope #(
    // ADC
    input                 adc_clk_i       ,  // ADC clock
    input                 adc_rstn_i      ,  // ADC reset - active low
-   input      [ 14-1: 0] adc_a_i         ,  // ADC data CHA
-   input      [ 14-1: 0] adc_b_i         ,  // ADC data CHB
+   input      [ASZ-1: 0] adc_a_i         ,  // ADC data CHA
+   input      [ASZ-1: 0] adc_b_i         ,  // ADC data CHB
    // trigger sources
    input                 trig_ext_i      ,  // external trigger
    input      [  4-1: 0] trig_asg_i      ,  // ASG trigger
@@ -133,10 +134,10 @@ reg             adc_rst_do   ;
 //---------------------------------------------------------------------------------
 //  Input filtering
 
-wire [ 14-1: 0] adc_a_filt_in  ;
-wire [ 14-1: 0] adc_a_filt_out ;
-wire [ 14-1: 0] adc_b_filt_in  ;
-wire [ 14-1: 0] adc_b_filt_out ;
+wire [ASZ-1: 0] adc_a_filt_in  ;
+wire [ASZ-1: 0] adc_a_filt_out ;
+wire [ASZ-1: 0] adc_b_filt_in  ;
+wire [ASZ-1: 0] adc_b_filt_out ;
 /*
 reg  [ 18-1: 0] set_a_filt_aa  ;
 reg  [ 25-1: 0] set_a_filt_bb  ;
@@ -186,8 +187,8 @@ red_pitaya_dfilt1 i_dfilt1_chb (
 //---------------------------------------------------------------------------------
 //  Decimate input data
 
-reg  [ 14-1: 0] adc_a_dat     ;
-reg  [ 14-1: 0] adc_b_dat     ;
+reg  [ASZ-1: 0] adc_a_dat     ;
+reg  [ASZ-1: 0] adc_b_dat     ;
 reg  [ 32-1: 0] adc_a_sum     ;
 reg  [ 32-1: 0] adc_b_sum     ;
 reg  [ 17-1: 0] set_dec       ;
@@ -250,10 +251,10 @@ end
 //---------------------------------------------------------------------------------
 //  ADC buffer RAM
 
-reg   [  14-1: 0] adc_a_buf [0:(1<<RSZ)-1] ;
-reg   [  14-1: 0] adc_b_buf [0:(1<<RSZ)-1] ;
-reg   [  14-1: 0] adc_a_rd      ;
-reg   [  14-1: 0] adc_b_rd      ;
+reg   [ ASZ-1: 0] adc_a_buf [0:(1<<RSZ)-1] ;
+reg   [ ASZ-1: 0] adc_b_buf [0:(1<<RSZ)-1] ;
+reg   [ ASZ-1: 0] adc_a_rd      ;
+reg   [ ASZ-1: 0] adc_b_rd      ;
 reg   [ RSZ-1: 0] adc_wp        ;
 reg   [ RSZ-1: 0] adc_raddr     ;
 reg   [ RSZ-1: 0] adc_a_raddr   ;
@@ -277,7 +278,7 @@ reg               triggered    ;
 
 reg   [ 64 - 1:0] timestamp_trigger;
 reg   [ 64 - 1:0] ctr_value        ;
-reg   [ 14 - 1:0] pretrig_data_min; // make sure this amount of data has been acquired before trig
+reg   [ASZ - 1:0] pretrig_data_min; // make sure this amount of data has been acquired before trig
 reg 			  pretrig_ok;
 
 // Write
@@ -420,11 +421,11 @@ logic [ DSZ-1: 0]   fft_rdata_b;
 logic [ QSZ-1:0] fft_q_wp_a;
 logic [ QSZ-1:0] fft_q_rp_a;
 logic [ QSZ-1:0] fft_q_rp_save_a;
-logic [ 14-1 :0] fft_q_rdata_a;
+logic [ ASZ-1:0] fft_q_rdata_a;
 logic [ QSZ-1:0] fft_q_wp_b;
 logic [ QSZ-1:0] fft_q_rp_b;
 logic [ QSZ-1:0] fft_q_rp_save_b;
-logic [ 14-1 :0] fft_q_rdata_b;
+logic [ ASZ-1:0] fft_q_rdata_b;
 
 logic [ 16-1: 0]    fft_threshold_k;
 logic [ FSZ-1:0]    fft_peak_start;
@@ -521,7 +522,7 @@ always @(posedge adc_clk_i) begin
 end
 
 
-fft_proc #(.QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_a (
+fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_a (
    .clk_i (adc_clk_i),
    .rstn_i (fft_rstn_i),
    .data_i (adc_a_dat),
@@ -563,7 +564,7 @@ fft_proc #(.QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_a (
    .fft_q_rdata_o (fft_q_rdata_a)
 );
 
-fft_proc #(.QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_b (
+fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_b (
    .clk_i (adc_clk_i),
    .rstn_i (fft_rstn_i),
    .data_i (adc_a_dat),
@@ -980,14 +981,14 @@ reg  [  2-1: 0] adc_scht_ap  ;
 reg  [  2-1: 0] adc_scht_an  ;
 reg  [  2-1: 0] adc_scht_bp  ;
 reg  [  2-1: 0] adc_scht_bn  ;
-reg  [ 14-1: 0] set_a_tresh  ;
-reg  [ 14-1: 0] set_a_treshp ;
-reg  [ 14-1: 0] set_a_treshm ;
-//reg  [ 14-1: 0] set_b_tresh  ;
-//reg  [ 14-1: 0] set_b_treshp ;
-//reg  [ 14-1: 0] set_b_treshm ;
-reg  [ 14-1: 0] set_a_hyst   ;
-//reg  [ 14-1: 0] set_b_hyst   ;
+reg  [ASZ-1: 0] set_a_tresh  ;
+reg  [ASZ-1: 0] set_a_treshp ;
+reg  [ASZ-1: 0] set_a_treshm ;
+//reg  [ASZ-1: 0] set_b_tresh  ;
+//reg  [ASZ-1: 0] set_b_treshp ;
+//reg  [ASZ-1: 0] set_b_treshm ;
+reg  [ASZ-1: 0] set_a_hyst   ;
+//reg  [ASZ-1: 0] set_b_hyst   ;
 
 always @(posedge adc_clk_i)
 if (adc_rstn_i == 1'b0) begin
@@ -1154,13 +1155,13 @@ assign asg_trig2_n= (asg_trig2_dn == 2'b01) ;
 
 always @(posedge adc_clk_i)
 if (adc_rstn_i == 1'b0) begin
-   adc_we_keep   <=   1'b0      ;
-   set_a_tresh   <=  14'd0000   ;
-   //set_b_tresh   <=  14'd0000   ;
+   adc_we_keep   <=   0      ;
+   set_a_tresh   <=   0      ;
+   //set_b_tresh   <=  ASZ'd0000   ;
    set_dly       <=  2**(RSZ-1);
    set_dec       <=  17'h2000; // corresponds to 1s duration, formerly at minimum: 17'd1
-   set_a_hyst    <=  14'd20     ;
-   //set_b_hyst    <=  14'd20     ;
+   set_a_hyst    <=  20     ;
+   //set_b_hyst    <=  ASZ'd20     ;
    set_avg_en    <=   1'b0      ;
 /*   set_a_filt_aa <=  18'h0      ;
    set_a_filt_bb <=  25'h0      ;
@@ -1179,12 +1180,12 @@ end else begin
    if (sys_wen) begin
       if (sys_addr[19:0]==20'h00)   adc_we_keep   <= sys_wdata[     3] ;
 
-      if (sys_addr[19:0]==20'h08)   set_a_tresh   <= sys_wdata[14-1:0] ;
-      //if (sys_addr[19:0]==20'h0C)   set_b_tresh   <= sys_wdata[14-1:0] ;
+      if (sys_addr[19:0]==20'h08)   set_a_tresh   <= sys_wdata[ASZ-1:0] ;
+      //if (sys_addr[19:0]==20'h0C)   set_b_tresh   <= sys_wdata[ASZ-1:0] ;
       if (sys_addr[19:0]==20'h10)   set_dly       <= sys_wdata[32-1:0] ;
       if (sys_addr[19:0]==20'h14)   set_dec       <= sys_wdata[17-1:0] ;
-      if (sys_addr[19:0]==20'h20)   set_a_hyst    <= sys_wdata[14-1:0] ;
-      //if (sys_addr[19:0]==20'h24)   set_b_hyst    <= sys_wdata[14-1:0] ;
+      if (sys_addr[19:0]==20'h20)   set_a_hyst    <= sys_wdata[ASZ-1:0] ;
+      //if (sys_addr[19:0]==20'h24)   set_b_hyst    <= sys_wdata[ASZ-1:0] ;
       if (sys_addr[19:0]==20'h28)   set_avg_en    <= sys_wdata[     0] ;
 
       /*
@@ -1250,16 +1251,16 @@ end else begin
 
      20'h00004 : begin sys_ack <= sys_en;          sys_rdata <= {{32- 4{1'b0}}, set_trig_src}       ; end 
 
-     20'h00008 : begin sys_ack <= sys_en;          sys_rdata <= {{32-14{1'b0}}, set_a_tresh}        ; end
-     //20'h0000C : begin sys_ack <= sys_en;          sys_rdata <= {{32-14{1'b0}}, set_b_tresh}        ; end
+     20'h00008 : begin sys_ack <= sys_en;          sys_rdata <= {{32-ASZ{1'b0}}, set_a_tresh}        ; end
+     //20'h0000C : begin sys_ack <= sys_en;          sys_rdata <= {{32-ASZ{1'b0}}, set_b_tresh}        ; end
      20'h00010 : begin sys_ack <= sys_en;          sys_rdata <= {               set_dly}            ; end
      20'h00014 : begin sys_ack <= sys_en;          sys_rdata <= {{32-17{1'b0}}, set_dec}            ; end
 
      20'h00018 : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ{1'b0}}, adc_wp_cur}        ; end
      20'h0001C : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ{1'b0}}, adc_wp_trig}       ; end
 
-     20'h00020 : begin sys_ack <= sys_en;          sys_rdata <= {{32-14{1'b0}}, set_a_hyst}         ; end
-     //20'h00024 : begin sys_ack <= sys_en;          sys_rdata <= {{32-14{1'b0}}, set_b_hyst}         ; end
+     20'h00020 : begin sys_ack <= sys_en;          sys_rdata <= {{32-ASZ{1'b0}}, set_a_hyst}         ; end
+     //20'h00024 : begin sys_ack <= sys_en;          sys_rdata <= {{32-ASZ{1'b0}}, set_b_hyst}         ; end
 
      20'h00028 : begin sys_ack <= sys_en;          sys_rdata <= {{32- 1{1'b0}}, set_avg_en}         ; end
 
@@ -1313,8 +1314,8 @@ end else begin
      20'h00090 : begin sys_ack <= sys_en;          sys_rdata <= {{32-20{1'b0}}, set_deb_len}        ; end
      20'h00094 : begin sys_ack <= sys_en;          sys_rdata <= {{32-20{1'b0}}, set_deb_len2}        ; end
     
-     20'h00154 : begin sys_ack <= sys_en;          sys_rdata <= {{32-14{1'b0}}, adc_a_i }           ; end
-     20'h00158 : begin sys_ack <= sys_en;          sys_rdata <= {{32-14{1'b0}}, adc_b_i }           ; end
+     20'h00154 : begin sys_ack <= sys_en;          sys_rdata <= {{32-ASZ{1'b0}}, adc_a_i }          ; end
+     20'h00158 : begin sys_ack <= sys_en;          sys_rdata <= {{32-ASZ{1'b0}}, adc_b_i }          ; end
 	 
 	 20'h0015c : begin sys_ack <= sys_en;          sys_rdata <= ctr_value[32-1:0]     		        ; end
 	 20'h00160 : begin sys_ack <= sys_en;          sys_rdata <= ctr_value[64-1:32]			        ; end
