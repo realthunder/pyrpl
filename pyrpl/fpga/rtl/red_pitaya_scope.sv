@@ -574,7 +574,7 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .fft_peak_index_down (fft_peak_index_down_a[FSZ-1:0]),
    .fft_peak_value_up (fft_peak_up_a),
    .fft_peak_value_down (fft_peak_down_a),
-   .fft_frame_cnt (fft_frame_cnt[15:0]),
+   .fft_frame_cnt (fft_frame_cnt),
    .fft_we_cnt (fft_we_cnt[0]),
    .fft_skip_cnt (fft_skip_cnt[15:0]),
 
@@ -620,7 +620,7 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .fft_peak_index_down (fft_peak_index_down_b[FSZ-1:0]),
    .fft_peak_value_up (fft_peak_up_b),
    .fft_peak_value_down (fft_peak_down_b),
-   .fft_frame_cnt (fft_frame_cnt[31:16]),
+   // .fft_frame_cnt (fft_frame_cnt),
    .fft_we_cnt (fft_we_cnt[1]),
    .fft_skip_cnt (fft_skip_cnt[31:16]),
 
@@ -668,13 +668,13 @@ end else begin
     S_IDLE: 
         if (fft_trig_i && &fft_done) begin
             fft_state_cnt <= 0;
-            if (set_dly <= 2**FSZ)
+            if (set_dly <= 2**(FSZ+1))
                 fft_state <= S_WAIT1;
             else
                 fft_state <= S_DELAY;
         end
     S_DELAY:
-        if (fft_we_cnt[0] <= 2**FSZ)
+        if (fft_we_cnt[0] <= 2**(FSZ+1))
             fft_state <= S_WAIT1;
     S_WAIT1:
         if (fft_state_cnt >= fft_wait1_cnt) begin
@@ -1307,7 +1307,7 @@ end else begin
      20'h0006C : begin sys_ack <= sys_en;          sys_rdata <= fft_state                           ; end
      20'h00070 : begin sys_ack <= sys_en;          sys_rdata <= fft_we_cnt[0]                       ; end
      20'h00074 : begin sys_ack <= sys_en;          sys_rdata <= fft_skip_cnt                        ; end
-     20'h00078 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_state_b                    ; end
+     20'h00078 : begin sys_ack <= sys_en;          sys_rdata <= {fft_peak_state_b, fft_peak_state_a}; end
      20'h0007C : begin sys_ack <= sys_en;          sys_rdata <= {fft_peak_index_down_b, fft_peak_index_up_b}; end
      20'h00080 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_up_b                       ; end
      20'h00084 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_down_b                     ; end

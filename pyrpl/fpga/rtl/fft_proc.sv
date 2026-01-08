@@ -42,7 +42,7 @@ module fft_proc #(
   output logic [ FSZ-1:0] fft_peak_index_down,
   output logic [ DSZ-1:0] fft_peak_value_up,
   output logic [ DSZ-1:0] fft_peak_value_down,
-  output logic [ 16-1: 0] fft_frame_cnt,
+  output logic [ 32-1: 0] fft_frame_cnt,
   output logic [ 32-1: 0] fft_we_cnt,
   output logic [ 16-1: 0] fft_skip_cnt,
 
@@ -53,7 +53,7 @@ module fft_proc #(
 );
 
 logic [ 16-1: 0] skip_cnt;
-logic [ 16-1: 0] frame_cnt;
+logic [ 32-1: 0] frame_cnt;
 logic [ 32-1: 0] clk_cnt;
 
 logic [ HSZ-1:0] fft_index_q[0:(1<<QSZ)-1];
@@ -131,7 +131,7 @@ always @(posedge clk_i)
 if (clk_cnt >= 125000000) begin
     clk_cnt <= 0;
     fft_skip_cnt <= skip_cnt;
-    fft_frame_cnt <= frame_cnt;
+    fft_frame_cnt <= {1'b0, frame_cnt[32-1:1]};
     if (trig_i && !fft_done)
         skip_cnt <= 1;
     else
@@ -148,7 +148,7 @@ end else begin
         frame_cnt <= frame_cnt + 1;
 end
 
-logic pre_size = 2**FSZ - set_dly;
+logic pre_size = 2**(FSZ+1) - set_dly;
 
 logic up_in;
 
@@ -169,36 +169,31 @@ end else begin
     end
 
     if (trig_i && fft_done && up_in == 1) begin
-        if (set_dly >= 2**FSZ) begin
+        // FSZ+1 because we need 2x amount of samples, one for Fup and one for Fdown
+        if (set_dly >= 2**(FSZ+1)) begin
             fft_q_rp <= fft_q_wp;
             fft_q_rp_save <= fft_q_wp;
             fft_we_cnt <= set_dly;
         end else begin
-            fft_we_cnt <= 2**FSZ;
+            fft_we_cnt <= 2**(FSZ+1);
             if (fft_q_size > pre_size) begin
                 fft_q_rp <= fft_q_wp - pre_size;
                 fft_q_rp_save <= fft_q_wp - pre_size;
             end else
                 fft_q_rp_save <= fft_q_rp;
         end
-    end else if (fft_q_size > 0 && fft_we_cnt > 0 && (fft_we_cnt > 2**FSZ || fft_saxi_rdy)) begin
+    end else if (fft_q_size > 0 && fft_we_cnt > 0 && (fft_we_cnt > 2**(FSZ+1) || fft_saxi_rdy)) begin
         fft_data_i <= fft_queue[fft_q_rp];
         fft_q_rp <= fft_q_rp + 1;
-        if (fft_we_cnt > 1) begin
-            fft_we_cnt <= fft_we_cnt - 1;
-        end else begin
-            if (up_in)
-                fft_we_cnt <= 2**FSZ;
-            else
-                fft_we_cnt <= 0;
+        if (fft_we_cnt == 1 || fft_we_cnt == (2**FSZ)+1)
             up_in <= !up_in;
-        end
+        fft_we_cnt <= fft_we_cnt - 1;
     end else if (dvalid_i && fft_q_wp_plus_one == fft_q_rp)
         fft_q_rp <= fft_q_rp + 1;
 
     fft_done <= fft_we_cnt==0;
-    fft_saxi_last <= fft_we_cnt == 1;
-    fft_saxi_valid <= fft_q_size > 0 && fft_we_cnt > 0 && fft_we_cnt <= 2**FSZ;
+    fft_saxi_last <= fft_we_cnt == 1 || fft_we_cnt == (2**FSZ)+1;
+    fft_saxi_valid <= fft_q_size > 0 && fft_we_cnt > 0 && fft_we_cnt <= 2**(FSZ+1);
 end
 
 logic up_out;
