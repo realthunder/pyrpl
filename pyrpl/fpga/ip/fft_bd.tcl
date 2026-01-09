@@ -250,11 +250,11 @@ proc create_root_design { parentCell } {
    CONFIG.data_format {fixed_point} \
    CONFIG.implementation_options {pipelined_streaming_io} \
    CONFIG.input_width {14} \
-   CONFIG.number_of_stages_using_block_ram_for_data_and_phase_factors {6} \
+   CONFIG.number_of_stages_using_block_ram_for_data_and_phase_factors {5} \
    CONFIG.output_ordering {natural_order} \
    CONFIG.phase_factor_width {8} \
    CONFIG.rounding_modes {convergent_rounding} \
-   CONFIG.run_time_configurable_transform_length {false} \
+   CONFIG.run_time_configurable_transform_length {true} \
    CONFIG.scaling_options {unscaled} \
    CONFIG.target_clock_frequency {125} \
    CONFIG.target_data_throughput {125} \

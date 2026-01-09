@@ -7,7 +7,7 @@ module fft_proc #(
   parameter QSZ         // FFT queue size 2^QSZ
 )(
   input logic             clk_i,
-  input logic             rstn_i,
+  input logic             fft_rstn_i,
   input logic  [ ASZ-1:0] data_i,
   input logic             enable_i,
   input logic             dvalid_i, 
@@ -17,7 +17,6 @@ module fft_proc #(
   input logic  [ 16-1: 0] fft_threshold_k,
   input logic  [ FSZ-1:0] fft_peak_start,
   input logic  [ DSZ-1:0] fft_peak_minimum,
-
 
   input logic  [ 32-1: 0] sys_addr,
 
@@ -49,7 +48,9 @@ module fft_proc #(
   output logic [ QSZ-1:0] fft_q_wp,
   output logic [ QSZ-1:0] fft_q_rp,
   output logic [ QSZ-1:0] fft_q_rp_save,
-  output logic [ ASZ-1:0] fft_q_rdata_o
+  output logic [ ASZ-1:0] fft_q_rdata_o,
+
+  input logic  [  16-1:0] fft_conf_data_i
 );
 
 logic [ 16-1: 0] skip_cnt;
@@ -130,7 +131,7 @@ end
 always @(posedge clk_i)
 if (clk_cnt >= 125000000) begin
     clk_cnt <= 0;
-    fft_skip_cnt <= skip_cnt;
+    // fft_skip_cnt <= skip_cnt;
     fft_frame_cnt <= {1'b0, frame_cnt[32-1:1]};
     if (trig_i && !fft_done)
         skip_cnt <= 1;
@@ -148,8 +149,28 @@ end else begin
         frame_cnt <= frame_cnt + 1;
 end
 
-logic pre_size = 2**(FSZ+1) - set_dly;
+logic          fft_conf_dvalid;
+// logic          rstn_i = fft_rstn_i && !fft_conf_dvalid;
+logic          rstn_i = fft_rstn_i;
+logic [ 5-1:0] fft_nfft = fft_conf_data_i[5-1:0];
+logic [32-1:0] fft_length;
+logic [32-1:0] fft_length2;
 
+always @(posedge clk_i)
+// Only allow one-time re-configuration after reset to avoid synchronization issue
+if (fft_rstn_i == 1'b0) begin
+    fft_conf_dvalid <= 0;
+    fft_length <= 2**fft_nfft;
+    // We need 2x amount of samples, one for Fup and one for Fdown
+    fft_length2 <= 2**(fft_nfft+1);
+    fft_skip_cnt <= 0;
+// end else if (fft_conf_dvalid) begin
+//     fft_skip_cnt <= fft_skip_cnt + 1;
+//     if (fft_conf_rdy)
+//         fft_conf_dvalid <= 0;
+end
+
+logic pre_size = fft_length2 - set_dly;
 logic up_in;
 
 always @(posedge clk_i)
@@ -169,31 +190,30 @@ end else begin
     end
 
     if (trig_i && fft_done && up_in == 1) begin
-        // FSZ+1 because we need 2x amount of samples, one for Fup and one for Fdown
-        if (set_dly >= 2**(FSZ+1)) begin
+        if (set_dly >= fft_length2) begin
             fft_q_rp <= fft_q_wp;
             fft_q_rp_save <= fft_q_wp;
             fft_we_cnt <= set_dly;
         end else begin
-            fft_we_cnt <= 2**(FSZ+1);
+            fft_we_cnt <= fft_length2;
             if (fft_q_size > pre_size) begin
                 fft_q_rp <= fft_q_wp - pre_size;
                 fft_q_rp_save <= fft_q_wp - pre_size;
             end else
                 fft_q_rp_save <= fft_q_rp;
         end
-    end else if (fft_q_size > 0 && fft_we_cnt > 0 && (fft_we_cnt > 2**(FSZ+1) || fft_saxi_rdy)) begin
+    end else if (fft_q_size > 0 && fft_we_cnt > 0 && (fft_we_cnt > fft_length2 || fft_saxi_rdy)) begin
         fft_data_i <= fft_queue[fft_q_rp];
         fft_q_rp <= fft_q_rp + 1;
-        if (fft_we_cnt == 1 || fft_we_cnt == (2**FSZ)+1)
+        if (fft_we_cnt == 1 || fft_we_cnt == fft_length+1)
             up_in <= !up_in;
         fft_we_cnt <= fft_we_cnt - 1;
     end else if (dvalid_i && fft_q_wp_plus_one == fft_q_rp)
         fft_q_rp <= fft_q_rp + 1;
 
     fft_done <= fft_we_cnt==0;
-    fft_saxi_last <= fft_we_cnt == 1 || fft_we_cnt == (2**FSZ)+1;
-    fft_saxi_valid <= fft_q_size > 0 && fft_we_cnt > 0 && fft_we_cnt <= 2**(FSZ+1);
+    fft_saxi_last <= fft_we_cnt == 1 || fft_we_cnt == fft_length+1;
+    fft_saxi_valid <= fft_q_size > 0 && fft_we_cnt > 0 && fft_we_cnt <= fft_length2;
 end
 
 logic up_out;
@@ -298,15 +318,15 @@ fft_wrapper fft_i (
    .M_AXIS_DOUT_0_tlast         (fft_maxi_last    ),
    .M_AXIS_DOUT_0_tvalid        (fft_maxi_valid   ),
    .M_AXIS_DOUT_0_tready        (fft_maxi_rdy     ),
-   .S_AXIS_CONFIG_0_tdata       ( ),
-   .S_AXIS_CONFIG_0_tready      ( ),
-   .S_AXIS_CONFIG_0_tvalid      ( ),
+   .S_AXIS_CONFIG_0_tdata       (fft_conf_data_i  ),
+   .S_AXIS_CONFIG_0_tready      (fft_conf_rdy     ),
+   .S_AXIS_CONFIG_0_tvalid      (fft_conf_dvalid  ),
    .S_AXIS_DATA_0_tdata         ({16'b0, fft_data_ext, fft_data_i}),
    .S_AXIS_DATA_0_tlast         (fft_saxi_last    ),
    .S_AXIS_DATA_0_tready        (fft_saxi_rdy     ),
    .S_AXIS_DATA_0_tvalid        (fft_saxi_valid   ),
    .aclk_0                      (clk_i            ),
-   .aresetn_0                   (rstn_i           ),
+   .aresetn_0                   (fft_rstn_i       ),
    .event_data_in_channel_halt_0(fft_in_halt      ),
    .event_data_out_channel_halt_0(fft_out_halt    ),
    .event_status_channel_halt_0 (fft_status_halt  ),
