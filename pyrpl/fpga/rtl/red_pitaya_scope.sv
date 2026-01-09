@@ -69,7 +69,7 @@
 module red_pitaya_scope #(
   parameter ASZ = 14,  // ADC input sample data width
   parameter QSZ = 10,  // FFT buffer queue size 2^QSZ
-  parameter DSZ = 28,  // FFT_output width
+  parameter DSZ = 27,  // FFT_output width
   parameter FSZ = 12,  // FFT transform length 2^FSZ
   parameter RSZ = 14,  // RAM size 2^RSZ
   parameter HSZ = 14  // fft history buffer size 2^HSZ
@@ -413,9 +413,6 @@ logic [ FSZ-1: 0]   fft_hist_rdata_down_b;
 
 logic [ 16-1:  0]   fft_wp_last_a;
 logic [ 16-1:  0]   fft_wp_last_b;
-// We are not using runtime configurable fft length. Just return the constant.
-assign fft_wp_last_a = 2**FSZ-1;
-assign fft_wp_last_b = 2**FSZ-1;
 
 logic [ DSZ-1: 0]   fft_rdata_up_a;
 logic [ DSZ-1: 0]   fft_rdata_down_a;
@@ -538,9 +535,16 @@ always @(posedge adc_clk_i) begin
 end
 `endif
 
+logic [16-1: 0] fft_conf_data;
+logic [ 5-1: 0] fft_nfft = fft_conf_data[5-1:0];
+logic           fft_fwd_inv = fft_conf_data[8];
+
+assign fft_wp_last_a = 2**fft_nfft-1;
+assign fft_wp_last_b = 2**fft_nfft-1;
+
 fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_a (
    .clk_i (adc_clk_i),
-   .rstn_i (fft_rstn_i),
+   .fft_rstn_i (fft_rstn_i),
    .data_i (adc_a_dat),
    .enable_i (fft_up || fft_down),
    .dvalid_i (fft_dvalid),
@@ -581,12 +585,14 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .fft_q_wp (fft_q_wp_a),
    .fft_q_rp (fft_q_rp_a),
    .fft_q_rp_save (fft_q_rp_save_a),
-   .fft_q_rdata_o (fft_q_rdata_a)
+   .fft_q_rdata_o (fft_q_rdata_a),
+
+   .fft_conf_data_i (fft_conf_data)
 );
 
 fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_b (
    .clk_i (adc_clk_i),
-   .rstn_i (fft_rstn_i),
+   .fft_rstn_i (fft_rstn_i),
    .data_i (adc_b_dat),
    .enable_i (fft_up || fft_down),
    .dvalid_i (fft_dvalid),
@@ -627,7 +633,9 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .fft_q_wp (fft_q_wp_b),
    .fft_q_rp (fft_q_rp_b),
    .fft_q_rp_save (fft_q_rp_save_b),
-   .fft_q_rdata_o (fft_q_rdata_b)
+   .fft_q_rdata_o (fft_q_rdata_b),
+
+   .fft_conf_data_i (fft_conf_data)
 );
 
 always @(posedge adc_clk_i)
@@ -641,6 +649,9 @@ if (adc_rstn_i == 1'b0) begin
     fft_acq1_cnt <= 2**(FSZ-1) - 200;
     fft_acq2_cnt <= 2**(FSZ-1) - 200;
     fft_trig_sync <= 1;
+
+    fft_nfft <= FSZ;
+    fft_fwd_inv <= 1;
 end else if (sys_wen) begin
     if (sys_addr[19:0]==20'h0)  fft_enable <= sys_wdata[5];
     if (sys_addr[19:0]==20'h0)  fft_trig_sync <= sys_wdata[6];
@@ -651,6 +662,9 @@ end else if (sys_wen) begin
     if (sys_addr[19:0]==20'h5C) fft_wait2_cnt <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h60) fft_acq1_cnt <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h64) fft_acq2_cnt <= sys_wdata[FSZ-1:0];
+    if (sys_addr[19:0]==20'h88) begin
+       if (sys_wdata <= FSZ && sys_wdata >= 3) fft_nfft <= sys_wdata[5-1:0];
+    end
 end
 
 always @(posedge adc_clk_i)
@@ -1311,6 +1325,7 @@ end else begin
      20'h0007C : begin sys_ack <= sys_en;          sys_rdata <= {fft_peak_index_down_b, fft_peak_index_up_b}; end
      20'h00080 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_up_b                       ; end
      20'h00084 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_down_b                     ; end
+     20'h00088 : begin sys_ack <= sys_en;          sys_rdata <= fft_nfft                            ; end
 
      /*
      20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= {{32-18{1'b0}}, set_a_filt_aa}      ; end
