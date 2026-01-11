@@ -465,8 +465,8 @@ always @(posedge adc_clk_i) begin
     fft_rst_i <= {fft_rst_i[0], (fft_trig_sync && adc_rst_do) || sync_rst_i};
 end
 
-// assign fft_rstn_i = adc_rstn_i && ~|fft_rst_i;
-assign fft_rstn_i = ~|fft_rst_i;
+assign fft_rstn_i = adc_rstn_i && ~|fft_rst_i;
+// assign fft_rstn_i = ~|fft_rst_i;
 
 logic fft_trig_i = fft_trig_sync ? (adc_trig && !adc_dly_do && pretrig_ok) : fft_trig;
 
@@ -535,7 +535,7 @@ always @(posedge adc_clk_i) begin
 end
 `endif
 
-logic [16-1: 0] fft_conf_data;
+logic [16-1: 0] fft_conf_data = {{7-1{1'b0}}, 1'b1, {3-1{1'b0}}, {5-1{FSZ}}};
 logic [ 5-1: 0] fft_nfft = fft_conf_data[5-1:0];
 logic           fft_fwd_inv = fft_conf_data[8];
 
@@ -650,8 +650,8 @@ if (adc_rstn_i == 1'b0) begin
     fft_acq2_cnt <= 2**(FSZ-1) - 200;
     fft_trig_sync <= 1;
 
-    fft_nfft <= FSZ;
-    fft_fwd_inv <= 1;
+    // fft_nfft <= FSZ;
+    // fft_fwd_inv <= 1;
 end else if (sys_wen) begin
     if (sys_addr[19:0]==20'h0)  fft_enable <= sys_wdata[5];
     if (sys_addr[19:0]==20'h0)  fft_trig_sync <= sys_wdata[6];

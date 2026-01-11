@@ -18,6 +18,7 @@ module fft_proc #(
   input logic  [ FSZ-1:0] fft_peak_start,
   input logic  [ DSZ-1:0] fft_peak_minimum,
 
+
   input logic  [ 32-1: 0] sys_addr,
 
   output logic [DSZ-1: 0] fft_rdata_up_o,
@@ -131,7 +132,7 @@ end
 always @(posedge clk_i)
 if (clk_cnt >= 125000000) begin
     clk_cnt <= 0;
-    // fft_skip_cnt <= skip_cnt;
+    fft_skip_cnt <= skip_cnt;
     fft_frame_cnt <= {1'b0, frame_cnt[32-1:1]};
     if (trig_i && !fft_done)
         skip_cnt <= 1;
@@ -150,24 +151,21 @@ end else begin
 end
 
 logic          fft_conf_dvalid;
-// logic          rstn_i = fft_rstn_i && !fft_conf_dvalid;
-logic          rstn_i = fft_rstn_i;
+logic          rstn_i = fft_rstn_i && !fft_conf_dvalid;
+// logic          rstn_i = fft_rstn_i;
 logic [ 5-1:0] fft_nfft = fft_conf_data_i[5-1:0];
 logic [32-1:0] fft_length;
 logic [32-1:0] fft_length2;
 
-always @(posedge clk_i)
 // Only allow one-time re-configuration after reset to avoid synchronization issue
+always @(posedge clk_i)
 if (fft_rstn_i == 1'b0) begin
-    fft_conf_dvalid <= 0;
+    fft_conf_dvalid <= 1;
     fft_length <= 2**fft_nfft;
     // We need 2x amount of samples, one for Fup and one for Fdown
     fft_length2 <= 2**(fft_nfft+1);
-    fft_skip_cnt <= 0;
-// end else if (fft_conf_dvalid) begin
-//     fft_skip_cnt <= fft_skip_cnt + 1;
-//     if (fft_conf_rdy)
-//         fft_conf_dvalid <= 0;
+end else if (fft_conf_dvalid && fft_conf_rdy) begin
+    fft_conf_dvalid <= 0;
 end
 
 logic pre_size = fft_length2 - set_dly;
