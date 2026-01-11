@@ -255,7 +255,7 @@ class Scope(HardwareModule, AcquisitionModule):
                        "math_formula",
                        "xy_mode"]
     # running_state last for proper acquisition setup
-    _setup_attributes = _gui_attributes + ["rolling_mode", "fft_enable"]
+    _setup_attributes = _gui_attributes + ["rolling_mode", "fft_enable", 'nfft']
     # changing these resets the acquisition and autoscale (calls setup())
 
     data_length = data_length  # to use it in a list comprehension
@@ -449,7 +449,8 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_peak_state = IntRegister(0x78, doc="FFT peak detection internal state")
 
-    nfft = IntRegister(0x88, doc="FFT point size. Implies a transform length of 2^nfft",  min=3, max=16)
+    nfft = IntRegister(0x88, doc="FFT point size. Implies a transform length of 2^nfft",
+                       min=3, max=16, call_setup=True)
 
     _adc_we_cnt = IntRegister(0x2C, doc="Number of samles that have passed "
                                         "since trigger was armed (adc_we_cnt)")
