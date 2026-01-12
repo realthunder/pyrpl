@@ -51,7 +51,8 @@ module fft_proc #(
   output logic [ QSZ-1:0] fft_q_rp_save,
   output logic [ ASZ-1:0] fft_q_rdata_o,
 
-  input logic  [  16-1:0] fft_conf_data_i
+  input logic  [  16-1:0] fft_conf_data_i,
+  output logic [  32-1:0] fft_length
 );
 
 logic [ 16-1: 0] skip_cnt;
@@ -132,7 +133,7 @@ end
 always @(posedge clk_i)
 if (clk_cnt >= 125000000) begin
     clk_cnt <= 0;
-    fft_skip_cnt <= skip_cnt;
+    // fft_skip_cnt <= skip_cnt;
     fft_frame_cnt <= {1'b0, frame_cnt[32-1:1]};
     if (trig_i && !fft_done)
         skip_cnt <= 1;
@@ -154,7 +155,6 @@ logic          fft_conf_dvalid;
 logic          rstn_i = fft_rstn_i && !fft_conf_dvalid;
 // logic          rstn_i = fft_rstn_i;
 logic [ 5-1:0] fft_nfft = fft_conf_data_i[5-1:0];
-logic [32-1:0] fft_length;
 logic [32-1:0] fft_length2;
 
 // Only allow one-time re-configuration after reset to avoid synchronization issue
@@ -165,10 +165,11 @@ if (fft_rstn_i == 1'b0) begin
     // We need 2x amount of samples, one for Fup and one for Fdown
     fft_length2 <= 2**(fft_nfft+1);
 end else if (fft_conf_dvalid && fft_conf_rdy) begin
+    fft_skip_cnt <= fft_skip_cnt + 1;
     fft_conf_dvalid <= 0;
 end
 
-logic pre_size = fft_length2 - set_dly;
+logic pre_size = 2**(RSZ-1) - set_dly;
 logic up_in;
 
 always @(posedge clk_i)
@@ -188,17 +189,18 @@ end else begin
     end
 
     if (trig_i && fft_done && up_in == 1) begin
-        if (set_dly >= fft_length2) begin
-            fft_q_rp <= fft_q_wp;
-            fft_q_rp_save <= fft_q_wp;
-            fft_we_cnt <= set_dly;
-        end else begin
+        if (set_dly < 2**(RSZ-1)) begin
             fft_we_cnt <= fft_length2;
-            if (fft_q_size > pre_size) begin
+            if (pre_size < fft_q_size) begin
                 fft_q_rp <= fft_q_wp - pre_size;
                 fft_q_rp_save <= fft_q_wp - pre_size;
-            end else
+            end else begin
                 fft_q_rp_save <= fft_q_rp;
+            end
+        end else begin
+            fft_q_rp <= fft_q_wp;
+            fft_q_rp_save <= fft_q_wp;
+            fft_we_cnt <= set_dly - 2**(RSZ-1) + fft_length2;
         end
     end else if (fft_q_size > 0 && fft_we_cnt > 0 && (fft_we_cnt > fft_length2 || fft_saxi_rdy)) begin
         fft_data_i <= fft_queue[fft_q_rp];
@@ -237,7 +239,7 @@ end
 assign fft_peak_rp = fft_wp;
 assign fft_peak_data = fft_maxi_data[DSZ-1:0];
 assign fft_peak_data_abs = fft_peak_data[DSZ-1] ? -fft_peak_data : fft_peak_data;
-assign fft_peak_data_valid = fft_maxi_valid && fft_peak_rp>=fft_peak_start && fft_peak_rp[FSZ-1]==0 && fft_peak_data_abs>fft_peak_minimum;
+assign fft_peak_data_valid = fft_maxi_valid && fft_peak_rp>=fft_peak_start && fft_peak_rp<fft_length[FSZ:1] && fft_peak_data_abs>fft_peak_minimum;
 
 logic peak_up;
 logic peak_ready;
