@@ -449,8 +449,10 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_peak_state = IntRegister(0x78, doc="FFT peak detection internal state")
 
-    nfft = IntRegister(0x88, doc="FFT point size. Implies a transform length of 2^nfft",
+    nfft = IntRegister(0x88, doc="FFT point size configuration. Implies a transform length of 2^nfft",
                        min=3, max=16, call_setup=True)
+
+    fft_length = IntRegister(0x8C, doc="FFT current point size")
 
     _adc_we_cnt = IntRegister(0x2C, doc="Number of samles that have passed "
                                         "since trigger was armed (adc_we_cnt)")
@@ -555,10 +557,11 @@ class Scope(HardwareModule, AcquisitionModule):
 
     @property
     def _fft_length(self):
-        wp_last = self.fft_wp_last
-        length1 = max(2, (wp_last & 0xffff) + 1)
-        length2 = max(2, (wp_last >> 16) + 1)
-        return min(length1, length2)
+        #  wp_last = self.fft_wp_last
+        #  length1 = max(2, (wp_last & 0xffff) + 1)
+        #  length2 = max(2, (wp_last >> 16) + 1)
+        #  return min(length1, length2)
+        return self.fft_length
 
     _fft_data_width = 27
     def get_fft_data(self, addr):
