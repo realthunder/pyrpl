@@ -82,8 +82,9 @@ logic               fft_saxi_valid;
 logic [ FSZ-1: 0]   fft_hist_up[0:(1<<HSZ)-1];
 logic [ FSZ-1: 0]   fft_hist_down[0:(1<<HSZ)-1];
 
-logic [ DSZ-1: 0]   fft_buf_up[0:(1<<FSZ)-1];
-logic [ DSZ-1: 0]   fft_buf_down[0:(1<<FSZ)-1];
+localparam FFT_SHIFT = 1;
+logic [ DSZ-FFT_SHIFT-1: 0]   fft_buf_up[0:(1<<FSZ)-1];
+logic [ DSZ-FFT_SHIFT-1: 0]   fft_buf_down[0:(1<<FSZ)-1];
 
 logic [ FSZ-1: 0]   fft_peak_idx;
 logic [ DSZ-1: 0]   fft_peak;
@@ -117,8 +118,8 @@ assign fft_data = (enable_i || !fft_inited) ? data_i : fft_last_data;
 always @(posedge clk_i) begin
    fft_raddr1 <= sys_addr[FSZ-1+3:3] ;
    fft_raddr2 <= fft_raddr1;
-   fft_rdata_up_o <= fft_buf_up[fft_raddr2];
-   fft_rdata_down_o <= fft_buf_down[fft_raddr2];
+   fft_rdata_up_o[DSZ-1:FFT_SHIFT] <= fft_buf_up[fft_raddr2];
+   fft_rdata_down_o[DSZ-1:FFT_SHIFT] <= fft_buf_down[fft_raddr2];
 
    fft_hist_raddr1 <= sys_addr[HSZ-1+2:2]  ;
    fft_hist_raddr2 <= fft_hist_raddr1;
@@ -225,9 +226,9 @@ if (rstn_i == 1'b0) begin
     up_out <= 1;
 end else if (fft_maxi_valid && fft_maxi_rdy) begin
     if (up_out)
-        fft_buf_up[fft_wp] <= fft_maxi_data[DSZ-1:0];
+        fft_buf_up[fft_wp] <= fft_maxi_data[DSZ-1:FFT_SHIFT];
     else
-        fft_buf_down[fft_wp] <= fft_maxi_data[DSZ-1:0];
+        fft_buf_down[fft_wp] <= fft_maxi_data[DSZ-1:FFT_SHIFT];
     if (fft_maxi_last) begin
         fft_wp_last <= fft_wp;
         fft_wp <= 0;

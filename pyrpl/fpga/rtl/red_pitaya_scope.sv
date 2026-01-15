@@ -69,10 +69,10 @@
 module red_pitaya_scope #(
   parameter ASZ = 14,  // ADC input sample data width
   parameter QSZ = 10,  // FFT buffer queue size 2^QSZ
-  parameter DSZ = 27,  // FFT_output width
-  parameter FSZ = 12,  // FFT transform length 2^FSZ
+  parameter DSZ = 28,  // FFT_output width
+  parameter FSZ = 13,  // FFT transform length 2^FSZ
   parameter RSZ = 14,  // RAM size 2^RSZ
-  parameter HSZ = 14  // fft history buffer size 2^HSZ
+  parameter HSZ = 14   // fft history buffer size 2^HSZ
 )(
 
    // ADC
