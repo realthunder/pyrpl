@@ -7,6 +7,7 @@
 # IP Integrator Tcl commands easier.
 ################################################################
 
+
 namespace eval _tcl {
 proc get_script_folder {} {
    set script_path [file normalize [info script]]
@@ -227,6 +228,9 @@ proc create_root_design { parentCell } {
   set event_tlast_missing_0 [ create_bd_port -dir O -type intr event_tlast_missing_0 ]
   set event_tlast_unexpected_0 [ create_bd_port -dir O -type intr event_tlast_unexpected_0 ]
 
+  global fft_width
+  global fft_nfft
+
   # Create instance: cordic_0, and set properties
   set cordic_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:cordic:6.0 cordic_0 ]
   set_property -dict [ list \
@@ -235,8 +239,8 @@ proc create_root_design { parentCell } {
    CONFIG.Compensation_Scaling {No_Scale_Compensation} \
    CONFIG.Data_Format {SignedFraction} \
    CONFIG.Functional_Selection {Translate} \
-   CONFIG.Input_Width {27} \
-   CONFIG.Output_Width {27} \
+   CONFIG.Input_Width $fft_width \
+   CONFIG.Output_Width $fft_width \
    CONFIG.cartesian_has_tlast {true} \
    CONFIG.flow_control {Blocking} \
    CONFIG.out_tlast_behv {Pass_Cartesian_TLAST} \
@@ -259,7 +263,7 @@ proc create_root_design { parentCell } {
    CONFIG.target_clock_frequency {125} \
    CONFIG.target_data_throughput {125} \
    CONFIG.throttle_scheme {nonrealtime} \
-   CONFIG.transform_length {4096} \
+   CONFIG.transform_length [expr {1<<$fft_nfft}] \
  ] $xfft_0
 
   # Create interface connections

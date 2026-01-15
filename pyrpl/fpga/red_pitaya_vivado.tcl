@@ -31,6 +31,20 @@ set part xc7z020clg400-1
 
 create_project -in_memory -part $part
 
+set clk_diff 1
+set clk_mult 8
+set clk_adc_div 8
+set adc_sz 14
+set fft_width 28
+set fft_nfft 13
+
+if {[llength $argv] > 1 && [lindex $argv 0] == "alinx"} {
+    set clk_diff 0
+    set adc_sz 12
+    set clk_mult 20
+    set clk_adc_div 4
+}
+
 # experimental attempts to avoid a warning
 #get_projects
 #get_designs
@@ -112,24 +126,14 @@ read_xdc                          $path_sdc/red_pitaya.xdc
 # write checkpoint design
 ################################################################################
 
-set clk_diff 1
-set clk_mult 8
-set clk_adc_div 8
-set adc_sz 14
-
-if {[llength $argv] > 1 && [lindex $argv 0] == "alinx"} {
-    set clk_diff 0
-    set adc_sz 12
-    set clk_mult 20
-    set clk_adc_div 4
-}
-
 #synth_design -top red_pitaya_top
 synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivalent_registers \
     -generic ADC_SZ=$adc_sz \
     -generic CLK_DIFF=$clk_diff \
     -generic CLK_MULT=$clk_mult \
-    -generic CLK_ADC_DIV=$clk_adc_div 
+    -generic CLK_ADC_DIV=$clk_adc_div \
+    -generic FFT_NFFT=$fft_nfft \
+    -generic FFT_WIDTH=$fft_width \
 
 # set debug_nets {asg_trig_n asg_trig2_p fft_dvalid fft_a_enable fft_b_enable}
 # set debug_nets {}
