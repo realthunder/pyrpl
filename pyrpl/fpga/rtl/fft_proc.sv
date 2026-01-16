@@ -82,9 +82,8 @@ logic               fft_saxi_valid;
 logic [ FSZ-1: 0]   fft_hist_up[0:(1<<HSZ)-1];
 logic [ FSZ-1: 0]   fft_hist_down[0:(1<<HSZ)-1];
 
-localparam FFT_SHIFT = 1;
-logic [ DSZ-FFT_SHIFT-1: 0]   fft_buf_up[0:(1<<FSZ)-1];
-logic [ DSZ-FFT_SHIFT-1: 0]   fft_buf_down[0:(1<<FSZ)-1];
+logic [ DSZ-1: 0]   fft_buf_up[0:(1<<FSZ)-1];
+logic [ DSZ-1: 0]   fft_buf_down[0:(1<<FSZ)-1];
 
 logic [ FSZ-1: 0]   fft_peak_idx;
 logic [ DSZ-1: 0]   fft_peak;
@@ -103,6 +102,11 @@ logic               fft_maxi_valid;
 logic               fft_maxi_rdy;
 logic               fft_maxi_last;
 logic [ FSZ-1: 0]   fft_wp;
+// bit reverse fft_wp, because we are using FFT ip core bit reversed option to
+// save memory resource
+logic [ FSZ-1: 0]   fft_wp_plus_one = fft_wp+1;
+logic [ FSZ-1: 0]   fft_wp_reversed = {<<{fft_wp_plus_one}};
+logic [ FSZ-1: 0]   fft_wp_index;
 
 logic [ HSZ-1: 0]   fft_hist_raddr1;
 logic [ HSZ-1: 0]   fft_hist_raddr2;
@@ -118,8 +122,8 @@ assign fft_data = (enable_i || !fft_inited) ? data_i : fft_last_data;
 always @(posedge clk_i) begin
    fft_raddr1 <= sys_addr[FSZ-1+3:3] ;
    fft_raddr2 <= fft_raddr1;
-   fft_rdata_up_o[DSZ-1:FFT_SHIFT] <= fft_buf_up[fft_raddr2];
-   fft_rdata_down_o[DSZ-1:FFT_SHIFT] <= fft_buf_down[fft_raddr2];
+   fft_rdata_up_o <= fft_buf_up[fft_raddr2];
+   fft_rdata_down_o <= fft_buf_down[fft_raddr2];
 
    fft_hist_raddr1 <= sys_addr[HSZ-1+2:2]  ;
    fft_hist_raddr2 <= fft_hist_raddr1;
@@ -222,22 +226,26 @@ logic up_out;
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
     fft_wp <= 0;
+    fft_wp_index <= 0;
     fft_wp_last <= 0;
     up_out <= 1;
 end else if (fft_maxi_valid && fft_maxi_rdy) begin
     if (up_out)
-        fft_buf_up[fft_wp] <= fft_maxi_data[DSZ-1:FFT_SHIFT];
+        fft_buf_up[fft_wp_index] <= fft_maxi_data[DSZ-1:0];
     else
-        fft_buf_down[fft_wp] <= fft_maxi_data[DSZ-1:FFT_SHIFT];
+        fft_buf_down[fft_wp_index] <= fft_maxi_data[DSZ-1:0];
     if (fft_maxi_last) begin
         fft_wp_last <= fft_wp;
         fft_wp <= 0;
+        fft_wp_index <= 0;
         up_out <= !up_out;
-    end else
-        fft_wp = fft_wp + 1;
+    end else begin
+        fft_wp <= fft_wp + 1;
+        fft_wp_index <= fft_wp_reversed >> (FSZ-fft_nfft);
+    end
 end
 
-assign fft_peak_rp = fft_wp;
+assign fft_peak_rp = fft_wp_index;
 assign fft_peak_data = fft_maxi_data[DSZ-1:0];
 assign fft_peak_data_abs = fft_peak_data[DSZ-1] ? -fft_peak_data : fft_peak_data;
 assign fft_peak_data_valid = fft_maxi_valid && fft_peak_rp>=fft_peak_start && fft_peak_rp<fft_length[FSZ:1] && fft_peak_data_abs>fft_peak_minimum;
@@ -291,7 +299,7 @@ end else begin
         end
     end
 
-    fft_peak_ready = {fft_peak_ready[0], peak_ready};
+    fft_peak_ready <= {fft_peak_ready[0], peak_ready};
 end
 
 peak_detector #(.SSZ(FSZ), .DSZ(DSZ)) peak_detector_i (

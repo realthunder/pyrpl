@@ -454,6 +454,8 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_length = IntRegister(0x8C, doc="FFT current point size")
 
+    fft_data_width = IntRegister(0x34, doc='FFT data bit width')
+
     _adc_we_cnt = IntRegister(0x2C, doc="Number of samles that have passed "
                                         "since trigger was armed (adc_we_cnt)")
 
@@ -563,13 +565,13 @@ class Scope(HardwareModule, AcquisitionModule):
         #  return min(length1, length2)
         return self.fft_length
 
-    _fft_data_width = 27
     def get_fft_data(self, addr):
         """raw data from fft"""
         length = self._fft_length
         d = np.array(self._reads(addr, length), dtype=np.uint32)
-        d[d >= 2 ** (self._fft_data_width-1)] -= 2 ** self._fft_data_width
-        d = np.array(d, dtype=float) / 2**(self._fft_data_width-3)
+        width = self.fft_data_width
+        d[d >= 2 ** (width-1)] -= 2 ** width
+        d = np.array(d, dtype=float) / 2**(width-3)
         d1 = d[np.arange(0, length, 2)]
         d2 = d[np.arange(1, length, 2)]
         return d2, d1
