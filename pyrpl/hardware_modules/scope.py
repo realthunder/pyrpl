@@ -421,11 +421,17 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_peak_minimum = IntRegister(0x40, doc="FFT peak detection lower bound")
 
-    fft_peak_idx = IntRegister(0x44, doc="FFT peak indices")
+    fft_peak_idx_a = IntRegister(0x44, doc="FFT channel A peak indices")
 
-    fft_peak_a = IntRegister(0x48, doc="FFT up peak value")
+    fft_peak_idx_b = IntRegister(0x7C, doc="FFT channel B peak indices")
 
-    fft_peak_b = IntRegister(0x4C, doc="FFT down peak value")
+    fft_peak_up_a = IntRegister(0x48, doc="FFT channel A up peak value")
+
+    fft_peak_down_a = IntRegister(0x4C, doc="FFT channel A down peak value")
+
+    fft_peak_up_b = IntRegister(0x80, doc="FFT channel B up peak value")
+
+    fft_peak_down_b = IntRegister(0x84, doc="FFT channel B down peak value")
 
     fft_sum = IntRegister(0x50, doc="Sum of all valid data fot FFT peak detection")
 
