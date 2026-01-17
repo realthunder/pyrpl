@@ -547,7 +547,7 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .clk_i (adc_clk_i),
    .fft_rstn_i (fft_rstn_i),
    .data_i (adc_a_dat),
-   .enable_i (fft_up || fft_down),
+   .enable_i (fft_up || (fft_down && fft_nfft<RSZ-1)),
    .dvalid_i (fft_dvalid),
    .trig_i (fft_trig_i),
    .set_dly (set_dly),
@@ -595,8 +595,8 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
 fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_b (
    .clk_i (adc_clk_i),
    .fft_rstn_i (fft_rstn_i),
-   .data_i (adc_b_dat),
-   .enable_i (fft_up || fft_down),
+   .data_i (fft_nfft<RSZ-1 ? adc_b_dat : adc_a_dat),
+   .enable_i ((fft_nfft<RSZ-1 && fft_up) || fft_down),
    .dvalid_i (fft_dvalid),
    .trig_i (fft_trig_i),
    .set_dly (set_dly),
@@ -1311,9 +1311,9 @@ end else begin
      20'h00038 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_start                      ; end
      20'h0003C : begin sys_ack <= sys_en;          sys_rdata <= fft_threshold_k                     ; end
      20'h00040 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_minimum                    ; end
-     20'h00044 : begin sys_ack <= sys_en;          sys_rdata <= {fft_peak_index_down_a, fft_peak_index_up_a}; end
+     20'h00044 : begin sys_ack <= sys_en;          sys_rdata <= {fft_nfft<RSZ-1?fft_peak_index_down_a:fft_peak_index_up_b, fft_peak_index_up_a}; end
      20'h00048 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_up_a                       ; end
-     20'h0004C : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_down_a                     ; end
+     20'h0004C : begin sys_ack <= sys_en;          sys_rdata <= fft_nfft<RSZ-1?fft_peak_down_a:fft_peak_up_b ; end
      20'h00050 : begin sys_ack <= sys_en;          sys_rdata <= fft_sum_a                           ; end
      20'h00054 : begin sys_ack <= sys_en;          sys_rdata <= fft_count_a                         ; end
      20'h00058 : begin sys_ack <= sys_en;          sys_rdata <= fft_wait1_cnt                       ; end
@@ -1382,7 +1382,7 @@ end else begin
      20'h1???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_a_rd}              ; end
      20'h2???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_b_rd}              ; end
 
-     20'h3???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= sys_addr[2] ? fft_rdata_down_a : fft_rdata_up_a; end
+     20'h3???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= sys_addr[2] ? (fft_nfft<RSZ-1 ? fft_rdata_down_a : fft_rdata_up_b) : fft_rdata_up_a; end
      20'h4???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= sys_addr[2] ? fft_rdata_down_b : fft_rdata_up_b; end
 
      20'h5???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, fft_hist_rdata_down_a, {16-FSZ{1'b0}}, fft_hist_rdata_up_a} ; end

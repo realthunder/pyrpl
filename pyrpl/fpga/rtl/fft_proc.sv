@@ -158,9 +158,9 @@ end
 
 logic          fft_conf_dvalid;
 logic          rstn_i = fft_rstn_i && !fft_conf_dvalid;
-// logic          rstn_i = fft_rstn_i;
 logic [ 5-1:0] fft_nfft = fft_conf_data_i[5-1:0];
 logic [32-1:0] fft_length2;
+logic          up_toggle = fft_length2 > fft_length;
 
 // Only allow one-time re-configuration after reset to avoid synchronization issue
 always @(posedge clk_i)
@@ -168,7 +168,10 @@ if (fft_rstn_i == 1'b0) begin
     fft_conf_dvalid <= 1;
     fft_length <= 2**fft_nfft;
     // We need 2x amount of samples, one for Fup and one for Fdown
-    fft_length2 <= 2**(fft_nfft+1);
+    if (fft_nfft < RSZ-1)
+        fft_length2 <= 2**(fft_nfft+1);
+    else
+        fft_length2 <= 2**fft_nfft;
 end else if (fft_conf_dvalid && fft_conf_rdy) begin
     fft_skip_cnt <= fft_skip_cnt + 1;
     fft_conf_dvalid <= 0;
@@ -211,7 +214,7 @@ end else begin
         fft_data_i <= fft_queue[fft_q_rp];
         fft_q_rp <= fft_q_rp + 1;
         if (fft_we_cnt == 1 || fft_we_cnt == fft_length+1)
-            up_in <= !up_in;
+            up_in <= up_in + up_toggle;
         fft_we_cnt <= fft_we_cnt - 1;
     end else if (dvalid_i && fft_q_wp_plus_one == fft_q_rp)
         fft_q_rp <= fft_q_rp + 1;
@@ -238,7 +241,7 @@ end else if (fft_maxi_valid && fft_maxi_rdy) begin
         fft_wp_last <= fft_wp;
         fft_wp <= 0;
         fft_wp_index <= 0;
-        up_out <= !up_out;
+        up_out <= up_out + up_toggle;
     end else begin
         fft_wp <= fft_wp + 1;
         fft_wp_index <= fft_wp_reversed >> (FSZ-fft_nfft);
@@ -274,9 +277,9 @@ end else begin
             else
                 fft_hist_index <= fft_index_q[index_rp];
 
-            if (peak_up == 0)
+            if (peak_up != up_toggle)
                 index_rp <= index_rp + 1;
-            peak_up <= !peak_up;
+            peak_up <= peak_up + up_toggle;
 
             if (peak_up) begin
                 fft_peak_index_up <= fft_peak_idx;
@@ -288,7 +291,7 @@ end else begin
             fft_sum <= _fft_sum;
             fft_count <= _fft_count;
 
-        end else if (peak_up == 0 && index_wp_plus_one == index_rp)
+        end else if (peak_up != up_toggle && index_wp_plus_one == index_rp)
             index_rp <= index_rp + 1;
 
         if (fft_peak_ready == 2'b01) begin
