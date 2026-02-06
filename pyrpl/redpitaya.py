@@ -53,7 +53,7 @@ defaultparameters = dict(
     reloadserver=False,  # reinstall the server at startup if not necessary?
     reloadfpga=True,  # reload the fpga bitfile at startup?
     serverbinfilename='fpga.bit.bin',  # name of the binfile on the server
-    serverdirname = "//opt//pyrpl//",  # server directory for server app and bitfile
+    serverdirname = "/opt/pyrpl/",  # server directory for server app and bitfile
     leds_off=True,  # turn off all GPIO lets at startup (improves analog performance)
     frequency_correction=1.0,  # actual FPGA frequency is 125 MHz * frequency_correction
     timeout=1,  # timeout in seconds for ssh communication
@@ -396,7 +396,7 @@ class RedPitaya(object):
         sleep(self.parameters['delay'])
         self.ssh.ask("cd " + self.parameters['serverdirname'])
         #try both versions
-        for serverfile in ['monitor_server','monitor_server_0.95']:
+        for serverfile in ['monitor_server','monitor_server_0.95','monitor_server_2.07']:
             sleep(self.parameters['delay'])
             try:
                 self.ssh.scp_put(
@@ -454,7 +454,7 @@ class RedPitaya(object):
             self.logger.debug('>') # formerly 'console ready'
         sleep(self.parameters['delay'])
         # make sure no other monitor_server blocks the port
-        self.ssh.ask('killall ' + self.parameters['monitor_server_name'])
+        #  self.ssh.ask('killall ' + self.parameters['monitor_server_name'])
         self._serverrunning = False
 
     def endclient(self):

@@ -610,6 +610,9 @@ class Scope(HardwareModule, AcquisitionModule):
         d = np.array(self._reads(0x70000, length), dtype=np.uint32)
         return np.stack((d&0xffff, d>>16), axis=1)
 
+    def _fftidx2(self, length):
+        return np.array(self._reads(0xa0000, length), dtype=np.uint32)
+
     @property
     def _rawdata_ch1(self):
         """raw data from ch1"""
