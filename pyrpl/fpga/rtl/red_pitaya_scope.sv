@@ -479,16 +479,18 @@ logic fft_down = fft_state == S_FFT_DOWN;
 integer i;
 localparam IDXSZ = 8;
 localparam IHSZ = 10;
-// `define DEBUG_FFT_INDEX
 
+//`define DEBUG_FFT_INDEX
 `ifdef DEBUG_FFT_INDEX
     logic [ IDXSZ-1 :0]  fft_indices_x[0:(1<<IHSZ)-1];
     logic [ IDXSZ-1 :0]  fft_indices_y[0:(1<<IHSZ)-1];
+    logic [ 32-1    :0]  fft_indices[0:(1<<IHSZ)-1];
 `endif
 
 logic [ IHSZ-1   :0]  fft_index_raddr1;
 logic [ IHSZ-1   :0]  fft_index_raddr2;
 logic [ 32-1     :0]  fft_index_rdata;
+logic [ 32-1     :0]  fft_index_rdata2;
 logic [ IHSZ-1   :0]  fft_indices_pos;
 
 logic [ IDX_PIPELINE+2 :0]    fft_index_valid;
@@ -498,7 +500,7 @@ always @(posedge adc_clk_i)
 if (fft_index_flush) begin
    fft_hist_step <= 0;
    fft_indices_pos <= 1;
-   fft_index_valid <= 0;
+   fft_index_valid <= {IDX_PIPELINE+2{1'b0}};
    x_step <= 0;
    y_step <= 0;
 end else begin
@@ -523,6 +525,7 @@ end else begin
         if (fft_index_valid[IDX_PIPELINE+2]) begin
             fft_indices_x[fft_indices_pos] <= x_step;
             fft_indices_y[fft_indices_pos] <= y_step;
+            fft_indices[fft_indices_pos] <= fft_hist_index[IDX_PIPELINE];
             fft_indices_pos <= fft_indices_pos + 1;
         end
     `endif
@@ -533,6 +536,7 @@ always @(posedge adc_clk_i) begin
    fft_index_raddr1 <= sys_addr[IHSZ-1+2:2] ;
    fft_index_raddr2  <= fft_index_raddr1;
    fft_index_rdata <= {{16-IDXSZ{1'b0}}, fft_indices_x[fft_index_raddr1], {16-IDXSZ{1'b0}}, fft_indices_y[fft_index_raddr1]};
+   fft_index_rdata2 <= fft_indices[fft_index_raddr1];
 end
 `endif
 
@@ -1392,6 +1396,7 @@ end else begin
      20'h7???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_index_rdata                     ; end
      20'h8???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_q_rdata_a                       ; end
      20'h9???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_q_rdata_b                       ; end
+     20'ha???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_index_rdata2                    ; end
 
        default : begin sys_ack <= sys_en;          sys_rdata <=  32'h0                              ; end
    endcase

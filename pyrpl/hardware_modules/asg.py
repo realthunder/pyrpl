@@ -87,6 +87,7 @@ class WaveformAttribute(SelectProperty):
                 y = instance.data
                 instance._logger.error(
                     "Waveform name %s not recognized. Specify waveform manually" % waveform)
+            instance.stepping = waveform != 'dc'
             instance.data = y
             instance._waveform = waveform
         return waveform
@@ -269,10 +270,7 @@ def make_asg(channel=0):
         # register set_a_rst
         sm_reset = BoolRegister(_START_OFFSET, 6 + _BIT_OFFSET, doc='resets the state machine')
 
-        # register set_a/b_once
-        # deprecated since redpitaya v0.94
-        periodic = BoolRegister(_START_OFFSET, 5 + _BIT_OFFSET, invert=True,
-                                doc='if False, fgen stops after performing one full waveform at its last value.')
+        stepping = BoolRegister(_START_OFFSET, 5 + _BIT_OFFSET, doc='Enable step index output.')
 
         # register set_a/b_wrap
         _sm_wrappointer = BoolRegister(_START_OFFSET, 4 + _BIT_OFFSET,
