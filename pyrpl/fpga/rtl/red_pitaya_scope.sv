@@ -389,7 +389,8 @@ typedef enum logic [2:0] {
     S_WAIT1 = 2,
     S_FFT_UP = 3,
     S_WAIT2 = 4,
-    S_FFT_DOWN = 5
+    S_FFT_DOWN = 5,
+    S_WAIT3 = 6
 } fft_state_t;
 
 fft_state_t         fft_state;
@@ -717,7 +718,15 @@ end else begin
     S_FFT_DOWN:
         if (fft_state_cnt >= fft_acq2_cnt) begin
             fft_state_cnt <= 0;
+            fft_state <= S_WAIT3;
+        end else if (fft_dvalid)
+            fft_state_cnt <= fft_state_cnt + 1;
+    S_WAIT3:
+        if (&fft_done)
             fft_state <= S_IDLE;
+        else if (fft_state_cnt >= fft_wait2_cnt) begin
+            fft_state_cnt <= 0;
+            fft_state <= S_FFT_UP;
         end else if (fft_dvalid)
             fft_state_cnt <= fft_state_cnt + 1;
     endcase
