@@ -1319,7 +1319,7 @@ end else begin
 
      20'h0002C : begin sys_ack <= sys_en;          sys_rdata <=                 adc_we_cnt          ; end
 
-     20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= fft_frame_cnt                       ; end
+     20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= fft_nfft<RSZ-1?fft_frame_cnt:(fft_frame_cnt<<1); end
      20'h00034 : begin sys_ack <= sys_en;          sys_rdata <= DSZ                                 ; end
      20'h00038 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_start                      ; end
      20'h0003C : begin sys_ack <= sys_en;          sys_rdata <= fft_threshold_k                     ; end
