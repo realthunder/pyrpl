@@ -455,6 +455,9 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_peak_state = IntRegister(0x78, doc="FFT peak detection internal state")
 
+    fft_hist_size = IntRegister(0x24, doc="FFT history buffer size")
+
+
     nfft = IntRegister(0x88, doc="FFT point size configuration. Implies a transform length of 2^nfft",
                        min=3, max=16, call_setup=True)
 

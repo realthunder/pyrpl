@@ -1313,7 +1313,8 @@ end else begin
      20'h0001C : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ{1'b0}}, adc_wp_trig}       ; end
 
      20'h00020 : begin sys_ack <= sys_en;          sys_rdata <= {{32-ASZ{1'b0}}, set_a_hyst}        ; end
-     //20'h00024 : begin sys_ack <= sys_en;          sys_rdata <= {{32-ASZ{1'b0}}, set_b_hyst}         ; end
+
+     20'h00024 : begin sys_ack <= sys_en;          sys_rdata <= 2**HSZ                              ; end
 
      20'h00028 : begin sys_ack <= sys_en;          sys_rdata <= {{32- 1{1'b0}}, set_avg_en}         ; end
 
@@ -1398,7 +1399,8 @@ end else begin
      20'h3???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= sys_addr[2] ? (fft_nfft<RSZ-1 ? fft_rdata_down_a : fft_rdata_up_b) : fft_rdata_up_a; end
      20'h4???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= sys_addr[2] ? fft_rdata_down_b : fft_rdata_up_b; end
 
-     20'h5???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, fft_hist_rdata_down_a, {16-FSZ{1'b0}}, fft_hist_rdata_up_a} ; end
+     20'h5???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, (fft_nfft<RSZ-1 ? fft_hist_rdata_down_a : fft_hist_rdata_up_b),
+                                                                 {16-FSZ{1'b0}}, fft_hist_rdata_up_a} ; end
      20'h6???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, fft_hist_rdata_down_b, {16-FSZ{1'b0}}, fft_hist_rdata_up_b} ; end
 
      // For debugging purpose
