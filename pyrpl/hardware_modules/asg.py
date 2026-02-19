@@ -22,7 +22,7 @@ Let's set up the ASG to output a sawtooth signal of amplitude 0.8 V
 import traceback
 import numpy as np
 from collections import OrderedDict
-from ..attributes import BoolRegister, FloatRegister, SelectRegister, SelectProperty, StringProperty,\
+from ..attributes import BoolProperty, BoolRegister, FloatRegister, SelectRegister, SelectProperty, StringProperty,\
                              IntRegister, LongRegister, PhaseRegister, FrequencyRegister, FloatProperty, epsilon
 from ..modules import HardwareModule, SignalModule
 from ..widgets.module_widgets import AsgWidget
@@ -73,6 +73,10 @@ class WaveformAttribute(SelectProperty):
             elif waveform == 'halframp':
                 y = np.linspace(-1.0, 1.0, instance.data_length,
                                 endpoint=False)
+            elif waveform == 'halframp2':
+                y = np.linspace(-1.0, 1.0, instance.data_length//2,
+                                endpoint=False)
+                y = np.concatenate([y, y])
             elif waveform == 'halfsin':
                 x = np.linspace(0, np.pi, instance.data_length,
                                 endpoint=False)
@@ -96,7 +100,7 @@ class WaveformAttribute(SelectProperty):
                 instance._logger.error(
                     "Waveform name %s not recognized. Specify waveform manually" % waveform)
             instance.stepping = waveform != 'dc'
-            instance.data = y
+            instance.data = -y if instance.invert else y
             instance._waveform = waveform
         return waveform
 
@@ -106,11 +110,8 @@ class WaveformFileProperty(StringProperty):
 
     def set_value(self, instance, filename):
         super().set_value(instance, filename)
-        if filename:
-            if instance.waveform != 'custom':
-                instance.waveform = 'custom'
-            else:
-                self.load(instance)
+        if filename and instance.waveform == 'custom':
+            self.load(instance)
 
     def load(self, instance):
         filename = self.get_value(instance)
@@ -229,6 +230,7 @@ def make_asg(channel=0):
         _widget_class = AsgWidget
         _gui_attributes = ["waveform",
                            "waveform_file",
+                           'invert',
                            'sync_on',
                            "reverse_on",
                            "slave",
@@ -283,6 +285,8 @@ def make_asg(channel=0):
         # register set_a/b_wrap
         _sm_wrappointer = BoolRegister(_START_OFFSET, 4 + _BIT_OFFSET,
                                        doc='If False, fgen starts from data[0] value after each cycle. If True, assumes that data is periodic and jumps to the naturally next index after full cycle.')
+
+        invert = BoolProperty(default=False, doc='Invert waveform', call_setup=True)
 
         sync_on = BoolRegister(_START_OFFSET, 15 + _BIT_OFFSET, doc='Sync start together with other asg channel(s) with sync_on', call_setup=True)
 
@@ -389,7 +393,7 @@ def make_asg(channel=0):
         def _noise_V2_per_Hz(self):
             return self._rmsamplitude**2/(125e6*self._frequency_correction/2)
 
-        waveforms = ['sin', 'cos', 'ramp', 'halframp', 'square', 'dc',
+        waveforms = ['sin', 'cos', 'ramp', 'halframp', 'halframp2', 'square', 'dc',
                      'noise', 'sqrt', 'halfsin', 'halfcos', 'custom']
 
         waveform = WaveformAttribute(waveforms)
