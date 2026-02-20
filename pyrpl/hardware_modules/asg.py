@@ -43,6 +43,8 @@ class WaveformAttribute(SelectProperty):
             instance.__class__.waveform_file.load(instance)
             instance._waveform = waveform
         else:
+            if not instance._loading_attributes:
+                instance.waveform_file = ''
             if waveform == 'noise':
                 # current amplitude becomes rms amplitude
                 rmsamplitude = instance.amplitude
@@ -99,9 +101,9 @@ class WaveformAttribute(SelectProperty):
                 y = instance.data
                 instance._logger.error(
                     "Waveform name %s not recognized. Specify waveform manually" % waveform)
-            instance.stepping = waveform != 'dc'
             instance.data = -y if instance.invert else y
             instance._waveform = waveform
+        instance.stepping = waveform != 'dc'
         return waveform
 
 
@@ -110,8 +112,11 @@ class WaveformFileProperty(StringProperty):
 
     def set_value(self, instance, filename):
         super().set_value(instance, filename)
-        if filename and instance.waveform == 'custom':
-            self.load(instance)
+        if filename:
+            if instance.waveform == 'custom':
+                self.load(instance)
+            elif not instance._loading_attributes:
+                instance.waveform = 'custom'
 
     def load(self, instance):
         filename = self.get_value(instance)
@@ -262,6 +267,14 @@ def make_asg(channel=0):
             super(Asg, self).__init__(parent, name=name)
             self._counter_wrap = self._default_counter_wrap
             self._writtendata = np.zeros(self.data_length)
+
+        _loading_attributes = False
+        def _load_setup_attributes(self):
+            try:
+                self._loading_attributes = True
+                super()._load_setup_attributes()
+            finally:
+                self._loading_attributes = False
 
         @property
         def output_directs(self):
