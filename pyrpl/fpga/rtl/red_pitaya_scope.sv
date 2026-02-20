@@ -655,7 +655,7 @@ if (adc_rstn_i == 1'b0) begin
     fft_wait2_cnt <= 200;
     fft_acq1_cnt <= 2**(FSZ-1) - 200;
     fft_acq2_cnt <= 2**(FSZ-1) - 200;
-    fft_trig_sync <= 1;
+    fft_trig_sync <= 0;
 
     // fft_nfft <= FSZ;
     // fft_fwd_inv <= 1;
@@ -1391,6 +1391,8 @@ end else begin
      20'h0017C : begin sys_ack <= sys_en;          sys_rdata <= fft_q_wp_b                          ; end
      20'h00180 : begin sys_ack <= sys_en;          sys_rdata <= fft_q_rp_b                          ; end
      20'h00184 : begin sys_ack <= sys_en;          sys_rdata <= fft_q_rp_save_b                     ; end
+
+     20'h00188 : begin sys_ack <= sys_en;          sys_rdata <= {{16-RSZ{1'b0}}, y_step, {16-RSZ{1'b0}}, x_step}; end
 
 
      20'h1???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_a_rd}              ; end
