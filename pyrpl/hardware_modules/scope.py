@@ -457,6 +457,7 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_hist_size = IntRegister(0x24, doc="FFT history buffer size")
 
+    scan_pos = IntRegister(0x188, doc='scanning position')
 
     nfft = IntRegister(0x88, doc="FFT point size configuration. Implies a transform length of 2^nfft",
                        min=3, max=16, call_setup=True)
