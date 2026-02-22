@@ -48,6 +48,7 @@ module red_pitaya_asg_ch #(
    input      [  3-1: 0] trig_src_i      ,  //!< trigger source selector
    input                 trig_slave_i    ,  //!< slave trigger
    output                trig_done_o     ,  //!< trigger event
+   output                play_done_o     ,  //!< data play done event
    
    // buffer ctrl
    input                 buf_we_i        ,  //!< buffer write enable
@@ -231,6 +232,7 @@ assign dac_npnt_sub_neg = dac_npnt_sub[RSZ+16];
 
 wire trig_done     ;
 assign trig_done = ((~dac_npnt_sub_neg) | (reverse_run && reverse_on_i && step_o==0)) && trig_slave_i;
+assign play_done_o = trig_done;
 reg trig_done_prev ;
 assign trig_done_o = (!dac_rep && trig_in) | (trig_done && !trig_done_prev);
 
