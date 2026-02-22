@@ -130,6 +130,7 @@ reg   [  32-1: 0] buf_a_rpnt_rd, buf_b_rpnt_rd, buf_c_rpnt_rd, buf_d_rpnt_rd;
 reg               trig_a_sw    , trig_b_sw    , trig_c_sw    , trig_d_sw    ;
 reg   [   3-1: 0] trig_a_src   , trig_b_src   , trig_c_src   , trig_d_src   ;
 wire              trig_a_done  , trig_b_done  , trig_c_done  , trig_d_done  ;
+wire              play_a_done  , play_b_done  , play_c_done  , play_d_done  ;
 reg               slave_a_trig , slave_b_trig , slave_c_trig , slave_d_trig ;
 reg               scope_a_trig , scope_b_trig , scope_c_trig , scope_d_trig ;
 wire              trig_a_slave , trig_b_slave , trig_c_slave , trig_d_slave ;
@@ -239,6 +240,7 @@ red_pitaya_asg_ch  #(.RSZ (RSZ)) ch [4-1:0] (
   .trig_src_i      ({trig_d_src       , trig_c_src       , trig_b_src       , trig_a_src       }),  // trigger source selector
   .trig_slave_i    ({trig_d_slave     , trig_c_slave     , trig_b_slave     , trig_a_slave     }),  // slave trigger
   .trig_done_o     ({trig_d_done      , trig_c_done      , trig_b_done      , trig_a_done      }),  // trigger event
+  .play_done_o     ({play_d_done      , play_c_done      , play_b_done      , play_a_done      }),  // data play done event
   // buffer ctrl
   .buf_we_i        ({buf_d_we         , buf_c_we         , buf_b_we         , buf_a_we         }),  // buffer buffer write
   .buf_addr_i      ({buf_d_addr       , buf_c_addr       , buf_b_addr       , buf_a_addr       }),  // buffer address
@@ -304,9 +306,9 @@ assign trig_out_o = {trig_d_done, trig_c_done, trig_b_done, trig_a_done};
 
 // assign trig_a_slave = (!slave_a_trig && !scope_a_trig) || (slave_a_trig && trig_d_done) || (scope_a_trig && scope_done_i);
 assign trig_a_slave = (!slave_a_trig && !scope_a_trig) ||  (scope_a_trig && scope_done_i);
-assign trig_b_slave = (!slave_b_trig && !scope_b_trig) || (slave_b_trig && trig_a_done) || (scope_b_trig && scope_done_i);
-assign trig_c_slave = (!slave_c_trig && !scope_c_trig) || (slave_c_trig && trig_b_done) || (scope_c_trig && scope_done_i);
-assign trig_d_slave = (!slave_d_trig && !scope_d_trig) || (slave_d_trig && trig_c_done) || (scope_d_trig && scope_done_i);
+assign trig_b_slave = (!slave_b_trig && !scope_b_trig) || (slave_b_trig && play_a_done) || (scope_b_trig && scope_done_i);
+assign trig_c_slave = (!slave_c_trig && !scope_c_trig) || (slave_c_trig && play_b_done) || (scope_c_trig && scope_done_i);
+assign trig_d_slave = (!slave_d_trig && !scope_d_trig) || (slave_d_trig && play_c_done) || (scope_d_trig && scope_done_i);
 
 //---------------------------------------------------------------------------------
 //
