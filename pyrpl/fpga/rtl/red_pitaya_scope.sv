@@ -85,7 +85,12 @@ module red_pitaya_scope #(
    input      [  4-1: 0] trig_asg_i      ,  // ASG trigger
    input                 trig_dsp_i      ,  // DSP module trigger
    output                trig_scope_o    ,  // copy of scope trigger
+
    output                scope_done_o    ,  // scope done processing
+   output                scope_start_o   ,
+   output                x_step_0        ,
+   output                y_step_0        ,
+
    input                 sync_rst_i      ,  // syncrhonized reset signal (from ASG)
 
    input      [RSZ-1: 0] asg2_step_i     ,  // asg2 (1-based index, so it is the second asg channel) current step index
@@ -389,8 +394,7 @@ typedef enum logic [2:0] {
     S_WAIT1 = 2,
     S_FFT_UP = 3,
     S_WAIT2 = 4,
-    S_FFT_DOWN = 5,
-    S_WAIT3 = 6
+    S_FFT_DOWN = 5
 } fft_state_t;
 
 fft_state_t         fft_state;
@@ -470,6 +474,7 @@ end
 assign fft_rstn_i = adc_rstn_i && ~|fft_rst_i;
 // assign fft_rstn_i = ~|fft_rst_i;
 
+logic fft_trig;
 logic fft_trig_i = fft_trig_sync ? (adc_trig && !adc_dly_do && pretrig_ok) : fft_trig;
 
 // (* mark_debug = "true" *)
@@ -718,15 +723,7 @@ end else begin
     S_FFT_DOWN:
         if (fft_state_cnt >= fft_acq2_cnt) begin
             fft_state_cnt <= 0;
-            fft_state <= S_WAIT3;
-        end else if (fft_dvalid)
-            fft_state_cnt <= fft_state_cnt + 1;
-    S_WAIT3:
-        if (&fft_done)
             fft_state <= S_IDLE;
-        else if (fft_state_cnt >= fft_wait2_cnt) begin
-            fft_state_cnt <= 0;
-            fft_state <= S_FFT_UP;
         end else if (fft_dvalid)
             fft_state_cnt <= fft_state_cnt + 1;
     endcase
@@ -970,7 +967,6 @@ wire              asg_trig_n       ;
 wire              asg_trig2_p      ;
 wire              asg_trig2_n      ;
 
-logic             fft_trig         ;
 logic [   4-1: 0] fft_trig_src     ;
 
 always @(posedge adc_clk_i)
@@ -1270,9 +1266,16 @@ end
 wire sys_en;
 assign sys_en = sys_wen | sys_ren;
 
-assign _scope_done = (!fft_enable && !adc_we) || (fft_enable && &fft_done && (!fft_trig_sync || &fft_peak_ready));
+(* mark_debug = "true" *)
+assign scope_start_o = fft_up;
+assign _scope_done = (!fft_enable && !adc_we) || (fft_enable && fft_state==S_IDLE);
 logic [1: 0] scope_done;
+(* mark_debug = "true" *)
 assign scope_done_o = scope_done == 2'b01;
+(* mark_debug = "true" *)
+assign x_step_0 = x_step[0];
+(* mark_debug = "true" *)
+assign y_step_0 = y_step[0];
 
 always @(posedge adc_clk_i)
 if (adc_rstn_i == 1'b0) begin

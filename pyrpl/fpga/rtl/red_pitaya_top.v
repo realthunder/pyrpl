@@ -401,6 +401,12 @@ wire  [  8-1: 0] exp_p_in , exp_n_in ;
 wire  [  8-1: 0] exp_p_out, exp_n_out;
 wire  [  8-1: 0] exp_p_dir, exp_n_dir;
 
+wire scope_done_o;
+wire scope_start_o;
+wire x_step_0;
+wire y_step_0;
+wire [3:0] scope_sigs = {y_step_0, x_step_0, scope_start_o, scope_done_o};
+
 red_pitaya_hk i_hk (
   // system signals
   .clk_i           (  adc_clk                    ),  // clock
@@ -416,6 +422,9 @@ red_pitaya_hk i_hk (
   .exp_n_dat_i     (  exp_n_in                   ),
   .exp_n_dat_o     (  exp_n_out                  ),
   .exp_n_dir_o     (  exp_n_dir                  ),
+
+  .scope_sigs_i    (  scope_sigs                 ),
+
    // System bus
   .sys_addr        (  sys_addr                   ),  // address
   .sys_wdata       (  sys_wdata                  ),  // write data
@@ -435,7 +444,6 @@ IOBUF i_iobufn [8-1:0] (.O(exp_n_in), .IO(exp_n_io), .I(exp_n_out), .T(~exp_n_di
 
 wire    [  4-1:0] trig_asg_out;
 wire trig_scope_out;
-wire scope_done_out;
 wire    [14-1: 0] to_scope_a;
 wire    [14-1: 0] to_scope_b;
 wire dsp_trigger;
@@ -453,7 +461,10 @@ red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .DSZ(FFT_WIDTH)) i_scope (
   .trig_asg_i      (  trig_asg_out               ),  // ASG trigger
   .trig_dsp_i      (  dsp_trigger                ),
   .trig_scope_o    (  trig_scope_out             ),  // scope trigger to feed other instruments
-  .scope_done_o    (  scope_done_out             ),  // scope acquisition done signal
+  .scope_done_o    (  scope_done_o               ),  // scope acquisition done signal
+  .scope_start_o   (  scope_start_o              ),
+  .x_step_0        (  x_step_0                   ),
+  .y_step_0        (  y_step_0                   ),
   .sync_rst_i      (  asg_sync_rst_o             ),
 
   .asg2_step_i     (  asg2_step                  ),
@@ -501,7 +512,7 @@ red_pitaya_asg i_asg (
   .trig_d_i        (  exp_p_in[0]                ),
   .trig_out_o      (  trig_asg_out               ),
   .trig_scope_i    (  trig_scope_out             ),
-  .scope_done_i    (  scope_done_out             ),
+  .scope_done_i    (  scope_done_o               ),
   .sync_rst_o      (  asg_sync_rst_o             ),
   .asg1phase_o     (  asg1phase_o                ),
   .asg2_step_o     (  asg2_step                  ),

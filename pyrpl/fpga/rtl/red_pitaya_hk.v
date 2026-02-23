@@ -43,11 +43,14 @@ module red_pitaya_hk #(
   output reg           digital_loop,
   // Expansion connector
   input      [DWE-1:0] exp_p_dat_i,  // exp. con. input data
-  output reg [DWE-1:0] exp_p_dat_o,  // exp. con. output data
+  output     [DWE-1:0] exp_p_dat_o,  // exp. con. output data
   output reg [DWE-1:0] exp_p_dir_o,  // exp. con. 1-output enable
   input      [DWE-1:0] exp_n_dat_i,  //
   output     [DWE-1:0] exp_n_dat_o,  //
   output reg [DWE-1:0] exp_n_dir_o,  //
+
+  input      [3:0]     scope_sigs_i,
+
   // System bus
   input      [ 32-1:0] sys_addr   ,  // bus address
   input      [ 32-1:0] sys_wdata  ,  // bus write data
@@ -119,6 +122,10 @@ reg [DWE-1:0] spi_cs_en;
 reg [DWE-1:0] _exp_n_dat_o;
 assign exp_n_dat_o = (_exp_n_dat_o & ~spi_cs_en) | (spi_cs_en & {DWE{exp_p_dat_i[4]}});
 
+reg [DWE-1:0] _exp_p_dat_o;
+assign exp_p_dat_o[7:4] = _exp_p_dat_o[7:4];
+reg scope_debug_en;
+assign exp_p_dat_o[3:0] = scope_debug_en ? scope_sigs_i : _exp_p_dat_o[3:0];
 
 reg [1:0] clk_out_en;
 reg [CSZ-1:0] clk_cnt_v;
@@ -133,7 +140,7 @@ reg [CSZ-1:0] clk_cnt2;
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
   led_o        <= {DWL{1'b0}};
-  exp_p_dat_o  <= {DWE{1'b0}};
+  _exp_p_dat_o <= {DWE{1'b0}};
   exp_p_dir_o  <= {DWE{1'b0}};
   _exp_n_dat_o <= {DWE{1'b0}};
   exp_n_dir_o  <= {DWE{1'b0}};
@@ -143,13 +150,14 @@ if (rstn_i == 1'b0) begin
   clk_cnt2_v   <= {CSZ{CNT}};
   clk_cnt2     <= {CSZ{1'b0}};
   clk_out_en   <= 2'b1;
+  scope_debug_en <= 1'b1;
 end else begin
   if (sys_wen) begin
     if (sys_addr[19:0]==20'h0c)   digital_loop <= sys_wdata[0];
 
     if (sys_addr[19:0]==20'h10)   exp_p_dir_o  <= sys_wdata[DWE-1:0];
     if (sys_addr[19:0]==20'h14)   exp_n_dir_o  <= sys_wdata[DWE-1:0];
-    if (sys_addr[19:0]==20'h18)   exp_p_dat_o  <= sys_wdata[DWE-1:0];
+    if (sys_addr[19:0]==20'h18)   _exp_p_dat_o <= sys_wdata[DWE-1:0];
     if (sys_addr[19:0]==20'h1C)   _exp_n_dat_o <= sys_wdata[DWE-1:0];
 
     if (sys_addr[19:0]==20'h28)   spi_cs_en    <= sys_wdata[DWE-1:0];
@@ -159,6 +167,8 @@ end else begin
 
     if (sys_addr[19:0]==20'h34)   clk_cnt_v    <= sys_wdata[CSZ-1:0];
     if (sys_addr[19:0]==20'h38)   clk_cnt2_v   <= sys_wdata[CSZ-1:0];
+
+    if (sys_addr[19:0]==20'h3C)   scope_debug_en <= sys_wdata[0];
 
   end
 
@@ -174,7 +184,7 @@ end else begin
   if (exp_p_dir_o[7] && clk_out_en[1]) begin
     if (clk_cnt2 >= clk_cnt2_v) begin
         clk_cnt2 <= {CSZ{1'b0}};
-        exp_p_dat_o[7] <= ~exp_p_dat_o[7];
+        _exp_p_dat_o[7] <= ~_exp_p_dat_o[7];
     end else begin
         clk_cnt2 <= clk_cnt2 + 1;
     end
@@ -199,8 +209,8 @@ end else begin
 
     20'h00010: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_p_dir_o}       ; end
     20'h00014: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_n_dir_o}       ; end
-    20'h00018: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_p_dat_o}       ; end
-    20'h0001C: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, _exp_n_dat_o}       ; end
+    20'h00018: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, _exp_p_dat_o}      ; end
+    20'h0001C: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, _exp_n_dat_o}      ; end
     20'h00020: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_p_dat_i}       ; end
     20'h00024: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_n_dat_i}       ; end
 
@@ -212,6 +222,8 @@ end else begin
 
     20'h00034: begin sys_ack <= sys_en;  sys_rdata <= {{32-CSZ{1'b0}}, clk_cnt_v}         ; end
     20'h00038: begin sys_ack <= sys_en;  sys_rdata <= {{32-CSZ{1'b0}}, clk_cnt2_v}        ; end
+
+    20'h0003C: begin sys_ack <= sys_en;  sys_rdata <= {{32-1{1'b0}}, scope_debug_en}      ; end
 
       default: begin sys_ack <= sys_en;  sys_rdata <=  32'h0                              ; end
   endcase
