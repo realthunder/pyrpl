@@ -401,9 +401,13 @@ wire  [  8-1: 0] exp_p_in , exp_n_in ;
 wire  [  8-1: 0] exp_p_out, exp_n_out;
 wire  [  8-1: 0] exp_p_dir, exp_n_dir;
 
+(* mark_debug = "true" *)
 wire scope_done_o;
+(* mark_debug = "true" *)
 wire scope_start_o;
+(* mark_debug = "true" *)
 wire x_step_0;
+(* mark_debug = "true" *)
 wire y_step_0;
 wire [3:0] scope_sigs = {y_step_0, x_step_0, scope_start_o, scope_done_o};
 

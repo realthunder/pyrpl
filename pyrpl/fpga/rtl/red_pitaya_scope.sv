@@ -1266,27 +1266,18 @@ end
 wire sys_en;
 assign sys_en = sys_wen | sys_ren;
 
-(* mark_debug = "true" *)
 assign scope_start_o = fft_up;
-assign _scope_done = (!fft_enable && !adc_we) || (fft_enable && fft_state==S_IDLE);
-logic [1: 0] scope_done;
-(* mark_debug = "true" *)
-assign scope_done_o = scope_done == 2'b01;
-(* mark_debug = "true" *)
-assign x_step_0 = x_step[0];
-(* mark_debug = "true" *)
-assign y_step_0 = y_step[0];
+assign scope_done_o = (!fft_enable && !adc_we) || (fft_enable && fft_state==S_IDLE);
+assign x_step_0 = asg2_step_i[0];
+assign y_step_0 = asg3_step_i[0];
 
 always @(posedge adc_clk_i)
 if (adc_rstn_i == 1'b0) begin
    sys_err <= 1'b0 ;
    sys_ack <= 1'b0 ;
-   scope_done <= 0;
 
 end else begin
    sys_err <= 1'b0 ;
-
-   scope_done <= {scope_done[0], _scope_done};
 
    casez (sys_addr[19:0])
      20'h00000 : begin sys_ack <= sys_en;          sys_rdata <= {  {8-6{1'b0}}
