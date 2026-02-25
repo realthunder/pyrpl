@@ -451,7 +451,7 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_we_cnt = IntRegister(0x70, doc="FFT write count")
 
-    fft_skip_cnt = IntRegister(0x74, doc="FFT skipped frame counter")
+    fft_scan_frame_cnt = IntRegister(0x74, doc="FFT skipped frame counter")
 
     fft_peak_state = IntRegister(0x78, doc="FFT peak detection internal state")
 
