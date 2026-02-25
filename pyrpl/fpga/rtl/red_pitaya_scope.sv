@@ -86,10 +86,10 @@ module red_pitaya_scope #(
    input                 trig_dsp_i      ,  // DSP module trigger
    output                trig_scope_o    ,  // copy of scope trigger
 
-   output                scope_done_o    ,  // scope done processing
-   output                scope_start_o   ,
-   output                x_step_0        ,
-   output                y_step_0        ,
+   output     reg        fft_active_o    ,  // fft captureing
+   output                scope_sig_o     ,  // scan signaling
+   output                x_step_0        ,  // x step
+   output                y_step_0        ,  // y step
 
    input                 sync_rst_i      ,  // syncrhonized reset signal (from ASG)
 
@@ -698,7 +698,8 @@ end else begin
                 fft_state <= S_WAIT1;
             else
                 fft_state <= S_DELAY;
-        end
+        end else
+            fft_active_o <= 0;
     S_DELAY:
         if (fft_we_cnt[0] <= 2**(FSZ+1))
             fft_state <= S_WAIT1;
@@ -712,8 +713,11 @@ end else begin
         if (fft_state_cnt >= fft_acq1_cnt) begin
             fft_state_cnt <= 0;
             fft_state <= S_WAIT2;
-        end else if (fft_dvalid)
+            // fft_active_o <= 0;
+        end else if (fft_dvalid) begin
+            fft_active_o <= 1;
             fft_state_cnt <= fft_state_cnt + 1;
+        end
     S_WAIT2:
         if (fft_state_cnt >= fft_wait2_cnt) begin
             fft_state_cnt <= 0;
@@ -724,8 +728,10 @@ end else begin
         if (fft_state_cnt >= fft_acq2_cnt) begin
             fft_state_cnt <= 0;
             fft_state <= S_IDLE;
-        end else if (fft_dvalid)
+        end else if (fft_dvalid) begin
+            fft_active_o <= 1;
             fft_state_cnt <= fft_state_cnt + 1;
+        end
     endcase
 end
 
@@ -1199,6 +1205,8 @@ assign asg_trig_n = (asg_trig_dn == 2'b01) ;
 assign asg_trig2_p= (asg_trig2_dp == 2'b01) ;
 assign asg_trig2_n= (asg_trig2_dn == 2'b01) ;
 
+logic [32-1:0] scope_sig_dly;
+
 //---------------------------------------------------------------------------------
 //  System bus connection
 
@@ -1224,6 +1232,7 @@ if (adc_rstn_i == 1'b0) begin
    set_deb_len2  <=  20'd0      ;
    set_a_axi_en  <=   1'b0      ;
    set_b_axi_en  <=   1'b0      ;
+   scope_sig_dly <= 6875      ;
 
 end else begin
    if (sys_wen) begin
@@ -1260,13 +1269,18 @@ end else begin
       */
       if (sys_addr[19:0]==20'h90)   set_deb_len <= sys_wdata[20-1:0] ;
       if (sys_addr[19:0]==20'h94)   set_deb_len2<= sys_wdata[20-1:0] ;
+      if (sys_addr[19:0]==20'h18C)  scope_sig_dly <= sys_wdata[32-1:0];
    end
 end
 
 wire sys_en;
 assign sys_en = sys_wen | sys_ren;
 
-assign scope_start_o = fft_up;
+logic scope_sig;
+logic [32-1:0] scope_sig_pre_cnt;
+logic [8-1:0] scope_sig_post_cnt;
+assign scope_sig_o = scope_sig && scope_sig_pre_cnt == 0;
+
 assign scope_done_o = (!fft_enable && !adc_we) || (fft_enable && fft_state==S_IDLE);
 assign x_step_0 = asg2_step_i[0];
 assign y_step_0 = asg3_step_i[0];
@@ -1275,9 +1289,21 @@ always @(posedge adc_clk_i)
 if (adc_rstn_i == 1'b0) begin
    sys_err <= 1'b0 ;
    sys_ack <= 1'b0 ;
+   scope_sig <= 1'b0;
 
 end else begin
    sys_err <= 1'b0 ;
+
+   if (!scope_sig) begin
+     scope_sig <= fft_trig_i && &fft_done;
+     scope_sig_pre_cnt <= scope_sig_dly;
+     scope_sig_post_cnt <= 125; // 1us fixed delay for debugging purpose (so that cheap oscilloscope can capture)
+   end else if (scope_sig_pre_cnt != 0)
+       scope_sig_pre_cnt <= scope_sig_pre_cnt - 1;
+   else if (scope_sig_post_cnt != 0)
+       scope_sig_post_cnt <= scope_sig_post_cnt - 1;
+   else
+       scope_sig <= 0;
 
    casez (sys_addr[19:0])
      20'h00000 : begin sys_ack <= sys_en;          sys_rdata <= {  {8-6{1'b0}}
@@ -1388,6 +1414,7 @@ end else begin
 
      20'h00188 : begin sys_ack <= sys_en;          sys_rdata <= {{16-RSZ{1'b0}}, y_step, {16-RSZ{1'b0}}, x_step}; end
 
+     20'h0018C : begin sys_ack <= sys_en;          sys_rdata <= scope_sig_dly                     ; end
 
      20'h1???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_a_rd}              ; end
      20'h2???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_b_rd}              ; end

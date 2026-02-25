@@ -84,7 +84,7 @@ module red_pitaya_asg  #(
   output     [  4-1: 0] trig_out_o,  // notification trigger
  
   input                 trig_scope_i    ,  // trigger from the scope
-  input                 scope_done_i    ,  // scope done signal
+  input                 scope_trig_i    ,  // scope done signal
 
   output                sync_rst_o,  // syncrhonized reset signal
 
@@ -304,14 +304,14 @@ end
 
 assign trig_out_o = {trig_d_done, trig_c_done, trig_b_done, trig_a_done};
 
-reg [1: 0] scope_done;
-wire _scope_done = scope_done == 2'b01;
+reg [1: 0] scope_trig;
+wire _scope_trig = scope_trig == 2'b01;
 
-// assign trig_a_slave = (!slave_a_trig && !scope_a_trig) || (slave_a_trig && trig_d_done) || (scope_a_trig && scope_done);
-assign trig_a_slave = (!slave_a_trig && !scope_a_trig) ||  (scope_a_trig && _scope_done);
-assign trig_b_slave = (!slave_b_trig && !scope_b_trig) || (slave_b_trig && play_a_done) || (scope_b_trig && _scope_done);
-assign trig_c_slave = (!slave_c_trig && !scope_c_trig) || (slave_c_trig && play_b_done) || (scope_c_trig && _scope_done);
-assign trig_d_slave = (!slave_d_trig && !scope_d_trig) || (slave_d_trig && play_c_done) || (scope_d_trig && _scope_done);
+// assign trig_a_slave = (!slave_a_trig && !scope_a_trig) || (slave_a_trig && trig_d_done) || (scope_a_trig && scope_trig);
+assign trig_a_slave = (!slave_a_trig && !scope_a_trig) ||  (scope_a_trig && _scope_trig);
+assign trig_b_slave = (!slave_b_trig && !scope_b_trig) || (slave_b_trig && play_a_done) || (scope_b_trig && _scope_trig);
+assign trig_c_slave = (!slave_c_trig && !scope_c_trig) || (slave_c_trig && play_b_done) || (scope_c_trig && _scope_trig);
+assign trig_d_slave = (!slave_d_trig && !scope_d_trig) || (slave_d_trig && play_c_done) || (scope_d_trig && _scope_trig);
 
 //---------------------------------------------------------------------------------
 //
@@ -425,11 +425,11 @@ if (dac_rstn_i == 1'b0) begin
    rand_c_on <= 1'b0;
    rand_d_on <= 1'b0;
 
-   scope_done <= 2'b11;
+   scope_trig <= 2'b0;
 
 end else begin
 
-   scope_done <= {scope_done[0], scope_done_i};
+   scope_trig <= {scope_trig[0], scope_trig_i};
 
    trig_a_sw  <= sys_wen && (sys_addr[19:0]==20'h0) && sys_wdata[0]  ;
    if (sys_wen && (sys_addr[19:0]==20'h0))

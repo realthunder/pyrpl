@@ -401,15 +401,11 @@ wire  [  8-1: 0] exp_p_in , exp_n_in ;
 wire  [  8-1: 0] exp_p_out, exp_n_out;
 wire  [  8-1: 0] exp_p_dir, exp_n_dir;
 
-(* mark_debug = "true" *)
-wire scope_done_o;
-(* mark_debug = "true" *)
-wire scope_start_o;
-(* mark_debug = "true" *)
+wire scope_fft_o;
+wire scope_sig_o;
 wire x_step_0;
-(* mark_debug = "true" *)
 wire y_step_0;
-wire [3:0] scope_sigs = {y_step_0, x_step_0, scope_start_o, scope_done_o};
+wire [3:0] scope_sigs = {y_step_0, x_step_0, scope_sig_o, scope_fft_o};
 
 red_pitaya_hk i_hk (
   // system signals
@@ -465,8 +461,8 @@ red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .DSZ(FFT_WIDTH)) i_scope (
   .trig_asg_i      (  trig_asg_out               ),  // ASG trigger
   .trig_dsp_i      (  dsp_trigger                ),
   .trig_scope_o    (  trig_scope_out             ),  // scope trigger to feed other instruments
-  .scope_done_o    (  scope_done_o               ),  // scope acquisition done signal
-  .scope_start_o   (  scope_start_o              ),
+  .fft_active_o    (  scope_fft_o                ),  // scope acquisition done signal
+  .scope_sig_o     (  scope_sig_o                ),
   .x_step_0        (  x_step_0                   ),
   .y_step_0        (  y_step_0                   ),
   .sync_rst_i      (  asg_sync_rst_o             ),
@@ -516,7 +512,7 @@ red_pitaya_asg i_asg (
   .trig_d_i        (  exp_p_in[0]                ),
   .trig_out_o      (  trig_asg_out               ),
   .trig_scope_i    (  trig_scope_out             ),
-  .scope_done_i    (  scope_done_o               ),
+  .scope_trig_i    (  scope_sig_o                ),
   .sync_rst_o      (  asg_sync_rst_o             ),
   .asg1phase_o     (  asg1phase_o                ),
   .asg2_step_o     (  asg2_step                  ),

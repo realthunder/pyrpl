@@ -459,6 +459,8 @@ class Scope(HardwareModule, AcquisitionModule):
 
     scan_pos = IntRegister(0x188, doc='scanning position')
 
+    start_sig_delay = IntRegister(0x18C, doc='start signal delay, for triggering asg')
+
     nfft = IntRegister(0x88, doc="FFT point size configuration. Implies a transform length of 2^nfft",
                        min=3, max=16, call_setup=True)
 
