@@ -43,8 +43,8 @@ module fft_proc #(
   output logic [ DSZ-1:0] fft_peak_value_up,
   output logic [ DSZ-1:0] fft_peak_value_down,
   output logic [ 32-1: 0] fft_frame_cnt,
+  output logic [ 32-1: 0] fft_scan_frame_cnt,
   output logic [ 32-1: 0] fft_we_cnt,
-  output logic [ 16-1: 0] fft_skip_cnt,
 
   output logic [ QSZ-1:0] fft_q_wp,
   output logic [ QSZ-1:0] fft_q_rp,
@@ -55,12 +55,13 @@ module fft_proc #(
   output logic [  32-1:0] fft_length
 );
 
-logic [ 16-1: 0] skip_cnt;
 logic [ 32-1: 0] frame_cnt;
+logic [ 32-1: 0] scan_frame_cnt;
 logic [ 32-1: 0] clk_cnt;
 
 logic [ HSZ-1:0] fft_index_q[0:(1<<QSZ)-1];
 logic [ HSZ-1:0] fft_hist_index;
+logic [ HSZ-1:0] prev_hist_index;
 logic [ QSZ-1:0] index_wp;
 logic [ QSZ-1:0] index_wp_plus_one = index_wp + 1;
 logic [ QSZ-1:0] index_rp;
@@ -138,22 +139,25 @@ end
 always @(posedge clk_i)
 if (clk_cnt >= 125000000) begin
     clk_cnt <= 0;
-    // fft_skip_cnt <= skip_cnt;
     fft_frame_cnt <= {1'b0, frame_cnt[32-1:1]};
-    if (trig_i && !fft_done)
-        skip_cnt <= 1;
-    else
-        skip_cnt <= 0;
-    if (fft_frame_start)
+    fft_scan_frame_cnt <= scan_frame_cnt;
+    if (fft_frame_start) begin
         frame_cnt <= 1;
-    else
+        scan_frame_cnt <= 1;
+        prev_hist_index <= fft_hist_index;
+    end else begin
         frame_cnt <= 0;
+        scan_frame_cnt <= 0;
+    end
 end else begin
     clk_cnt <= clk_cnt + 1;
-    if (trig_i && !fft_done && ~&skip_cnt)
-        skip_cnt <= skip_cnt + 1;
-    if (fft_frame_start && ~&frame_cnt)
-        frame_cnt <= frame_cnt + 1;
+    if (fft_frame_start) begin
+        if (~&frame_cnt)
+            frame_cnt <= frame_cnt + 1;
+        if (~&scan_frame_cnt && prev_hist_index != fft_hist_index)
+            scan_frame_cnt <= scan_frame_cnt + 1;
+        prev_hist_index <= fft_hist_index;
+    end
 end
 
 logic          fft_conf_dvalid;
@@ -173,7 +177,6 @@ if (fft_rstn_i == 1'b0) begin
     else
         fft_length2 <= 2**fft_nfft;
 end else if (fft_conf_dvalid && fft_conf_rdy) begin
-    fft_skip_cnt <= fft_skip_cnt + 1;
     fft_conf_dvalid <= 0;
 end
 
