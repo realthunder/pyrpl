@@ -301,7 +301,7 @@ def make_asg(channel=0):
 
         invert = BoolProperty(default=False, doc='Invert waveform', call_setup=True)
 
-        sync_on = BoolRegister(_START_OFFSET, 15 + _BIT_OFFSET, doc='Sync start together with other asg channel(s) with sync_on', call_setup=True)
+        sync_on = BoolRegister(_START_OFFSET, 15 + _BIT_OFFSET, doc='Sync start together with other asg channel(s) with sync_on')
 
         reverse_on = BoolRegister(_START_OFFSET, 14 + _BIT_OFFSET, doc='If True, reverse play data buffer on each repetition')
 
@@ -437,6 +437,9 @@ def make_asg(channel=0):
 
         @data.setter
         def data(self, data):
+            if hasattr(self, 'data_postproc'):
+                data = self.data_postproc(data)
+
             """array of 2**14 values that define the output waveform.
 
             Values should lie between -1 and 1 such that the peak output
