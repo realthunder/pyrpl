@@ -407,6 +407,11 @@ wire x_step_0;
 wire y_step_0;
 wire [3:0] scope_sigs = {y_step_0, x_step_0, scope_sig_o, scope_fft_o};
 
+wire    [14-1: 0] scan_x;
+wire    [14-1: 0] scan_y;
+wire    [14-1: 0] scan_x_step;
+wire    [14-1: 0] scan_y_step;
+
 red_pitaya_hk i_hk (
   // system signals
   .clk_i           (  adc_clk                    ),  // clock
@@ -424,6 +429,11 @@ red_pitaya_hk i_hk (
   .exp_n_dir_o     (  exp_n_dir                  ),
 
   .scope_sigs_i    (  scope_sigs                 ),
+
+  .scan_x_i        (  scan_x                     ),
+  .scan_x_step_i   (  scan_x_step                ),
+  .scan_y_i        (  scan_y                     ),
+  .scan_y_step_i   (  scan_y_step                ),
 
    // System bus
   .sys_addr        (  sys_addr                   ),  // address
@@ -448,9 +458,6 @@ wire    [14-1: 0] to_scope_a;
 wire    [14-1: 0] to_scope_b;
 wire dsp_trigger;
 
-wire    [14-1: 0] asg2_step;
-wire    [14-1: 0] asg3_step;
-
 red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .DSZ(FFT_WIDTH)) i_scope (
   // ADC
   .adc_a_i         (  to_scope_a[14-1:14-ADC_SZ] ),  // CH 1
@@ -467,8 +474,8 @@ red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .DSZ(FFT_WIDTH)) i_scope (
   .y_step_0        (  y_step_0                   ),
   .sync_rst_i      (  asg_sync_rst_o             ),
 
-  .asg2_step_i     (  asg2_step                  ),
-  .asg3_step_i     (  asg3_step                  ),
+  .x_step_i        (  scan_x_step                ),
+  .y_step_i        (  scan_y_step                ),
 
   // AXI0 master                 // AXI1 master
   .axi0_clk_o    (axi0_clk   ),  .axi1_clk_o    (axi1_clk   ),
@@ -497,6 +504,10 @@ red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .DSZ(FFT_WIDTH)) i_scope (
 //---------------------------------------------------------------------------------
 //  DAC arbitrary signal generator
 wire    [14-1: 0] asg1phase_o;
+wire    [14-1: 0] asg1_step;
+wire    [14-1: 0] asg2_step;
+wire    [14-1: 0] asg3_step;
+wire    [14-1: 0] asg4_step;
 
 red_pitaya_asg i_asg (
    // DAC
@@ -515,8 +526,11 @@ red_pitaya_asg i_asg (
   .scope_trig_i    (  scope_sig_o                ),
   .sync_rst_o      (  asg_sync_rst_o             ),
   .asg1phase_o     (  asg1phase_o                ),
-  .asg2_step_o     (  asg2_step                  ),
-  .asg3_step_o     (  asg3_step                  ),
+
+  .step_a_o        (  asg1_step                  ),
+  .step_b_o        (  asg2_step                  ),
+  .step_c_o        (  asg3_step                  ),
+  .step_d_o        (  asg4_step                  ),
   
   // System bus
   .sys_addr        (  sys_addr                   ),  // address
@@ -548,6 +562,15 @@ red_pitaya_dsp i_dsp (
   .scope1_o        (  to_scope_a             ),
   .scope2_o        (  to_scope_b             ),
   .asg1phase_i     (  asg1phase_o            ),
+  .asg1_step_i     (  asg1_step             ),
+  .asg2_step_i     (  asg2_step             ),
+  .asg3_step_i     (  asg3_step             ),
+  .asg4_step_i     (  asg4_step             ),
+
+  .scan_x_o        (  scan_x                 ),
+  .scan_y_o        (  scan_y                 ),
+  .scan_x_step_o   (  scan_x_step            ),
+  .scan_y_step_o   (  scan_y_step            ),
 
   .xadc1_i         (  xadc_signals[0]        ),
   .xadc2_i         (  xadc_signals[1]        ),

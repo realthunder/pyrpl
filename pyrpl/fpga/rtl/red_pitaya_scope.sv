@@ -93,8 +93,8 @@ module red_pitaya_scope #(
 
    input                 sync_rst_i      ,  // syncrhonized reset signal (from ASG)
 
-   input      [RSZ-1: 0] asg2_step_i     ,  // asg2 (1-based index, so it is the second asg channel) current step index
-   input      [RSZ-1: 0] asg3_step_i     ,  // asg3 current step index
+   input      [RSZ-1: 0] x_step_i     ,  // asg1 step index
+   input      [RSZ-1: 0] y_step_i     ,  // asg2 step index
 
    // AXI0 master
    output                axi0_clk_o      ,  // global clock
@@ -514,14 +514,14 @@ end else begin
     fft_index_valid = {fft_index_valid[IDX_PIPELINE+1: 0], fft_trig_i && &fft_done};
 
     if (fft_index_valid[0]) begin
-        if (asg3_step_i == 0 && asg2_step_i == 0) begin
+        if (y_step_i == 0 && x_step_i == 0) begin
             fft_indices_pos <= 0;
             fft_hist_step <= 0;
-        end else if (fft_hist_step < asg2_step_i + 1)
-            fft_hist_step <= asg2_step_i + 1; 
+        end else if (fft_hist_step < x_step_i + 1)
+            fft_hist_step <= x_step_i + 1; 
 
-        x_step <= asg2_step_i;
-        y_step <= asg3_step_i;
+        x_step <= x_step_i;
+        y_step <= y_step_i;
     end
 
     fft_hist_index[0] <= y_step * fft_hist_step + x_step;
@@ -1282,8 +1282,8 @@ logic [8-1:0] scope_sig_post_cnt;
 assign scope_sig_o = scope_sig && scope_sig_pre_cnt == 0;
 
 assign scope_done_o = (!fft_enable && !adc_we) || (fft_enable && fft_state==S_IDLE);
-assign x_step_0 = asg2_step_i[0];
-assign y_step_0 = asg3_step_i[0];
+assign x_step_0 = x_step_i[0];
+assign y_step_0 = y_step_i[0];
 
 always @(posedge adc_clk_i)
 if (adc_rstn_i == 1'b0) begin

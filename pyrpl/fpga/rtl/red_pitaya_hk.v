@@ -51,6 +51,11 @@ module red_pitaya_hk #(
 
   input      [3:0]     scope_sigs_i,
 
+  input      [ 14-1: 0] scan_x_i     ,  // scanner x value
+  input      [RSZ-1: 0] scan_x_step_i,  // scanner x step
+  input      [ 14-1: 0] scan_y_i     ,  // scanner y value
+  input      [RSZ-1: 0] scan_y_step_i,  // scanner y step
+
   // System bus
   input      [ 32-1:0] sys_addr   ,  // bus address
   input      [ 32-1:0] sys_wdata  ,  // bus write data
@@ -132,6 +137,10 @@ reg [CSZ-1:0] clk_cnt_v;
 reg [CSZ-1:0] clk_cnt;
 reg [CSZ-1:0] clk_cnt2_v;
 reg [CSZ-1:0] clk_cnt2;
+
+reg scan_mirracle_en;
+reg [16-1:0] scan_bias;
+reg [16-1:0] scan_max;
 
 //---------------------------------------------------------------------------------
 //
