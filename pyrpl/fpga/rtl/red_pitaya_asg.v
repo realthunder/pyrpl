@@ -90,8 +90,10 @@ module red_pitaya_asg  #(
 
   output     [ 14-1: 0] asg1phase_o,
 
-  output     [RSZ-1: 0] asg2_step_o,
-  output     [RSZ-1: 0] asg3_step_o,
+  output     [RSZ-1: 0] step_a_o,
+  output     [RSZ-1: 0] step_b_o,
+  output     [RSZ-1: 0] step_c_o,
+  output     [RSZ-1: 0] step_d_o,
 
   // System bus
   input      [ 32-1: 0] sys_addr  ,  // bus address
@@ -125,7 +127,6 @@ reg               buf_a_we     , buf_b_we     , buf_c_we     , buf_d_we     ;
 reg   [ RSZ-1: 0] buf_a_addr   , buf_b_addr   , buf_c_addr   , buf_d_addr   ;
 wire  [  14-1: 0] buf_a_rdata  , buf_b_rdata  , buf_c_rdata  , buf_d_rdata  ;
 wire  [ RSZ-1: 0] buf_a_rpnt   , buf_b_rpnt   , buf_c_rpnt   , buf_d_rpnt   ;
-wire  [ RSZ-1: 0] step_a_o     , step_b_o     , step_c_o     , step_d_o     ;
 reg   [  32-1: 0] buf_a_rpnt_rd, buf_b_rpnt_rd, buf_c_rpnt_rd, buf_d_rpnt_rd;
 reg               trig_a_sw    , trig_b_sw    , trig_c_sw    , trig_d_sw    ;
 reg   [   3-1: 0] trig_a_src   , trig_b_src   , trig_c_src   , trig_d_src   ;

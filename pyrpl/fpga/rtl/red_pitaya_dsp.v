@@ -52,6 +52,7 @@ should not be used.
 
 
 module red_pitaya_dsp #(
+    parameter RSZ = 14,  // RAM size 2^RSZ
 	parameter MODULES = 8
 )
 (
@@ -65,16 +66,28 @@ module red_pitaya_dsp #(
 
    output     [ 14-1: 0] scope1_o,
    output     [ 14-1: 0] scope2_o,
+
    input      [ 14-1: 0] asg1_i,
    input      [ 14-1: 0] asg2_i,
    input      [ 14-1: 0] asg3_i,
    input      [ 14-1: 0] asg4_i,
    input      [ 14-1: 0] asg1phase_i,
 
+   input      [RSZ-1: 0] asg1_step_i,
+   input      [RSZ-1: 0] asg2_step_i,
+   input      [RSZ-1: 0] asg3_step_i,
+   input      [RSZ-1: 0] asg4_step_i,
+
    input      [ 12-1: 0] xadc1_i,
    input      [ 12-1: 0] xadc2_i,
    input      [ 12-1: 0] xadc3_i,
    input      [ 12-1: 0] xadc4_i,
+
+   // scanner outputs
+   output     [ 14-1: 0] scan_x_o     ,  // scanner x value
+   output     [ 14-1: 0] scan_y_o     ,  // scanner y value
+   output     [RSZ-1: 0] scan_x_step_o,  // scanner x step
+   output     [RSZ-1: 0] scan_y_step_o,  // scanner y step
 
    // pwm outputs
    output     [ 14-1: 0] pwm0,
@@ -164,6 +177,16 @@ reg [MODULES-1:0] sync;
 // bus read data of individual modules (only needed for 'real' modules)
 wire [ 32-1: 0] module_rdata [MODULES-1:0];  
 wire            module_ack   [MODULES-1:0];
+
+wire [3-1: 0] asg_i = {asg4_i, asg3_i, asg2_i, asg1_i};
+wire [3-1: 0] asg_step_i = {asg4_step_i, asg3_step_i, asg2_step_i, asg1_step_i};
+
+reg [2-1:0] scan_select [1:0];
+reg scan_stepping[2];
+assign scan_x_o = asg_i[scan_select[0]];
+assign scan_x_step_o = scan_stepping[0] ? asg_step_i[scan_select[0]] : {RSZ:{1'b0}};
+assign scan_y_o = asg_i[scan_select[1]];
+assign scan_y_step_o = scan_stepping[1] ? asg_step_i[scan_select[1]] : {RSZ:{1'b0}};
 
 //connect scope
 assign scope1_o = input_signal[SCOPE1];
@@ -298,6 +321,10 @@ always @(posedge clk_i) begin
       input_select [PWM1] <= NONE;
       input_select [PWM2] <= NONE;
       input_select [PWM3] <= NONE;
+
+      scan_select[0] <= 1;
+      scan_select[1] <= 2;
+      scan_stepping <= 2'b11;
       
       sync <= {MODULES{1'b1}} ;  // all modules on by default
    end
@@ -306,6 +333,11 @@ always @(posedge clk_i) begin
          if (sys_addr[16-1:0]==16'h00)     input_select[sys_addr[16+LOG_MODULES-1:16]] <= sys_wdata[ LOG_MODULES-1:0];
          if (sys_addr[16-1:0]==16'h04)    output_select[sys_addr[16+LOG_MODULES-1:16]] <= sys_wdata[ 2-1:0];
          if (sys_addr[16-1:0]==16'h0C)                                            sync <= sys_wdata[MODULES-1:0];
+         if (sys_addr[16-1:0]==16'h14) begin
+             scan_stepping <= sys_rdata[5:4];
+             scan_select[0] <= sys_rdata[1:0];
+             scan_select[1] <= sys_rdata[3:2];
+         end
       end
    end
 end
@@ -324,6 +356,7 @@ end else begin
 	  20'h08 : begin sys_ack <= sys_en;          sys_rdata <= {{32- 2{1'b0}},dat_b_saturated,dac_a_saturated}; end
 	  20'h0C : begin sys_ack <= sys_en;          sys_rdata <= {{32-MODULES{1'b0}},sync} ; end
       20'h10 : begin sys_ack <= sys_en;          sys_rdata <= {{32- 14{1'b0}},output_signal[sys_addr[16+LOG_MODULES-1:16]]} ; end
+      20'h14 : begin sys_ack <= sys_en;          sys_rdata <= {{32 - 6{1'b0}},scan_stepping, scan_select[1], scan_select[0]}; end
 
      default : begin sys_ack <= module_ack[sys_addr[16+LOG_MODULES-1:16]];    sys_rdata <=  module_rdata[sys_addr[16+LOG_MODULES-1:16]]  ; end
    endcase
