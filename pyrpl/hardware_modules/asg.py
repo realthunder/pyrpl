@@ -87,6 +87,11 @@ class WaveformAttribute(SelectProperty):
                 x = np.linspace(0, np.pi, instance.data_length,
                                 endpoint=False)
                 y = np.cos(x)
+            elif waveform == 'halfcos2':
+                x = np.linspace(0, np.pi, instance.data_length,
+                                endpoint=False)
+                y = np.cos(x) ** 2
+                y[x > np.pi/2] *= -1
             elif waveform == 'sqrt':
                 y = np.linspace(0.0, 2.0, instance.data_length,
                                 endpoint=False)
@@ -407,7 +412,7 @@ def make_asg(channel=0):
             return self._rmsamplitude**2/(125e6*self._frequency_correction/2)
 
         waveforms = ['sin', 'cos', 'ramp', 'halframp', 'halframp2', 'square', 'dc',
-                     'noise', 'sqrt', 'halfsin', 'halfcos', 'custom']
+                     'noise', 'sqrt', 'halfsin', 'halfcos', 'halfcos2', 'custom']
 
         waveform = WaveformAttribute(waveforms)
 

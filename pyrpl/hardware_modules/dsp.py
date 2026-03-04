@@ -250,6 +250,10 @@ class DspModule(HardwareModule, SignalModule):
                                 "means in detail depends on the functionality "
                                 "of the module.")
 
+    _scan_options = ('asg0', 'asg1', 'asg2', 'asg3')
+    _scan_x_select = SelectRegister(0x14, bitmask=0x3, options=_scan_options)
+    _scan_y_select = SelectRegister(0x14, bitmask=0xC, options=_scan_options)
+
     def _synchronize(self, modules=[]):
         """
         synchronizes the given list of modules.

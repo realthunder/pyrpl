@@ -27,6 +27,7 @@
  */
 
 module red_pitaya_hk #(
+  parameter RSZ = 14,  // RAM size 2^RSZ
   parameter DWL = 8, // data width for LED
   parameter DWE = 8, // data width for extension
   parameter [57-1:0] DNA = 57'h0823456789ABCDE,

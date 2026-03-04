@@ -86,10 +86,10 @@ module red_pitaya_scope #(
    input                 trig_dsp_i      ,  // DSP module trigger
    output                trig_scope_o    ,  // copy of scope trigger
 
-   output     reg        fft_active_o    ,  // fft captureing
+   output logic          fft_active_o    ,  // fft captureing
    output                scope_sig_o     ,  // scan signaling
    output                x_step_0        ,  // x step
-   output                y_step_0        ,  // y step
+   output logic          y_step_0        ,  // y step
 
    input                 sync_rst_i      ,  // syncrhonized reset signal (from ASG)
 
@@ -487,7 +487,8 @@ integer i;
 localparam IDXSZ = 8;
 localparam IHSZ = 10;
 
-//`define DEBUG_FFT_INDEX
+// `define DEBUG_FFT_INDEX
+
 `ifdef DEBUG_FFT_INDEX
     logic [ IDXSZ-1 :0]  fft_indices_x[0:(1<<IHSZ)-1];
     logic [ IDXSZ-1 :0]  fft_indices_y[0:(1<<IHSZ)-1];
@@ -502,6 +503,10 @@ logic [ IHSZ-1   :0]  fft_indices_pos;
 
 logic [ IDX_PIPELINE+2 :0]    fft_index_valid;
 
+`ifdef DEBUG_FFT_INDEX
+logic [8-1 : 0] y_step_cnt;
+`endif
+
 
 always @(posedge adc_clk_i)
 if (fft_index_flush) begin
@@ -510,8 +515,18 @@ if (fft_index_flush) begin
    fft_index_valid <= {IDX_PIPELINE+2{1'b0}};
    x_step <= 0;
    y_step <= 0;
+   `ifdef DEBUG_FFT_INDEX
+      y_step_0 <= 0;
+   `endif
 end else begin
     fft_index_valid = {fft_index_valid[IDX_PIPELINE+1: 0], fft_trig_i && &fft_done};
+
+   `ifdef DEBUG_FFT_INDEX
+       if (fft_index_valid[IDX_PIPELINE+2]) begin
+           y_step_0 <= 1;
+           y_step_cnt <= 0;
+       end
+   `endif
 
     if (fft_index_valid[0]) begin
         if (y_step_i == 0 && x_step_i == 0) begin
@@ -523,6 +538,15 @@ end else begin
         x_step <= x_step_i;
         y_step <= y_step_i;
     end
+
+    `ifdef DEBUG_FFT_INDEX
+        if (y_step_0) begin
+            if (y_step_cnt == 128)
+                y_step_0 <= 0;
+            else
+                y_step_cnt = y_step_cnt + 1;
+        end
+    `endif
 
     fft_hist_index[0] <= y_step * fft_hist_step + x_step;
     for (int i=0; i<IDX_PIPELINE; i=i+1)
@@ -1282,8 +1306,7 @@ logic [8-1:0] scope_sig_post_cnt;
 assign scope_sig_o = scope_sig && scope_sig_pre_cnt == 0;
 
 assign scope_done_o = (!fft_enable && !adc_we) || (fft_enable && fft_state==S_IDLE);
-assign x_step_0 = x_step_i[0];
-assign y_step_0 = y_step_i[0];
+assign x_step_0 = fft_hist_index[IDX_PIPELINE][0];
 
 always @(posedge adc_clk_i)
 if (adc_rstn_i == 1'b0) begin
