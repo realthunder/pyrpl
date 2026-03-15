@@ -458,6 +458,8 @@ wire    [14-1: 0] to_scope_a;
 wire    [14-1: 0] to_scope_b;
 wire dsp_trigger;
 
+wire fft_clk = dac_clk_2x;
+
 red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .DSZ(FFT_WIDTH)) i_scope (
   // ADC
   .adc_a_i         (  to_scope_a[14-1:14-ADC_SZ] ),  // CH 1
@@ -468,6 +470,8 @@ red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .DSZ(FFT_WIDTH)) i_scope (
   .trig_asg_i      (  trig_asg_out               ),  // ASG trigger
   .trig_dsp_i      (  dsp_trigger                ),
   .trig_scope_o    (  trig_scope_out             ),  // scope trigger to feed other instruments
+
+  .fft_clk_i       (  fft_clk                    ),
   .fft_active_o    (  scope_fft_o                ),  // scope acquisition done signal
   .scope_sig_o     (  scope_sig_o                ),
   .x_step_0        (  x_step_0                   ),
