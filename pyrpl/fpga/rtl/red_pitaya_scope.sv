@@ -68,7 +68,7 @@
 
 module red_pitaya_scope #(
   parameter ASZ = 14,  // ADC input sample data width
-  parameter QSZ = 10,  // FFT buffer queue size 2^QSZ
+  parameter QSZ = 12,  // FFT buffer queue size 2^QSZ
   parameter DSZ = 28,  // FFT_output width
   parameter FSZ = 13,  // FFT transform length 2^FSZ
   parameter RSZ = 14,  // RAM size 2^RSZ
@@ -461,6 +461,7 @@ logic [ 32-1: 0]    fft_scan_frame_cnt;
 logic [ 32-1: 0]    fft_we_cnt[1:0];
 logic [ 32-1: 0]    fft_skip_cnt;
 logic [ 32-1: 0]    fft_length;
+logic [ 32-1: 0]    fft_length2;
 // logic               fft_index_flush = adc_rstn_i == 1'b0 || sync_rst_i;
 logic               fft_index_flush = sync_rst_i;
 
@@ -629,6 +630,7 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .fft_conf_data_i (fft_conf_data),
 
    .fft_length (fft_length),
+   .fft_length2 (fft_length2),
    .fft_q_overflow_o (fft_overflow_cnt)
 );
 
@@ -1446,6 +1448,7 @@ end else begin
      20'h0018C : begin sys_ack <= sys_en;          sys_rdata <= scope_sig_dly                     ; end
 
      20'h00190 : begin sys_ack <= sys_en;          sys_rdata <= fft_overflow_cnt                    ; end
+     20'h00194 : begin sys_ack <= sys_en;          sys_rdata <= fft_length2                         ; end
      20'h00198 : begin sys_ack <= sys_en;          sys_rdata <= fft_we_cnt[1]                       ; end
 
      20'h1???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_a_rd}              ; end

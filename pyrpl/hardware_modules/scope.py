@@ -465,6 +465,7 @@ class Scope(HardwareModule, AcquisitionModule):
                        min=3, max=16, call_setup=True)
 
     fft_length = IntRegister(0x8C, doc="FFT current point size")
+    fft_length2 = IntRegister(0x194, doc="FFT current point size")
 
     fft_data_width = IntRegister(0x34, doc='FFT data bit width')
 
