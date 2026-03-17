@@ -24,7 +24,6 @@ module fft_proc #(
 
   output logic [DSZ-1: 0] fft_rdata_up_o,
   output logic [DSZ-1: 0] fft_rdata_down_o,
-  output logic [FSZ-1: 0] fft_wp_last,
 
   input logic             fft_index_flush_i,
   input logic             fft_index_valid_i,
@@ -54,7 +53,6 @@ module fft_proc #(
   output logic [ QSZ-1:0] fft_q_wp,
   output logic [ QSZ-1:0] fft_q_rp,
   output logic [ QSZ-1:0] fft_q_rp_save,
-  output logic [ ASZ-1:0] fft_q_rdata_o,
 
   input logic  [  16-1:0] fft_conf_data_i,
   output logic [  32-1:0] fft_length,
@@ -80,7 +78,7 @@ assign fft_q_overflow_o = {index_q_overflow, fft_q_overflow};
 
 logic [ 32-1: 0] frame_cnt, scan_frame_cnt, clk_cnt;
 logic [ HSZ-1:0] fft_index_q[0:(1<<IQSZ)-1];
-logic [ HSZ-1:0] fft_hist_index, ffast_fft_hist_index, prev_hist_index;
+logic [ HSZ-1:0] fft_hist_index, fast_fft_hist_index, prev_hist_index;
 logic [ IQSZ-1:0] index_wp, index_rp, fast_index_rp;
 logic [IQSZ-1:0] wp_fast_bin, index_wp_fast_bin;
 
@@ -112,20 +110,20 @@ logic [ 32-1:  0]   fft_maxi_phase, fft_maxi_data;
 logic               fft_maxi_valid, fft_maxi_rdy, fft_maxi_last;
 
 logic [ FSZ-1: 0]   fft_wp, fft_wp_reversed, fft_wp_index;
+logic [ FSZ-1: 0]   fft_wp_plus_one = fft_wp+1;
 // bit reverse fft_wp, because we are using FFT ip core bit reversed option to
 // save memory resource
-assign fft_wp_reversed = {<<{fft_wp+1}};
+assign fft_wp_reversed = {<<{fft_wp_plus_one}};
 
 logic [ HSZ-1: 0]   fft_hist_raddr1, fft_hist_raddr2;
 logic [ FSZ-1: 0]   fft_raddr1, fft_raddr2;
 
 // Fast Domain Internal Equivalents for outputs
-logic [ FSZ-1: 0]   fast_fft_wp_last;
 logic [ 32-1: 0]    fast_fft_we_cnt;
 logic [ QSZ-1: 0]   fast_fft_q_rp;
 logic [ QSZ-1: 0]   fast_fft_q_rp_save;
 logic               fast_fft_done;
-logic [ 32-1: 0]    fast_fft_length;
+logic [ 32-1: 0]    fast_fft_length, fast_fft_length2;
 logic [  6-1: 0]    fast_status_o;
 logic [  8-1: 0]    fast_fft_peak_state;
 logic [ 2-1 : 0]    fast_fft_peak_ready;
@@ -186,15 +184,8 @@ xpm_cdc_array_single #(.WIDTH(32), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_len
 xpm_cdc_array_single #(.WIDTH(32), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_len2 (
     .dest_out(fft_length2), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fast_fft_length2)
 );
-xpm_cdc_array_single #(.WIDTH(ASZ), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_q_rdata (
-    .dest_out(fft_q_rdata_o), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fft_data_i) // Debug tap
-);
 
 // --- Output Event Toggles (fft_clk_i -> clk_i) ---
-logic fast_wp_last_toggle, wp_last_toggle_sync, wp_last_d;
-xpm_cdc_single #(.DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_wp_tgl (
-    .dest_out(wp_last_toggle_sync), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fast_wp_last_toggle)
-);
 
 logic fast_peak_toggle, peak_toggle_sync, peak_toggle_d;
 xpm_cdc_single #(.DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_pk_tgl (
@@ -238,7 +229,7 @@ xpm_cdc_array_single #(.WIDTH(QSZ), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_rp
 );
 
 xpm_cdc_array_single #(.WIDTH(HSZ), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_hist_index (
-    .dest_out(fast_fft_hist_index), .dest_clk(fft_clk_i), .src_clk(clk_i), .src_in(fft_hist_index)
+    .dest_out(fft_hist_index), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fast_fft_hist_index)
 );
 // -------------------------------------------------------------------------
 // SLOW CLOCK DOMAIN (clk_i) - Input Logic & OUTPUT REGISTRATIONS
@@ -300,7 +291,6 @@ end
 // --- OUTPUT REGISTRATION BLOCK ---
 always @(posedge clk_i)
 if (!rstn_slow) begin
-    fft_wp_last <= 0;
     fft_peak_ready <= 0;
     fft_count <= 0;
     fft_sum <= 0;
@@ -309,15 +299,9 @@ if (!rstn_slow) begin
     fft_peak_value_up <= 0;
     fft_peak_value_down <= 0;
     
-    wp_last_d <= 0;
     peak_toggle_d <= 0;
     frame_start_d <= 0;
 end else begin
-    // Edge Detectors for Toggle Syncs
-    wp_last_d <= wp_last_toggle_sync;
-    if (wp_last_toggle_sync ^ wp_last_d) begin
-        fft_wp_last <= fast_fft_wp_last;
-    end
 
     peak_toggle_d <= peak_toggle_sync;
     if (peak_toggle_sync ^ peak_toggle_d) begin
@@ -363,6 +347,11 @@ end
 // FAST CLOCK DOMAIN (fft_clk_i) - INTERNAL PROCESSING ONLY
 // -------------------------------------------------------------------------
 
+logic rstn_delay;
+logic fft_rstn = rstn_delay & rstn_fast;
+always @(posedge fft_clk_i)
+    rstn_delay <= rstn_fast;
+
 logic fft_frame_start;
 always @(posedge fft_clk_i) begin
     if (!rstn_fast) fft_frame_start_toggle <= 0;
@@ -375,7 +364,6 @@ logic          rstn_core;
 assign rstn_core = rstn_fast && !fft_conf_dvalid;
 logic [ 5-1:0] fft_nfft;
 assign fft_nfft = fft_conf_data_fast[5-1:0]; // Uses synchronized config!
-logic [32-1:0] fast_fft_length2;
 logic          up_toggle;
 assign up_toggle = fast_fft_length2 > fast_fft_length;
 
@@ -445,8 +433,6 @@ always @(posedge fft_clk_i)
 if (rstn_core == 1'b0) begin
     fft_wp <= 0;
     fft_wp_index <= 0;
-    fast_fft_wp_last <= 0;
-    fast_wp_last_toggle <= 0;
     up_out <= 1;
 end else if (fft_maxi_valid && fft_maxi_rdy) begin
     if (up_out)
@@ -455,8 +441,6 @@ end else if (fft_maxi_valid && fft_maxi_rdy) begin
         fft_buf_down[fft_wp_index] <= fft_maxi_data[DSZ-1:0];
         
     if (fft_maxi_last) begin
-        fast_fft_wp_last <= fft_wp;
-        fast_wp_last_toggle <= ~fast_wp_last_toggle; // TOGGLE EVENT
         fft_wp <= 0;
         fft_wp_index <= 0;
         up_out <= up_out + up_toggle;
@@ -514,7 +498,7 @@ end else begin
         fast_fft_sum <= _fft_sum;
         fast_fft_count <= _fft_count;
         
-        fast_peak_toggle <= ~fast_peak_toggle; // TOGGLE EVENT
+        fast_peak_toggle <= ~fast_peak_toggle;
     end
 
     
@@ -537,7 +521,7 @@ peak_detector #(.SSZ(FSZ), .DSZ(DSZ)) peak_detector_i (
     .maxi_rdy       (fft_maxi_rdy),
     .maxi_valid     (fft_maxi_valid),
     .maxi_last      (fft_maxi_last),
-    .threshold_k_sq (fft_threshold_k_fast), // Uses synchronized threshold
+    .threshold_k_sq (fft_threshold_k_fast),
     .peak_idx       (fft_peak_idx),
     .peak           (fft_peak),
     .peak2_idx      (fft_peak2_idx),
@@ -554,7 +538,7 @@ fft_wrapper fft_i (
    .M_AXIS_DOUT_0_tlast         (fft_maxi_last    ),
    .M_AXIS_DOUT_0_tvalid        (fft_maxi_valid   ),
    .M_AXIS_DOUT_0_tready        (fft_maxi_rdy     ),
-   .S_AXIS_CONFIG_0_tdata       (fft_conf_data_fast), // Uses synchronized conf
+   .S_AXIS_CONFIG_0_tdata       (fft_conf_data_fast),
    .S_AXIS_CONFIG_0_tready      (fft_conf_rdy     ),
    .S_AXIS_CONFIG_0_tvalid      (fft_conf_dvalid  ),
    .S_AXIS_DATA_0_tdata         ({16'b0, fft_data_ext, fft_data_i}),
@@ -562,7 +546,7 @@ fft_wrapper fft_i (
    .S_AXIS_DATA_0_tready        (fft_saxi_rdy     ),
    .S_AXIS_DATA_0_tvalid        (fft_saxi_valid   ),
    .aclk_0                      (fft_clk_i        ),
-   .aresetn_0                   (rstn_core        ),
+   .aresetn_0                   (fft_rstn         ),
    .event_data_in_channel_halt_0(fft_in_halt      ),
    .event_data_out_channel_halt_0(fft_out_halt    ),
    .event_status_channel_halt_0 (fft_status_halt  ),

@@ -445,8 +445,6 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_acq2_cnt = IntRegister(0x64, doc="FFT second stage acquisition time counter")
 
-    fft_wp_last = IntRegister(0x68, doc="FFT last write size")
-
     fft_state = IntRegister(0x6C, doc="FFT internal state")
 
     fft_we_cnt = IntRegister(0x70, doc="FFT write count")
@@ -466,6 +464,15 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_length = IntRegister(0x8C, doc="FFT current point size")
     fft_length2 = IntRegister(0x194, doc="FFT current point size")
+
+    fft_overflow = IntRegister(0x190, doc="FFT input buffer overflow")
+ 
+    fft_q_wp = IntRegister(0x170, doc='FFT input queue write pointer')
+    fft_q_rp = IntRegister(0x174, doc='FFT input queue read pointer')
+    fft_q_rp_save = IntRegister(0x178, doc='FFT input queue read pointer saved')
+    fft_q_wp2 = IntRegister(0x17C, doc='FFT input queue write pointer')
+    fft_q_rp2 = IntRegister(0x180, doc='FFT input queue read pointer')
+    fft_q_rp2_save = IntRegister(0x184, doc='FFT input queue read pointer saved')
 
     fft_data_width = IntRegister(0x34, doc='FFT data bit width')
 

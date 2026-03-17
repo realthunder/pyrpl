@@ -417,9 +417,6 @@ logic [ FSZ-1: 0]   fft_hist_rdata_down_a;
 logic [ FSZ-1: 0]   fft_hist_rdata_up_b;
 logic [ FSZ-1: 0]   fft_hist_rdata_down_b;
 
-logic [ 16-1:  0]   fft_wp_last_a;
-logic [ 16-1:  0]   fft_wp_last_b;
-
 logic [ DSZ-1: 0]   fft_rdata_up_a;
 logic [ DSZ-1: 0]   fft_rdata_down_a;
 logic [ DSZ-1: 0]   fft_rdata_up_b;
@@ -428,11 +425,9 @@ logic [ DSZ-1: 0]   fft_rdata_down_b;
 logic [ QSZ-1:0] fft_q_wp_a;
 logic [ QSZ-1:0] fft_q_rp_a;
 logic [ QSZ-1:0] fft_q_rp_save_a;
-logic [ ASZ-1:0] fft_q_rdata_a;
 logic [ QSZ-1:0] fft_q_wp_b;
 logic [ QSZ-1:0] fft_q_rp_b;
 logic [ QSZ-1:0] fft_q_rp_save_b;
-logic [ ASZ-1:0] fft_q_rdata_b;
 
 logic [ 32-1: 0]    fft_overflow_cnt;
 logic [ 16-1: 0]    fft_threshold_k;
@@ -578,9 +573,6 @@ logic [ 5-1: 0] fft_nfft = FSZ;
 logic           fft_fwd_inv = 1;
 logic [16-1: 0] fft_conf_data = {{7-1{1'b0}}, fft_fwd_inv, {3-1{1'b0}}, fft_nfft};
 
-assign fft_wp_last_a = 2**fft_nfft-1;
-assign fft_wp_last_b = 2**fft_nfft-1;
-
 fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_a (
    .clk_i (adc_clk_i),
    .fft_clk_i (fft_clk_i),
@@ -599,7 +591,6 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
 
    .fft_rdata_up_o (fft_rdata_up_a),
    .fft_rdata_down_o (fft_rdata_down_a),
-   // .fft_wp_last (fft_wp_last_a[FSZ-1:0]),
 
    .fft_index_flush_i (fft_index_flush),
    .fft_index_valid_i (fft_index_valid[IDX_PIPELINE+2]),
@@ -625,7 +616,6 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .fft_q_wp (fft_q_wp_a),
    .fft_q_rp (fft_q_rp_a),
    .fft_q_rp_save (fft_q_rp_save_a),
-   .fft_q_rdata_o (fft_q_rdata_a),
 
    .fft_conf_data_i (fft_conf_data),
 
@@ -652,7 +642,6 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
 
    .fft_rdata_up_o (fft_rdata_up_b),
    .fft_rdata_down_o (fft_rdata_down_b),
-   // .fft_wp_last (fft_wp_last_b[FSZ-1:0]),
 
    .fft_index_flush_i (fft_index_flush),
    .fft_index_valid_i (fft_index_valid[IDX_PIPELINE+2]),
@@ -677,7 +666,6 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .fft_q_wp (fft_q_wp_b),
    .fft_q_rp (fft_q_rp_b),
    .fft_q_rp_save (fft_q_rp_save_b),
-   .fft_q_rdata_o (fft_q_rdata_b),
 
    .fft_conf_data_i (fft_conf_data)
 );
@@ -1385,7 +1373,7 @@ end else begin
      20'h0005C : begin sys_ack <= sys_en;          sys_rdata <= fft_wait2_cnt                       ; end
      20'h00060 : begin sys_ack <= sys_en;          sys_rdata <= fft_acq1_cnt                        ; end
      20'h00064 : begin sys_ack <= sys_en;          sys_rdata <= fft_acq2_cnt                        ; end
-     20'h00068 : begin sys_ack <= sys_en;          sys_rdata <= {fft_wp_last_a, fft_wp_last_b}      ; end
+
      20'h0006C : begin sys_ack <= sys_en;          sys_rdata <= fft_state                           ; end
      20'h00070 : begin sys_ack <= sys_en;          sys_rdata <= fft_we_cnt[0]                       ; end
      20'h00074 : begin sys_ack <= sys_en;          sys_rdata <= fft_scan_frame_cnt                  ; end
@@ -1463,8 +1451,6 @@ end else begin
 
      // For debugging purpose
      20'h7???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_index_rdata                     ; end
-     20'h8???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_q_rdata_a                       ; end
-     20'h9???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_q_rdata_b                       ; end
      20'ha???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_index_rdata2                    ; end
 
        default : begin sys_ack <= sys_en;          sys_rdata <=  32'h0                              ; end

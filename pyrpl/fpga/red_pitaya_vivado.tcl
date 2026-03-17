@@ -145,7 +145,8 @@ if {[llength $debug_nets] > 0} {
     set_property C_DATA_DEPTH 1024 [get_debug_cores u_ila_0]
 
     set_property port_width 1 [get_debug_ports u_ila_0/clk]
-    connect_debug_port u_ila_0/clk [get_nets [list adc_clk]]
+    # connect_debug_port u_ila_0/clk [get_nets [list adc_clk]]
+    connect_debug_port u_ila_0/clk [get_nets [list dac_clk_2x]]
 
     set probe_idx 0
     foreach net $debug_nets {
