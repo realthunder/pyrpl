@@ -56,7 +56,7 @@ module fft_proc #(
 
   input logic  [  16-1:0] fft_conf_data_i,
   output logic [  32-1:0] fft_length,
-  output logic [  32-1:0] fft_length2
+  output logic [  32-1:0] fft_dbg_cnt
 );
 
 // -------------------------------------------------------------------------
@@ -73,7 +73,7 @@ logic [ 16-1: 0] fft_conf_data_fast;
 // -------------------------------------------------------------------------
 // Internal Signals
 // -------------------------------------------------------------------------
-logic [ 16-1: 0] fft_q_overflow, index_q_overflow; 
+logic [ 16-1: 0] fft_q_overflow, fft_q_overflow_fast, index_q_overflow, index_q_overflow_fast;
 assign fft_q_overflow_o = {index_q_overflow, fft_q_overflow};
 
 logic [ 32-1: 0] frame_cnt, scan_frame_cnt, clk_cnt;
@@ -124,6 +124,8 @@ logic [ QSZ-1: 0]   fast_fft_q_rp;
 logic [ QSZ-1: 0]   fast_fft_q_rp_save;
 logic               fast_fft_done;
 logic [ 32-1: 0]    fast_fft_length, fast_fft_length2;
+logic [ 16-1: 0]    dbg_cnt1, dbg_cnt2;
+logic [ 32-1: 0]    dbg_cnt = {dbg_cnt1, dbg_cnt2};
 logic [  6-1: 0]    fast_status_o;
 logic [  8-1: 0]    fast_fft_peak_state;
 logic [ 2-1 : 0]    fast_fft_peak_ready;
@@ -182,7 +184,7 @@ xpm_cdc_array_single #(.WIDTH(32), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_len
     .dest_out(fft_length), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fast_fft_length)
 );
 xpm_cdc_array_single #(.WIDTH(32), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_len2 (
-    .dest_out(fft_length2), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fast_fft_length2)
+    .dest_out(fft_dbg_cnt), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(dbg_cnt)
 );
 
 // --- Output Event Toggles (fft_clk_i -> clk_i) ---
@@ -224,6 +226,14 @@ xpm_cdc_array_single #(.WIDTH(32), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_we_
     .dest_out(fft_we_cnt), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fast_fft_we_cnt)
 );
 
+xpm_cdc_array_single #(.WIDTH(16), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_q_overflow (
+    .dest_out(fft_q_overflow), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fft_q_overflow_fast)
+);
+
+xpm_cdc_array_single #(.WIDTH(16), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_index_overflow (
+    .dest_out(index_q_overflow), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(index_q_overflow_fast)
+);
+
 xpm_cdc_array_single #(.WIDTH(QSZ), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_rp_save (
     .dest_out(fft_q_rp_save), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fast_fft_q_rp_save)
 );
@@ -247,45 +257,29 @@ always @(posedge clk_i) begin
    fft_hist_rdata_up_o <= fft_hist_up[fft_hist_raddr2];
 end
 
-assign fft_q_used = fft_q_wp - fft_q_rp;
-assign fft_q_full = (fft_q_used >= ((1<<QSZ) - 2));
-
 // --- DATA QUEUE Write Pointer & Overflow Counter ---
 always @(posedge clk_i)
 if (rstn_slow == 1'b0) begin
     fft_q_wp <= 0;
     fft_inited <= 0;
-    fft_q_overflow <= 0;
 end else if (dvalid_i) begin
-    if (!fft_q_full) begin
-        fft_queue[fft_q_wp] <= fft_data;
-        fft_q_wp <= fft_q_wp + 1;
-        fft_last_data <= fft_data;
-        fft_inited <= 1;
-    end else begin
-        fft_q_overflow <= fft_q_overflow + 1; 
-    end
+    fft_queue[fft_q_wp] <= fft_data;
+    fft_q_wp <= fft_q_wp + 1;
+    fft_last_data <= fft_data;
+    fft_inited <= 1;
 end
-
-assign index_q_used = index_wp - index_rp;
-assign index_q_full = (index_q_used >= ((1<<IQSZ) - 2));
 
 // --- INDEX QUEUE Write Pointer & Flush Generator ---
 always @(posedge clk_i)
 if (!rstn_slow) begin
     index_flush_toggle <= 0;
     index_wp <= 0;
-    index_q_overflow <= 0;
 end else if (fft_index_flush_i) begin
     index_flush_toggle <= ~index_flush_toggle;
     index_wp <= 0;
 end else if (fft_index_valid_i) begin
-    if (!index_q_full) begin
-        fft_index_q[index_wp] <= fft_hist_index_i;
-        index_wp <= index_wp + 1;
-    end else begin
-        index_q_overflow <= index_q_overflow + 1;
-    end
+    fft_index_q[index_wp] <= fft_hist_index_i;
+    index_wp <= index_wp + 1;
 end
 
 // --- OUTPUT REGISTRATION BLOCK ---
@@ -321,7 +315,6 @@ assign fft_frame_start_pulse = frame_start_toggle_sync ^ frame_start_d;
 
 always @(posedge clk_i)
 if (clk_cnt >= 125000000) begin
-    clk_cnt <= 0;
     fft_frame_cnt <= {1'b0, frame_cnt[32-1:1]};
     fft_scan_frame_cnt <= scan_frame_cnt;
     if (fft_frame_start_pulse) begin
@@ -333,7 +326,6 @@ if (clk_cnt >= 125000000) begin
         scan_frame_cnt <= 0;
     end
 end else begin
-    clk_cnt <= clk_cnt + 1;
     if (fft_frame_start_pulse) begin
         if (~&frame_cnt)
             frame_cnt <= frame_cnt + 1;
@@ -348,9 +340,12 @@ end
 // -------------------------------------------------------------------------
 
 logic rstn_delay;
-logic fft_rstn = rstn_delay & rstn_fast;
-always @(posedge fft_clk_i)
+logic fft_rstn = rstn_delay && rstn_fast;
+always @(posedge fft_clk_i) begin
     rstn_delay <= rstn_fast;
+    if (!fft_rstn)
+        dbg_cnt1 <= dbg_cnt1 + 1;
+end
 
 logic fft_frame_start;
 always @(posedge fft_clk_i) begin
@@ -386,6 +381,7 @@ assign pre_size = 2**(RSZ-1) - set_dly_fast; // Uses synchronized delay
 logic up_in;
 
 assign fft_q_size = wp_fast_bin - fast_fft_q_rp;
+assign fft_q_full = (fft_q_size >= ((1<<QSZ) - 2));
 
 // Trigger sync edge detection
 always @(posedge fft_clk_i) begin
@@ -396,6 +392,7 @@ assign trig_pulse = trig_fast & ~trig_fast_d;
 
 always @(posedge fft_clk_i)
 if (rstn_core == 1'b0) begin
+    dbg_cnt2 <= dbg_cnt2 + 1;
     fast_fft_we_cnt <= 0;
     fast_fft_q_rp <= 0;
     fast_fft_done <= 1;
@@ -421,6 +418,9 @@ end else begin
         if (fast_fft_we_cnt == 1 || fast_fft_we_cnt == fast_fft_length+1)
             up_in <= up_in + up_toggle;
         fast_fft_we_cnt <= fast_fft_we_cnt - 1;
+    end else if (fft_q_full) begin
+        fast_fft_q_rp <= fast_fft_q_rp + 1;
+        fft_q_overflow_fast <= fft_q_overflow_fast + 1;
     end
         
     fast_fft_done <= (fast_fft_we_cnt == 0);
@@ -470,6 +470,9 @@ always @(posedge fft_clk_i) begin
 end
 assign index_flush_pulse = index_flush_toggle_sync ^ index_flush_d;
 
+assign index_q_used = index_wp_fast_bin - fast_index_rp;
+assign index_q_full = (index_q_used >= ((1<<IQSZ) - 2));
+
 always @(posedge fft_clk_i)
 if (rstn_core == 1'b0 || index_flush_pulse) begin
     fast_fft_peak_ready <= 2'b11;
@@ -478,6 +481,7 @@ if (rstn_core == 1'b0 || index_flush_pulse) begin
     peak_up <= 1;
     fast_fft_hist_index <= 0; 
 end else begin
+
     if ({fast_fft_peak_ready[0], peak_ready} == 2'b01) begin
         if (fast_index_rp != index_wp_fast_bin) begin
             fast_fft_hist_index <= fft_index_q[fast_index_rp];
@@ -485,6 +489,10 @@ end else begin
             
         if (peak_up != up_toggle)
             fast_index_rp <= fast_index_rp + 1;
+        else if (index_q_full) begin
+            fast_index_rp <= fast_index_rp + 1;
+            index_q_overflow_fast <= index_q_overflow_fast + 1;
+        end
             
         peak_up <= peak_up + up_toggle;
 
@@ -499,6 +507,9 @@ end else begin
         fast_fft_count <= _fft_count;
         
         fast_peak_toggle <= ~fast_peak_toggle;
+    end else if (index_q_full) begin
+        fast_index_rp <= fast_index_rp + 1;
+        index_q_overflow_fast <= index_q_overflow_fast + 1;
     end
 
     
