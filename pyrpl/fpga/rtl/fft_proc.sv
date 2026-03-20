@@ -79,8 +79,8 @@ assign fft_q_overflow_o = {index_q_overflow, fft_q_overflow};
 logic [ 32-1: 0] frame_cnt, scan_frame_cnt, clk_cnt;
 logic [ HSZ-1:0] fft_index_q[0:(1<<IQSZ)-1];
 logic [ HSZ-1:0] fft_hist_index, fast_fft_hist_index, prev_hist_index;
-logic [ IQSZ-1:0] index_wp, index_rp, fast_index_rp;
-logic [IQSZ-1:0] wp_fast_bin, index_wp_fast_bin;
+logic [IQSZ-1:0] index_wp, index_rp, fast_index_rp, index_wp_fast_bin;
+logic [ QSZ-1:0] wp_fast_bin;
 
 logic [ASZ-1: 0] fft_queue[0:(1<<QSZ)-1];
 logic [ASZ-1: 0] fft_last_data, fft_data;
