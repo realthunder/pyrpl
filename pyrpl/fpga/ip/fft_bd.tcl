@@ -219,7 +219,7 @@ proc create_root_design { parentCell } {
 
 
   # Create ports
-  set aclk_0 [ create_bd_port -dir I -type clk aclk_0 ]
+  set aclk_0 [ create_bd_port -dir I -type clk -freq_hz 250000000 aclk_0 ]
   set aresetn_0 [ create_bd_port -dir I -type rst aresetn_0 ]
   set event_data_in_channel_halt_0 [ create_bd_port -dir O -type intr event_data_in_channel_halt_0 ]
   set event_data_out_channel_halt_0 [ create_bd_port -dir O -type intr event_data_out_channel_halt_0 ]
@@ -260,8 +260,7 @@ proc create_root_design { parentCell } {
    CONFIG.rounding_modes {convergent_rounding} \
    CONFIG.run_time_configurable_transform_length {true} \
    CONFIG.scaling_options {unscaled} \
-   CONFIG.target_clock_frequency {125} \
-   CONFIG.target_data_throughput {125} \
+   CONFIG.target_clock_frequency {250} \
    CONFIG.throttle_scheme {nonrealtime} \
    CONFIG.transform_length [expr {1<<$fft_nfft}] \
  ] $xfft_0

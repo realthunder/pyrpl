@@ -205,18 +205,38 @@ set_property PACKAGE_PIN J14     [get_ports {led_o[7]}]
 #NET "adc_clk" TNM_NET = "adc_clk";
 #TIMESPEC TS_adc_clk = PERIOD "adc_clk" 125 MHz;
 
-create_clock -period 8.000 -name adc_clk [get_ports adc_clk_p_i]
+create_clock -period 8.000 -name adc_clk_primary [get_ports adc_clk_p_i]
 
-set_input_delay -clock adc_clk 3.400 [get_ports adc_dat_a_i[*]]
-set_input_delay -clock adc_clk 3.400 [get_ports adc_dat_b_i[*]]
+set_input_delay -clock adc_clk_primary 3.400 [get_ports adc_dat_a_i[*]]
+set_input_delay -clock adc_clk_primary 3.400 [get_ports adc_dat_b_i[*]]
 
 create_clock -period 4.000 -name rx_clk  [get_ports daisy_p_i[1]]
 
-set_false_path -from [get_clocks adc_clk]     -to [get_clocks dac_clk_out]
-set_false_path -from [get_clocks clk_fpga_0]  -to [get_clocks ser_clk_out]
-set_false_path -from [get_clocks clk_fpga_0]  -to [get_clocks dac_2clk_out]
-set_false_path -from [get_clocks clk_fpga_0]  -to [get_clocks adc_clk]
-set_false_path -from [get_clocks clk_fpga_0]  -to [get_clocks par_clk]
+set_max_delay -from [get_clocks adc_clk_primary] -to [get_clocks pll_adc_clk] -datapath_only 8.000
+
+# set_max_delay -from [get_clocks adc_clk_primary] -to [get_clocks pll_ser_clk] -datapath_only 4.000
+
+set_false_path -from [get_clocks adc_clk_primary] -to [get_clocks pll_ser_clk]
+set_false_path -from [get_clocks pll_adc_clk] -to [get_clocks pll_ser_clk]
+set_false_path -from [get_clocks adc_clk_primary]     -to [get_clocks dac_clk_out]
+set_false_path -from [get_clocks clk_fpga_0]  -to [get_clocks pll_adc_clk]
+set_false_path -from [get_clocks clk_fpga_0]  -to [get_clocks pll_ser_clk]
+# set_false_path -from [get_clocks clk_fpga_0]  -to [get_clocks ser_clk_out]
+# set_false_path -from [get_clocks clk_fpga_0]  -to [get_clocks dac_2clk_out]
+# set_false_path -from [get_clocks clk_fpga_0]  -to [get_clocks adc_clk_primary]
+# set_false_path -from [get_clocks clk_fpga_0]  -to [get_clocks par_clk]
 set_false_path -from [get_clocks dac_clk_out] -to [get_clocks dac_2clk_out]
 set_false_path -from [get_clocks dac_clk_out] -to [get_clocks dac_2ph_out]
 
+# set src_clk [get_clocks -of_objects [get_nets pll_adc_clk]]
+# set dest_clk [get_clocks -of_objects [get_nets pll_ser_clk]]
+# set_max_delay -from $src_clk -to $dest_clk -datapath_only 4.000
+# set_max_delay -from $dest_clk -to $src_clk -datapath_only 8.000
+
+set_clock_groups -asynchronous -group [get_clocks clk_fpga_0] -group [get_clocks -include_generated_clocks adc_clk_primary]
+
+set_max_delay -datapath_only -from [get_cells -hierarchical *fft_threshold_k*] 10.000
+set_max_delay -datapath_only -from [get_cells -hierarchical *fft_peak_minimum*] 10.000
+set_max_delay -datapath_only -from [get_cells -hierarchical *fft_peak_start*] 10.000
+set_max_delay -datapath_only -from [get_cells -hierarchical *fft_nfft*] 10.000
+set_max_delay -datapath_only -from [get_cells -hierarchical *fft_conf_data*] 10.000

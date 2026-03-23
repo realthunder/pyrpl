@@ -59,10 +59,15 @@ module fft_proc #(
   output logic [  32-1:0] fft_dbg_cnt
 );
 
+localparam SYNC_FF = 4;
+
 // -------------------------------------------------------------------------
 // Fast Domain Configurations (Synchronized Inputs)
 // -------------------------------------------------------------------------
-logic            rstn_slow, rstn_fast;
+logic            rstn_slow, rstn_slow_o, rstn_fast, rstn_fast_o;
+assign rstn_slow = fft_rstn_i && rstn_slow_o;
+assign rstn_fast = fft_rstn_i && rstn_fast_o;
+
 logic            trig_fast, trig_fast_d, trig_pulse;
 logic [ 32-1: 0] set_dly_fast;
 logic [ 16-1: 0] fft_threshold_k_fast;
@@ -143,102 +148,102 @@ assign fft_data = (enable_i || !fft_inited) ? data_i : fft_last_data;
 // -------------------------------------------------------------------------
 
 // --- Resets ---
-xpm_cdc_single #(.DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_rstn_slow (
-    .dest_out(rstn_slow), .dest_clk(clk_i), .src_clk(clk_i), .src_in(fft_rstn_i)
+xpm_cdc_single #(.DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_rstn_slow (
+    .dest_out(rstn_slow_o), .dest_clk(clk_i), .src_clk(clk_i), .src_in(fft_rstn_i)
 );
-xpm_cdc_single #(.DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_rstn_fast (
-    .dest_out(rstn_fast), .dest_clk(fft_clk_i), .src_clk(clk_i), .src_in(fft_rstn_i)
+xpm_cdc_single #(.DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_rstn_fast (
+    .dest_out(rstn_fast_o), .dest_clk(fft_clk_i), .src_clk(clk_i), .src_in(fft_rstn_i)
 );
 
 // --- Input Configurations (clk_i -> fft_clk_i) ---
-xpm_cdc_single #(.DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_trig (
+xpm_cdc_single #(.DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_trig (
     .dest_out(trig_fast), .dest_clk(fft_clk_i), .src_clk(clk_i), .src_in(trig_i)
 );
-xpm_cdc_array_single #(.WIDTH(32), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_dly (
+xpm_cdc_array_single #(.WIDTH(32), .DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_dly (
     .dest_out(set_dly_fast), .dest_clk(fft_clk_i), .src_clk(clk_i), .src_in(set_dly)
 );
-xpm_cdc_array_single #(.WIDTH(16), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_th (
+xpm_cdc_array_single #(.WIDTH(16), .DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_th (
     .dest_out(fft_threshold_k_fast), .dest_clk(fft_clk_i), .src_clk(clk_i), .src_in(fft_threshold_k)
 );
-xpm_cdc_array_single #(.WIDTH(FSZ), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_pstrt (
+xpm_cdc_array_single #(.WIDTH(FSZ), .DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_pstrt (
     .dest_out(fft_peak_start_fast), .dest_clk(fft_clk_i), .src_clk(clk_i), .src_in(fft_peak_start)
 );
-xpm_cdc_array_single #(.WIDTH(DSZ), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_pmin (
+xpm_cdc_array_single #(.WIDTH(DSZ), .DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_pmin (
     .dest_out(fft_peak_minimum_fast), .dest_clk(fft_clk_i), .src_clk(clk_i), .src_in(fft_peak_minimum)
 );
-xpm_cdc_array_single #(.WIDTH(16), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_conf (
+xpm_cdc_array_single #(.WIDTH(16), .DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_conf (
     .dest_out(fft_conf_data_fast), .dest_clk(fft_clk_i), .src_clk(clk_i), .src_in(fft_conf_data_i)
 );
 
 // --- Static/Level Outputs (fft_clk_i -> clk_i) ---
-xpm_cdc_array_single #(.WIDTH(6), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_stat (
+xpm_cdc_array_single #(.WIDTH(6), .DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_stat (
     .dest_out(status_o), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fast_status_o)
 );
-xpm_cdc_single #(.DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_done (
+xpm_cdc_single #(.DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_done (
     .dest_out(fft_done), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fast_fft_done)
 );
-xpm_cdc_array_single #(.WIDTH(8), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_pstate (
+xpm_cdc_array_single #(.WIDTH(8), .DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_pstate (
     .dest_out(fft_peak_state), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fast_fft_peak_state)
 );
-xpm_cdc_array_single #(.WIDTH(32), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_len (
+xpm_cdc_array_single #(.WIDTH(32), .DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_len (
     .dest_out(fft_length), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fast_fft_length)
 );
-xpm_cdc_array_single #(.WIDTH(32), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_len2 (
+xpm_cdc_array_single #(.WIDTH(32), .DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_len2 (
     .dest_out(fft_dbg_cnt), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(dbg_cnt)
 );
 
 // --- Output Event Toggles (fft_clk_i -> clk_i) ---
 
 logic fast_peak_toggle, peak_toggle_sync, peak_toggle_d;
-xpm_cdc_single #(.DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_pk_tgl (
+xpm_cdc_single #(.DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_pk_tgl (
     .dest_out(peak_toggle_sync), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fast_peak_toggle)
 );
 
 logic fft_frame_start_toggle, frame_start_toggle_sync, frame_start_d;
-xpm_cdc_single #(.DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_fs_tgl (
+xpm_cdc_single #(.DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_fs_tgl (
     .dest_out(frame_start_toggle_sync), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fft_frame_start_toggle)
 );
 
 // --- Index Flush Event Toggle (clk_i -> fft_clk_i) ---
-xpm_cdc_single #(.DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_idx_flsh (
+xpm_cdc_single #(.DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_idx_flsh (
     .dest_out(index_flush_toggle_sync), .dest_clk(fft_clk_i), .src_clk(clk_i), .src_in(index_flush_toggle)
 );
 
 // --- Pointers (Using XPM Gray Logic) ---
-xpm_cdc_gray #(.WIDTH(QSZ), .DEST_SYNC_FF(3), .REG_OUTPUT(0)) sync_q_wp (
+xpm_cdc_gray #(.WIDTH(QSZ), .DEST_SYNC_FF(SYNC_FF), .REG_OUTPUT(0)) sync_q_wp (
     .dest_out_bin(wp_fast_bin), .dest_clk(fft_clk_i), .src_clk(clk_i), .src_in_bin(fft_q_wp)
 );
 
-xpm_cdc_gray #(.WIDTH(QSZ), .DEST_SYNC_FF(3), .REG_OUTPUT(0)) sync_q_rp (
+xpm_cdc_gray #(.WIDTH(QSZ), .DEST_SYNC_FF(SYNC_FF), .REG_OUTPUT(0)) sync_q_rp (
     .dest_out_bin(fft_q_rp), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in_bin(fast_fft_q_rp)
 );
 
-xpm_cdc_gray #(.WIDTH(IQSZ), .DEST_SYNC_FF(3), .REG_OUTPUT(0)) sync_index_wp (
+xpm_cdc_gray #(.WIDTH(IQSZ), .DEST_SYNC_FF(SYNC_FF), .REG_OUTPUT(0)) sync_index_wp (
     .dest_out_bin(index_wp_fast_bin), .dest_clk(fft_clk_i), .src_clk(clk_i), .src_in_bin(index_wp)
 );
 
-xpm_cdc_gray #(.WIDTH(IQSZ), .DEST_SYNC_FF(3), .REG_OUTPUT(0)) sync_index_rp (
+xpm_cdc_gray #(.WIDTH(IQSZ), .DEST_SYNC_FF(SYNC_FF), .REG_OUTPUT(0)) sync_index_rp (
     .dest_out_bin(index_rp), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in_bin(fast_index_rp)
 );
 
 // --- Write Counters (Array Single) ---
-xpm_cdc_array_single #(.WIDTH(32), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_we_cnt (
+xpm_cdc_array_single #(.WIDTH(32), .DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_we_cnt (
     .dest_out(fft_we_cnt), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fast_fft_we_cnt)
 );
 
-xpm_cdc_array_single #(.WIDTH(16), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_q_overflow (
+xpm_cdc_array_single #(.WIDTH(16), .DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_q_overflow (
     .dest_out(fft_q_overflow), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fft_q_overflow_fast)
 );
 
-xpm_cdc_array_single #(.WIDTH(16), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_index_overflow (
+xpm_cdc_array_single #(.WIDTH(16), .DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_index_overflow (
     .dest_out(index_q_overflow), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(index_q_overflow_fast)
 );
 
-xpm_cdc_array_single #(.WIDTH(QSZ), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_rp_save (
+xpm_cdc_array_single #(.WIDTH(QSZ), .DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_rp_save (
     .dest_out(fft_q_rp_save), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fast_fft_q_rp_save)
 );
 
-xpm_cdc_array_single #(.WIDTH(HSZ), .DEST_SYNC_FF(3), .SRC_INPUT_REG(0)) sync_hist_index (
+xpm_cdc_array_single #(.WIDTH(HSZ), .DEST_SYNC_FF(SYNC_FF), .SRC_INPUT_REG(0)) sync_hist_index (
     .dest_out(fft_hist_index), .dest_clk(clk_i), .src_clk(fft_clk_i), .src_in(fast_fft_hist_index)
 );
 // -------------------------------------------------------------------------
@@ -343,8 +348,6 @@ logic rstn_delay;
 logic fft_rstn = rstn_delay && rstn_fast;
 always @(posedge fft_clk_i) begin
     rstn_delay <= rstn_fast;
-    if (!fft_rstn)
-        dbg_cnt1 <= dbg_cnt1 + 1;
 end
 
 logic fft_frame_start;
@@ -392,25 +395,28 @@ assign trig_pulse = trig_fast & ~trig_fast_d;
 
 always @(posedge fft_clk_i)
 if (rstn_core == 1'b0) begin
-    dbg_cnt2 <= dbg_cnt2 + 1;
     fast_fft_we_cnt <= 0;
     fast_fft_q_rp <= 0;
     fast_fft_done <= 1;
     up_in <= 1;
 end else begin
     if (trig_pulse && fast_fft_done && up_in == 1) begin
+        dbg_cnt1 <= 0;
+        dbg_cnt2 <= 0;
         if (set_dly_fast < 2**(RSZ-1)) begin
             fast_fft_we_cnt <= fast_fft_length2;
+            fast_fft_q_rp_save <= fast_fft_length2;
             if (pre_size < fft_q_size) begin
                 fast_fft_q_rp <= wp_fast_bin - pre_size[QSZ-1:0];
-                fast_fft_q_rp_save <= wp_fast_bin - pre_size[QSZ-1:0];
+                // fast_fft_q_rp_save <= wp_fast_bin - pre_size[QSZ-1:0];
             end else begin
-                fast_fft_q_rp_save <= fast_fft_q_rp;
+                // fast_fft_q_rp_save <= fast_fft_q_rp;
             end
         end else begin
             fast_fft_q_rp <= wp_fast_bin;
-            fast_fft_q_rp_save <= wp_fast_bin;
+            // fast_fft_q_rp_save <= wp_fast_bin;
             fast_fft_we_cnt <= set_dly_fast - 2**(RSZ-1) + fast_fft_length2;
+            fast_fft_q_rp_save <= set_dly_fast - 2**(RSZ-1) + fast_fft_length2;
         end
     end else if (fft_q_size > 0 && fast_fft_we_cnt > 0 && (fast_fft_we_cnt > fast_fft_length2 || fft_saxi_rdy)) begin
         fft_data_i <= fft_queue[fast_fft_q_rp];
@@ -418,7 +424,9 @@ end else begin
         if (fast_fft_we_cnt == 1 || fast_fft_we_cnt == fast_fft_length+1)
             up_in <= up_in + up_toggle;
         fast_fft_we_cnt <= fast_fft_we_cnt - 1;
+        dbg_cnt1 <= dbg_cnt1 + 1;
     end else if (fft_q_full) begin
+        dbg_cnt2 <= dbg_cnt2 + 1;
         fast_fft_q_rp <= fast_fft_q_rp + 1;
         fft_q_overflow_fast <= fft_q_overflow_fast + 1;
     end
