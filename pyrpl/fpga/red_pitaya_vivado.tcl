@@ -195,14 +195,14 @@ write_debug_probes -force $path_out/debug_probes.ltx
 route_design
 write_checkpoint         -force   $path_out/post_route
 report_timing_summary    -file    $path_out/post_route_timing_summary.rpt
-report_timing            -file    $path_out/post_route_timing.rpt -sort_by group -max_paths 100 -path_type summary
+report_timing            -file    $path_out/post_route_timing.rpt -sort_by group -max_paths 1000 -path_type summary
 report_clock_utilization -file    $path_out/clock_util.rpt
 # report_utilization       -file    $path_out/post_route_util.rpt
 report_utilization       -file    $path_out/post_route_util.rpt -hierarchical -hierarchical_depth 3
 report_power             -file    $path_out/post_route_power.rpt
 report_drc               -file    $path_out/post_imp_drc.rpt
 #write_verilog            -force   $path_out/bft_impl_netlist.v
-#write_xdc -no_fixed_only -force   $path_out/bft_impl.xdc
+write_xdc -no_fixed_only -force   $path_out/bft_impl.xdc
 
 ################################################################################
 # generate a bitstream
@@ -233,4 +233,4 @@ write_sysdef             -hwdef   $path_sdk/red_pitaya.hwdef \
                          -bitfile $path_out/red_pitaya.bit \
                          -file    $path_sdk/red_pitaya.sysdef
 
-exit
+
