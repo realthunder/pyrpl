@@ -207,6 +207,20 @@ set_property PACKAGE_PIN J14     [get_ports {led_o[7]}]
 
 create_clock -period 8.000 -name adc_clk [get_ports adc_clk_p_i]
 
+create_generated_clock \
+   -name pll_adc_clk \
+   -source [get_pins pll/clk] \
+   -multiply_by 8 \
+   -divide_by 8 \
+   [get_pins pll/clk_adc]
+
+create_generated_clock \
+   -name pll_ser_clk \
+   -source [get_pins pll/clk] \
+   -multiply_by 8 \
+   -divide_by 4 \
+   [get_pins pll/clk_ser]
+
 set_input_delay -clock adc_clk 3.400 [get_ports adc_dat_a_i[*]]
 set_input_delay -clock adc_clk 3.400 [get_ports adc_dat_b_i[*]]
 
@@ -220,5 +234,3 @@ set_false_path -from [get_clocks clk_fpga_0]  -to [get_clocks adc_clk]
 # set_false_path -from [get_clocks dac_clk_out] -to [get_clocks dac_2clk_out]
 # set_false_path -from [get_clocks dac_clk_out] -to [get_clocks dac_2ph_out]
 
-set_multicycle_path -setup 2 -to [get_cells i_dsp*/*iir*/p_*reg*]
-set_multicycle_path -setup 2 -to [get_cells i_dsp*/*iir*/overflow_reg*]

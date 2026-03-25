@@ -117,6 +117,7 @@ read_verilog                      $path_rtl/red_pitaya_iq_block.v
 read_verilog                      $path_rtl/red_pitaya_trigger_block.v
 read_verilog                      $path_rtl/red_pitaya_prng.v
 
+
 #constraints
 read_xdc                          $path_sdc/red_pitaya.xdc
 
@@ -173,6 +174,17 @@ report_power             -file    $path_out/post_synth_power.rpt
 # write checkpoint design
 ################################################################################
 
+# set multicyle_path_to  [concat [get_cells i_dsp*/*iir*/p_*reg*] \
+#                                [get_cells i_dsp*/*iir*/overflow_reg*] \
+#                        ]
+#
+# set multicyle_path_from [get_cells i_scope*/fft*/fft_length*reg*]
+#
+# set_multicycle_path -setup 2 -to $multicyle_path_to
+# set_multicycle_path -setup 2 -from $multicyle_path_from
+# set_multicycle_path -hold 1 -to $multicyle_path_to
+# set_multicycle_path -hold 1 -from $multicyle_path_from
+
 opt_design
 power_opt_design
 place_design
@@ -203,6 +215,8 @@ report_power             -file    $path_out/post_route_power.rpt
 report_drc               -file    $path_out/post_imp_drc.rpt
 #write_verilog            -force   $path_out/bft_impl_netlist.v
 write_xdc -no_fixed_only -force   $path_out/bft_impl.xdc
+
+report_timing -slack_lesser_than 0 -max_paths 20000 -file $path_out/tns_failing_paths.txt
 
 ################################################################################
 # generate a bitstream

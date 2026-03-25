@@ -433,6 +433,7 @@ logic [ QSZ-1:0] fft_q_rp_b;
 logic [ QSZ-1:0] fft_q_rp_save_b;
 logic [ ASZ-1:0] fft_q_rdata_b;
 
+logic [ 32-1: 0]    fft_overflow_cnt;
 logic [ 16-1: 0]    fft_threshold_k;
 logic [ FSZ-1:0]    fft_peak_start;
 logic [ DSZ-1: 0]   fft_peak_minimum;
@@ -591,6 +592,9 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .fft_peak_start (fft_peak_start),
    .fft_peak_minimum (fft_peak_minimum),
 
+   .fft_acq_up (fft_acq1_cnt),
+   .fft_acq_down (fft_acq2_cnt),
+
    .sys_addr (sys_addr),
 
    .fft_rdata_up_o (fft_rdata_up_a),
@@ -624,7 +628,9 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .fft_q_rdata_o (fft_q_rdata_a),
 
    .fft_conf_data_i (fft_conf_data),
-   .fft_length (fft_length)
+   .fft_length (fft_length),
+
+   .overflow_cnt_o (fft_overflow_cnt)
 );
 
 fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_b (
@@ -639,6 +645,9 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .fft_threshold_k (fft_threshold_k),
    .fft_peak_start (fft_peak_start),
    .fft_peak_minimum (fft_peak_minimum),
+
+   .fft_acq_up (fft_nfft<RSZ-1 ? fft_acq1_cnt : fft_acq2_cnt),
+   .fft_acq_down (fft_acq2_cnt),
 
    .sys_addr (sys_addr),
 
@@ -1438,6 +1447,9 @@ end else begin
      20'h00188 : begin sys_ack <= sys_en;          sys_rdata <= {{16-RSZ{1'b0}}, y_step, {16-RSZ{1'b0}}, x_step}; end
 
      20'h0018C : begin sys_ack <= sys_en;          sys_rdata <= scope_sig_dly                     ; end
+
+     20'h00190 : begin sys_ack <= sys_en;          sys_rdata <= fft_overflow_cnt                    ; end
+     20'h00198 : begin sys_ack <= sys_en;          sys_rdata <= fft_we_cnt[1]                       ; end
 
      20'h1???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_a_rd}              ; end
      20'h2???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_b_rd}              ; end
