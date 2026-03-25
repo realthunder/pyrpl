@@ -112,14 +112,16 @@ end else begin
             current_state <= S_STREAM;
         end
     end else if (current_state == S_STREAM) begin
-        data_valid_reg <= data_valid & maxi_valid;
         if (maxi_valid) begin
             data_reg <= data_in;
             data_sq_reg <= data_in * data_in;
             data_index_reg <= data_index;
+            data_valid_reg <= data_valid;
 
             if (maxi_last)
                 current_state <= S_DETECT1;
+        end else begin
+            data_valid_reg <= 0;
         end
         if (data_valid_reg) begin
             if (peak <= data_reg) begin

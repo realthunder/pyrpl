@@ -60,8 +60,8 @@ module red_pitaya_iq_modulator_block #(
 );
 
 // firstproduct
-wire signed [OUTBITS-1:0] firstproduct1;
-wire signed [OUTBITS-1:0] firstproduct2;
+wire signed [OUTBITS-1:0] firstproduct1_wire;
+wire signed [OUTBITS-1:0] firstproduct2_wire;
 
 red_pitaya_product_sat  #(
 	.BITS_IN1(INBITS),
@@ -71,21 +71,15 @@ red_pitaya_product_sat  #(
 firstproduct_saturation [1:0]
 ( .factor1_i  (  {signal2_i, signal1_i} ),
   .factor2_i  (  {       g4,        g1} ),
-  .product_o  (  {firstproduct2, firstproduct1})
+  .product_o  (  {firstproduct2_wire, firstproduct1_wire})
 );
 
 // buffering - one extra bit for the sum with g2
 reg signed [OUTBITS+1-1:0] firstproduct1_reg;
 reg signed [OUTBITS+1-1:0] firstproduct2_reg;
-always @(posedge clk_i) begin
-    firstproduct1_reg <= $signed(firstproduct1) + $signed(g2[GAINBITS-1:GAINBITS-OUTBITS]);
-    firstproduct2_reg <= $signed(firstproduct2);
-end
 
-wire signed [OUTBITS+1+SINBITS-1-1:0] secondproduct1;
-wire signed [OUTBITS+1+SINBITS-1-1:0] secondproduct2;
-assign secondproduct1 = firstproduct1_reg * sin;
-assign secondproduct2 = firstproduct2_reg * cos;
+reg signed [OUTBITS+1+SINBITS-1-1:0] secondproduct1_reg;
+reg signed [OUTBITS+1+SINBITS-1-1:0] secondproduct2_reg;
 
 //sum of second product has an extra bit
 reg signed [OUTBITS+1+SINBITS-1:0] secondproduct_sum;
@@ -94,7 +88,11 @@ wire signed [OUTBITS-1:0] secondproduct_sat;
 
 //summation and saturation management, and buffering
 always @(posedge clk_i) begin
-    secondproduct_sum <= secondproduct1 + secondproduct2;
+    firstproduct1_reg <= $signed(firstproduct1_wire) + $signed(g2[GAINBITS-1:GAINBITS-OUTBITS]);
+    firstproduct2_reg <= $signed(firstproduct2_wire);
+    secondproduct1_reg <= firstproduct1_reg * sin;
+    secondproduct2_reg <= firstproduct2_reg * cos;
+    secondproduct_sum <= secondproduct1_reg + secondproduct2_reg;
     secondproduct_out <= secondproduct_sat;
 end
 

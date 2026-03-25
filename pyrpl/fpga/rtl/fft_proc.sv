@@ -18,6 +18,8 @@ module fft_proc #(
   input logic  [ FSZ-1:0] fft_peak_start,
   input logic  [ DSZ-1:0] fft_peak_minimum,
 
+  input logic  [ FSZ-1:0] fft_acq_up,
+  input logic  [ FSZ-1:0] fft_acq_down,
 
   input logic  [ 32-1: 0] sys_addr,
 
@@ -45,6 +47,7 @@ module fft_proc #(
   output logic [ 32-1: 0] fft_frame_cnt,
   output logic [ 32-1: 0] fft_scan_frame_cnt,
   output logic [ 32-1: 0] fft_we_cnt,
+  output logic [ FSZ-1:0] padding_cnt,
 
   output logic [ QSZ-1:0] fft_q_wp,
   output logic [ QSZ-1:0] fft_q_rp,
@@ -52,8 +55,14 @@ module fft_proc #(
   output logic [ ASZ-1:0] fft_q_rdata_o,
 
   input logic  [  16-1:0] fft_conf_data_i,
-  output logic [  32-1:0] fft_length
+  output logic [  32-1:0] fft_length,
+
+  output logic [  32-1:0] overflow_cnt_o
 );
+
+logic [ 16-1:0] overflow_cnt;
+logic [ 16-1:0] input_cnt;
+assign overflow_cnt_o = {input_cnt, overflow_cnt};
 
 logic [ 32-1: 0] frame_cnt;
 logic [ 32-1: 0] scan_frame_cnt;
@@ -118,7 +127,6 @@ logic [ HSZ-1: 0]   fft_q_raddr2;
 
 // sign extend the data for padding according to xfft requirement
 assign fft_data_ext = {16-ASZ{fft_data_i[ASZ-1]}};
-assign fft_data = (enable_i || !fft_inited) ? data_i : fft_last_data;
 
 always @(posedge clk_i) begin
    fft_raddr1 <= sys_addr[FSZ-1+3:3] ;
@@ -176,12 +184,16 @@ if (fft_rstn_i == 1'b0) begin
         fft_length2 <= 2**(fft_nfft+1);
     else
         fft_length2 <= 2**fft_nfft;
+    padding_up <= 2**fft_nfft - fft_acq_up;
+    padding_down <= 2**fft_nfft - fft_acq_down;
 end else if (fft_conf_dvalid && fft_conf_rdy) begin
     fft_conf_dvalid <= 0;
 end
 
-logic pre_size = 2**(RSZ-1) - set_dly;
 logic up_in;
+logic [ FSZ-1:0]    padding_up;
+logic [ FSZ-1:0]    padding_down;
+assign  padding_cnt = up_in ? padding_up : padding_down;
 
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
@@ -192,39 +204,50 @@ if (rstn_i == 1'b0) begin
     up_in <= 1;
 end else begin
     if (dvalid_i) begin
-        fft_queue[fft_q_wp] <= fft_data;
-        // fft_queue2[fft_q_wp] <= fft_data;
-        fft_q_wp <= fft_q_wp_plus_one;
-        fft_last_data <= fft_data;
+        if (enable_i) begin
+            fft_queue[fft_q_wp] <= data_i;
+            fft_q_wp <= fft_q_wp + 1;
+            fft_last_data <= data_i;
+        end else if (!fft_inited) begin
+            fft_last_data <= data_i;
+        end
         fft_inited <= 1;
     end
 
-    if (trig_i && fft_done && up_in == 1) begin
-        if (set_dly < 2**(RSZ-1)) begin
-            fft_we_cnt <= fft_length2;
-            if (pre_size < fft_q_size) begin
-                fft_q_rp <= fft_q_wp - pre_size;
-                fft_q_rp_save <= fft_q_wp - pre_size;
-            end else begin
-                fft_q_rp_save <= fft_q_rp;
-            end
-        end else begin
-            fft_q_rp <= fft_q_wp;
-            fft_q_rp_save <= fft_q_wp;
-            fft_we_cnt <= set_dly - 2**(RSZ-1) + fft_length2;
-        end
-    end else if (fft_q_size > 0 && fft_we_cnt > 0 && (fft_we_cnt > fft_length2 || fft_saxi_rdy)) begin
-        fft_data_i <= fft_queue[fft_q_rp];
-        fft_q_rp <= fft_q_rp + 1;
+    if (trig_i && fft_done && up_in) begin
+        fft_q_rp <= fft_q_wp;
+        fft_q_rp_save <= fft_q_wp;
+        fft_we_cnt <= fft_length2;
+    end else if ((padding_cnt > 0 || fft_q_size > 0) && fft_we_cnt > 0 && (fft_we_cnt > fft_length2 || fft_saxi_rdy)) begin
+        fft_data_i <= fft_q_size > 0 ? fft_queue[fft_q_rp] : fft_last_data;
+        if (padding_cnt == 0)
+            fft_q_rp <= fft_q_rp + 1;
+        else if (enable_i && dvalid_i && fft_q_wp + 1 == fft_q_rp) begin
+            overflow_cnt <= overflow_cnt + 1;
+            fft_q_rp <= fft_q_rp + 1;
+        end else if (up_in)
+            padding_up <= padding_up - 1;
+        else
+            padding_down <= padding_down - 1;
         if (fft_we_cnt == 1 || fft_we_cnt == fft_length+1)
             up_in <= up_in + up_toggle;
         fft_we_cnt <= fft_we_cnt - 1;
-    end else if (dvalid_i && fft_q_wp_plus_one == fft_q_rp)
+    end else if (enable_i && dvalid_i && fft_q_wp + 1 == fft_q_rp) begin
+        // overflow
+        overflow_cnt <= overflow_cnt + 1;
         fft_q_rp <= fft_q_rp + 1;
+        if (up_in)
+            padding_up <= padding_up + 1;
+        else
+            padding_down <= padding_down + 1;
+    end
+
+    if (fft_saxi_rdy && fft_saxi_valid)
+        input_cnt <= input_cnt + 1;
 
     fft_done <= fft_we_cnt==0;
     fft_saxi_last <= fft_we_cnt == 1 || fft_we_cnt == fft_length+1;
-    fft_saxi_valid <= fft_q_size > 0 && fft_we_cnt > 0 && fft_we_cnt <= fft_length2;
+    fft_saxi_valid <= (padding_cnt > 0 || fft_q_size > 0) && fft_we_cnt > 0 && fft_we_cnt <= fft_length2;
 end
 
 logic up_out;
