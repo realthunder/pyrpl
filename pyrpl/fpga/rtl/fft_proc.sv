@@ -39,7 +39,6 @@ module fft_proc #(
   output logic [ 2-1 : 0] fft_peak_ready,
   output logic [ FSZ : 0] fft_count,
   output logic [ FSZ+DSZ-1: 0]fft_sum,
-  output logic [  8-1: 0] fft_peak_state,
   output logic [ FSZ-1:0] fft_peak_index_up,
   output logic [ FSZ-1:0] fft_peak_index_down,
   output logic [ DSZ-1:0] fft_peak_value_up,
@@ -355,8 +354,7 @@ peak_detector #(.SSZ(FSZ), .DSZ(DSZ)) peak_detector_i (
     .peak2          (fft_peak2),
     .sum_o          (_fft_sum),
     .count_o        (_fft_count),
-    .ready          (peak_ready),
-    .state          (fft_peak_state)
+    .ready          (peak_ready)
 );
 
 fft_wrapper fft_i (

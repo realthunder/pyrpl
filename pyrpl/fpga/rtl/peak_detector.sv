@@ -21,8 +21,7 @@ module peak_detector #(
     output logic [DSZ-1:0] peak2,
     output logic [SSZ+DSZ-1:0] sum_o, 
     output logic [SSZ:0]   count_o,
-    output logic           ready,
-    output logic [8-1:0]   state
+    output logic           ready
 );
 
 // This module detects two peaks (two maximum values) of a given stream of data. 
@@ -42,7 +41,7 @@ module peak_detector #(
 //      (peak * N - mean*N)^2  >  k^2 * (N * N * mean_of_square - square_of_mean * N * N)
 //         (peak * N - sum)^2  >  k^2 * ( N * sum_of_square - square_of_sum)
 
-typedef enum logic [8-1: 0] {
+typedef enum {
     S_IDLE,
     S_STREAM,
     S_STEP1,
@@ -55,7 +54,7 @@ typedef enum logic [8-1: 0] {
     S_STEP8
 } peak_state_t;
 
-peak_state_t current_state;
+(* fsm_encoding = "one_hot" *) peak_state_t current_state;
 
 logic [SSZ+DSZ-1:0] sum, sum1; // sum of all data. Max value: 2^SSZ * 2^DSZ
 logic [SSZ:0] count;
@@ -98,8 +97,6 @@ assign ready = current_state==S_IDLE;
 
 assign state = current_state;
 
-assign maxi_rdy = current_state==S_STREAM;
-
 logic [1:0] rst;
 always @(posedge clk)
     if (!resetn)
@@ -112,6 +109,8 @@ integer i;
 always @(posedge clk)
 if (!rst[1]) begin
     current_state <= S_IDLE;
+    maxi_rdy <= 0;
+
 end else begin
 
     data_sq[0] <= data_r[0] * data_r[0];
@@ -135,6 +134,7 @@ end else begin
             sum <= 0;
             sum_sq <= 0;
             current_state <= S_STREAM;
+            maxi_rdy <= 1;
         end
 
     S_STREAM: begin
@@ -161,8 +161,10 @@ end else begin
             count <= count + 1;
         end
 
-        if (data_last[PIPELINE])
+        if (data_last[PIPELINE]) begin
             current_state <= S_STEP1;
+            maxi_rdy <= 0;
+        end
 
     end S_STEP1: begin
         sum1 <= sum;
