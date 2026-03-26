@@ -445,8 +445,6 @@ logic [ FSZ: 0]     fft_count_a;
 logic [ FSZ: 0]     fft_count_b;
 logic [FSZ+DSZ-1:0] fft_sum_a;
 logic [FSZ+DSZ-1:0] fft_sum_b;
-logic [ 8-1 : 0]    fft_peak_state_a;
-logic [ 8-1 : 0]    fft_peak_state_b;
 logic [ 16-1: 0]    fft_peak_index_up_a;
 logic [ 16-1: 0]    fft_peak_index_down_a;
 logic [ 16-1: 0]    fft_peak_index_up_b;
@@ -613,7 +611,6 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .fft_peak_ready (fft_peak_ready_a),
    .fft_count (fft_count_a),
    .fft_sum (fft_sum_a),
-   .fft_peak_state (fft_peak_state_a),
    .fft_peak_index_up (fft_peak_index_up_a[FSZ-1:0]),
    .fft_peak_index_down (fft_peak_index_down_a[FSZ-1:0]),
    .fft_peak_value_up (fft_peak_up_a),
@@ -667,7 +664,6 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .fft_peak_ready (fft_peak_ready_b),
    .fft_count (fft_count_b),
    .fft_sum (fft_sum_b),
-   .fft_peak_state (fft_peak_state_b),
    .fft_peak_index_up (fft_peak_index_up_b[FSZ-1:0]),
    .fft_peak_index_down (fft_peak_index_down_b[FSZ-1:0]),
    .fft_peak_value_up (fft_peak_up_b),
@@ -1390,7 +1386,6 @@ end else begin
      20'h0006C : begin sys_ack <= sys_en;          sys_rdata <= fft_state                           ; end
      20'h00070 : begin sys_ack <= sys_en;          sys_rdata <= fft_we_cnt[0]                       ; end
      20'h00074 : begin sys_ack <= sys_en;          sys_rdata <= fft_scan_frame_cnt                  ; end
-     20'h00078 : begin sys_ack <= sys_en;          sys_rdata <= {fft_peak_state_b, fft_peak_state_a}; end
      20'h0007C : begin sys_ack <= sys_en;          sys_rdata <= {fft_peak_index_down_b, fft_peak_index_up_b}; end
      20'h00080 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_up_b                       ; end
      20'h00084 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_down_b                     ; end
