@@ -72,7 +72,7 @@ logic [ HSZ-1:0] fft_index_q[0:(1<<QSZ)-1];
 logic [ HSZ-1:0] fft_hist_index;
 logic [ HSZ-1:0] prev_hist_index;
 logic [ QSZ-1:0] index_wp;
-logic [ QSZ-1:0] index_wp_plus_one = index_wp + 1;
+logic [ QSZ-1:0] index_wp_plus_one;
 logic [ QSZ-1:0] index_rp;
 
 logic [ASZ-1: 0] fft_queue[0:(1<<QSZ)-1];
@@ -80,7 +80,7 @@ logic [ASZ-1: 0] fft_queue[0:(1<<QSZ)-1];
 logic [ASZ-1: 0] fft_last_data;
 logic            fft_inited;
 logic [ASZ-1: 0] fft_data;
-logic [QSZ-1: 0] fft_q_wp_plus_one = fft_q_wp + 1;
+logic [QSZ-1: 0] fft_q_wp_plus_one;
 logic [QSZ-1: 0] fft_q_size = fft_q_wp - fft_q_rp;
 
 logic [ASZ-1: 0]    fft_data_i;
@@ -170,23 +170,25 @@ end
 
 logic          fft_conf_dvalid;
 logic          rstn_i = fft_rstn_i && !fft_conf_dvalid;
-logic [ 5-1:0] fft_nfft = fft_conf_data_i[5-1:0];
-logic [32-1:0] fft_length2;
+logic [16-1:0] fft_conf_data;
+logic [ 5-1:0] fft_nfft_i = fft_conf_data_i[5-1:0];
+logic [ 5-1:0] fft_nfft = fft_conf_data[5-1:0];
+logic [32-1:0] fft_length2, fft_length_plus_one;
 logic          up_toggle = fft_length2 > fft_length;
 
 // Only allow one-time re-configuration after reset to avoid synchronization issue
 always @(posedge clk_i)
 if (fft_rstn_i == 1'b0) begin
+    fft_conf_data <= fft_conf_data_i;
     fft_conf_dvalid <= 1;
-    fft_length <= 2**fft_nfft;
+    fft_length <= 2**fft_nfft_i;
+    fft_length_plus_one = 2**fft_nfft_i + 1;
     // We need 2x amount of samples, one for Fup and one for Fdown
-    if (fft_nfft < RSZ-1)
-        fft_length2 <= 2**(fft_nfft+1);
+    if (fft_nfft_i < RSZ-1)
+        fft_length2 <= 2**(fft_nfft_i+1);
     else
-        fft_length2 <= 2**fft_nfft;
-    padding_up <= 2**fft_nfft - fft_acq_up;
-    padding_down <= 2**fft_nfft - fft_acq_down;
-end else if (fft_conf_dvalid && fft_conf_rdy) begin
+        fft_length2 <= 2**fft_nfft_i;
+end else if (fft_conf_rdy) begin
     fft_conf_dvalid <= 0;
 end
 
@@ -199,6 +201,7 @@ always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
     fft_we_cnt <= 0;
     fft_q_wp <= 0;
+    fft_q_wp_plus_one <= 1;
     fft_q_rp <= 0;
     fft_done <= 1;
     up_in <= 1;
@@ -206,7 +209,8 @@ end else begin
     if (dvalid_i) begin
         if (enable_i) begin
             fft_queue[fft_q_wp] <= data_i;
-            fft_q_wp <= fft_q_wp + 1;
+            fft_q_wp <= fft_q_wp_plus_one;
+            fft_q_wp_plus_one <= fft_q_wp_plus_one + 1;
             fft_last_data <= data_i;
         end else if (!fft_inited) begin
             fft_last_data <= data_i;
@@ -218,21 +222,23 @@ end else begin
         fft_q_rp <= fft_q_wp;
         fft_q_rp_save <= fft_q_wp;
         fft_we_cnt <= fft_length2;
+        padding_up <= 2**fft_nfft - fft_acq_up;
+        padding_down <= 2**fft_nfft - fft_acq_down;
     end else if ((padding_cnt > 0 || fft_q_size > 0) && fft_we_cnt > 0 && (fft_we_cnt > fft_length2 || fft_saxi_rdy)) begin
         fft_data_i <= fft_q_size > 0 ? fft_queue[fft_q_rp] : fft_last_data;
         if (padding_cnt == 0)
             fft_q_rp <= fft_q_rp + 1;
-        else if (enable_i && dvalid_i && fft_q_wp + 1 == fft_q_rp) begin
+        else if (enable_i && dvalid_i && fft_q_wp_plus_one == fft_q_rp) begin
             overflow_cnt <= overflow_cnt + 1;
             fft_q_rp <= fft_q_rp + 1;
         end else if (up_in)
             padding_up <= padding_up - 1;
         else
             padding_down <= padding_down - 1;
-        if (fft_we_cnt == 1 || fft_we_cnt == fft_length+1)
+        if (fft_we_cnt == 1 || fft_we_cnt == fft_length_plus_one)
             up_in <= up_in + up_toggle;
         fft_we_cnt <= fft_we_cnt - 1;
-    end else if (enable_i && dvalid_i && fft_q_wp + 1 == fft_q_rp) begin
+    end else if (enable_i && dvalid_i && fft_q_wp_plus_one == fft_q_rp) begin
         // overflow
         overflow_cnt <= overflow_cnt + 1;
         fft_q_rp <= fft_q_rp + 1;
@@ -246,7 +252,7 @@ end else begin
         input_cnt <= input_cnt + 1;
 
     fft_done <= fft_we_cnt==0;
-    fft_saxi_last <= fft_we_cnt == 1 || fft_we_cnt == fft_length+1;
+    fft_saxi_last <= fft_we_cnt == 1 || fft_we_cnt == fft_length_plus_one;
     fft_saxi_valid <= (padding_cnt > 0 || fft_q_size > 0) && fft_we_cnt > 0 && fft_we_cnt <= fft_length2;
 end
 
@@ -286,6 +292,7 @@ always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
     fft_peak_ready <= 2'b11;
     index_wp <= 0;
+    index_wp_plus_one <= 1;
     index_rp <= 0;
     peak_up <= 1;
 end else begin
@@ -297,6 +304,7 @@ end else begin
         if (fft_index_valid_i) begin
             fft_index_q[index_wp] <= fft_hist_index_i;
             index_wp <= index_wp_plus_one;
+            index_wp_plus_one <= index_wp_plus_one + 1;
         end else if ({fft_peak_ready[0], peak_ready} == 2'b01) begin
             if (index_rp == index_wp)
                 fft_hist_index <= fft_hist_index_i;
@@ -356,7 +364,7 @@ fft_wrapper fft_i (
    .M_AXIS_DOUT_0_tlast         (fft_maxi_last    ),
    .M_AXIS_DOUT_0_tvalid        (fft_maxi_valid   ),
    .M_AXIS_DOUT_0_tready        (fft_maxi_rdy     ),
-   .S_AXIS_CONFIG_0_tdata       (fft_conf_data_i  ),
+   .S_AXIS_CONFIG_0_tdata       (fft_conf_data    ),
    .S_AXIS_CONFIG_0_tready      (fft_conf_rdy     ),
    .S_AXIS_CONFIG_0_tvalid      (fft_conf_dvalid  ),
    .S_AXIS_DATA_0_tdata         ({16'b0, fft_data_ext, fft_data_i}),
