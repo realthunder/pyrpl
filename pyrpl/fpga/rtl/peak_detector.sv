@@ -42,48 +42,57 @@ module peak_detector #(
 //      (peak * N - mean*N)^2  >  k^2 * (N * N * mean_of_square - square_of_mean * N * N)
 //         (peak * N - sum)^2  >  k^2 * ( N * sum_of_square - square_of_sum)
 
-localparam S_IDLE = 0;
-localparam S_STREAM = 1;
-localparam S_DETECT1 = 2;
-localparam S_DETECT2 = S_DETECT1+1;
-localparam S_DETECT3 = S_DETECT2+1;
-localparam S_DETECT4 = S_DETECT3+1;
+typedef enum logic [8-1: 0] {
+    S_IDLE,
+    S_STREAM,
+    S_STEP1,
+    S_STEP2,
+    S_STEP3,
+    S_STEP4,
+    S_STEP5,
+    S_STEP6,
+    S_STEP7,
+    S_STEP8
+} peak_state_t;
 
-logic [8-1: 0] current_state;
+peak_state_t current_state;
 
-logic [SSZ+DSZ-1:0] sum; // sum of all data. Max value: 2^SSZ * 2^DSZ
+logic [SSZ+DSZ-1:0] sum, sum1; // sum of all data. Max value: 2^SSZ * 2^DSZ
 logic [SSZ:0] count;
 
-logic [DSZ-1:0] data_reg;
-logic [DSZ*2-1:0] data_sq_reg;
-logic [SSZ-1:0] data_index_reg;
-logic data_valid_reg;
+localparam PIPELINE = 2; // to meet the timing of data_sq
+logic [DSZ-1:0]     data_r      [0:PIPELINE];
+logic [DSZ*2-1:0]   data_sq     [0:PIPELINE];
+logic [SSZ-1:0]     data_index_r[0:PIPELINE];
+logic               data_valid_r[0:PIPELINE];
+logic               data_last   [0:PIPELINE];
 
 // sum of square of each data
-logic [SSZ+DSZ*2-1:0] sum_sq;      // Max value: 2^SSZ * 2^DSZ * 2^DSZ
+logic [SSZ+DSZ*2-1:0] sum_sq, sum_sq1;      // Max value: 2^SSZ * 2^DSZ * 2^DSZ
 
 // square of sum
-logic [(SSZ+DSZ)*2-1:0] S_sq;
+logic [(SSZ+DSZ)*2-1:0] S_sq, S_sq_tmp;
 // N * sum_of_square
-logic [(SSZ+DSZ)*2-1:0] N_S2;
+logic [(SSZ+DSZ)*2-1:0] N_S2, N_S2_tmp;
 
 // Scaled variance, i.e. N^2 * Variance = (N * sum_of_squrae - square_of_sum)
-logic [(SSZ+DSZ)*2-1:0] V_scaled;
+logic [(SSZ+DSZ)*2-1:0] V_scaled, V_scaled_tmp;
 
 // peak * N
-logic [SSZ+DSZ-1:0] scaled_peak;
+logic [SSZ+DSZ-1:0] scaled_peak, scaled_peak_tmp;
 // peak2 * N
-logic [SSZ+DSZ-1:0] scaled_peak2; 
+logic [SSZ+DSZ-1:0] scaled_peak2, scaled_peak2_tmp; 
 
 // scaled_peak - sum
-logic [SSZ+DSZ-1:0] scaled_diff;
+logic [SSZ+DSZ-1:0] scaled_diff, scaled_diff_tmp;
 // scaled_peak2 - sum
-logic [SSZ+DSZ-1:0] scaled_diff2;; 
+logic [SSZ+DSZ-1:0] scaled_diff2, scaled_diff2_tmp; 
 
-logic [(SSZ+DSZ)*2-1:0] scaled_diff_sq; // scaled_diff ^ 2
-logic [(SSZ+DSZ)*2-1:0] scaled_diff2_sq; // scaled_diff2 ^2
+logic [(SSZ+DSZ)*2-1:0] scaled_diff_sq, scaled_diff_sq_tmp; // scaled_diff ^ 2
+logic [(SSZ+DSZ)*2-1:0] scaled_diff2_sq, scaled_diff2_sq_tmp; // scaled_diff2 ^2
 
-logic [(SSZ+DSZ)*2-1:0] threshold;
+logic [16-1:0] k_sq;
+logic [(SSZ+DSZ)*2-1:0] threshold, threshold_tmp;
 
 assign ready = current_state==S_IDLE;
 
@@ -91,17 +100,33 @@ assign state = current_state;
 
 assign maxi_rdy = current_state==S_STREAM;
 
+logic [1:0] rst;
 always @(posedge clk)
-if (resetn == 0) begin
+    if (!resetn)
+        rst <= 0;
+    else
+        rst <= {rst[0], 1'b1};
+
+integer i;
+
+always @(posedge clk)
+if (!rst[1]) begin
     current_state <= S_IDLE;
 end else begin
-    if (current_state == S_IDLE) begin
-        if (maxi_valid) begin
-            data_reg <= data_in;
-            data_sq_reg <= data_in * data_in;
-            data_index_reg <= data_index;
-            data_valid_reg <= data_valid;
 
+    data_sq[0] <= data_r[0] * data_r[0];
+    data_r[0] <= data_in;
+    data_valid_r[0] <= data_valid & maxi_valid;
+    data_index_r[0] <= data_index;
+    data_last[0] <= maxi_last;
+
+    case (current_state)
+    S_IDLE:
+        if (maxi_valid) begin
+            for (i=0;i<PIPELINE;i+=1) begin
+                data_valid_r[i+1] <= 0;
+                data_last[i+1] <= 0;
+            end
             peak_idx <= 0;
             peak2_idx <= 0;
             peak <= 0;
@@ -111,68 +136,91 @@ end else begin
             sum_sq <= 0;
             current_state <= S_STREAM;
         end
-    end else if (current_state == S_STREAM) begin
-        if (maxi_valid) begin
-            data_reg <= data_in;
-            data_sq_reg <= data_in * data_in;
-            data_index_reg <= data_index;
-            data_valid_reg <= data_valid;
 
-            if (maxi_last)
-                current_state <= S_DETECT1;
-        end else begin
-            data_valid_reg <= 0;
+    S_STREAM: begin
+        for (i=0;i<PIPELINE;i+=1) begin
+            data_r[i+1] <= data_r[i];
+            data_sq[i+1] <= data_sq[i];
+            data_valid_r[i+1] <= data_valid_r[i];
+            data_index_r[i+1] <= data_index_r[i];
+            data_last[i+1] <= data_last[i];
         end
-        if (data_valid_reg) begin
-            if (peak <= data_reg) begin
+
+        if (data_valid_r[PIPELINE]) begin
+            if (peak <= data_r[PIPELINE]) begin
                 peak2 <= peak;
                 peak2_idx <= peak_idx;
-                peak <= data_reg;
-                peak_idx <= data_index_reg;
-            end else if (peak2 <= data_reg) begin
-                peak2 <= data_reg;
-                peak2_idx <= data_index_reg;
+                peak <= data_r[PIPELINE];
+                peak_idx <= data_index_r[PIPELINE];
+            end else if (peak2 <= data_r[PIPELINE]) begin
+                peak2 <= data_r[PIPELINE];
+                peak2_idx <= data_index_r[PIPELINE];
             end
-            sum <= sum + data_reg;
-            sum_sq <= sum_sq + data_sq_reg;
+            sum <= sum + data_r[PIPELINE];
+            sum_sq <= sum_sq + data_sq[PIPELINE-1];
             count <= count + 1;
         end
 
-    end else if (current_state >= S_DETECT1 && current_state < S_DETECT2) begin
-        S_sq <= sum * sum; // S^2
-        N_S2 <= count * sum_sq; // N * S2
+        if (data_last[PIPELINE])
+            current_state <= S_STEP1;
 
-        scaled_peak <= peak * count;
-        scaled_peak2 <= peak2 * count;
+    end S_STEP1: begin
+        sum1 <= sum;
+        sum_sq1 <= sum_sq;
 
-        current_state <= current_state + 1;
+        current_state <= S_STEP2;
+    end S_STEP2: begin
+        S_sq_tmp <= sum1 * sum1; // S^2
+        N_S2_tmp <= count * sum_sq1; // N * S2
+        scaled_peak_tmp <= peak * count;
+        scaled_peak2_tmp <= peak2 * count;
 
-    end else if (current_state >= S_DETECT2 && current_state < S_DETECT3) begin
+        current_state <= S_STEP3;
+    end S_STEP3: begin
+        S_sq <= S_sq_tmp;
+        N_S2 <= N_S2_tmp;
+        scaled_peak <= scaled_peak_tmp;
+        scaled_peak2 <= scaled_peak2_tmp;
+
+        current_state <= S_STEP4;
+    end S_STEP4: begin
 
         // TODO: do we need to worry about signess?
-        scaled_diff <= scaled_peak - sum;
-        scaled_diff2 <= scaled_peak2 - sum;
-        V_scaled <= N_S2 - S_sq;
+        scaled_diff_tmp <= scaled_peak - sum1;
+        scaled_diff2_tmp <= scaled_peak2 - sum1;
+        V_scaled_tmp <= N_S2 - S_sq;
 
-        current_state <= current_state + 1;
+        current_state <= S_STEP5;
+    end S_STEP5: begin
+        scaled_diff <= scaled_diff_tmp;
+        scaled_diff2 <= scaled_diff2_tmp;
+        V_scaled <= V_scaled_tmp;
+        k_sq <= threshold_k_sq;
 
-    end else if (current_state >= S_DETECT3 && current_state < S_DETECT4) begin
-        threshold <= threshold_k_sq * V_scaled;
-        scaled_diff_sq <= scaled_diff * scaled_diff;
-        scaled_diff2_sq <= scaled_diff2 * scaled_diff2;
+        current_state <= S_STEP6;
+    end S_STEP6: begin
+        threshold_tmp <= k_sq * V_scaled;
+        scaled_diff_sq_tmp <= scaled_diff * scaled_diff;
+        scaled_diff2_sq_tmp <= scaled_diff2 * scaled_diff2;
 
-        current_state <= current_state + 1;
+        current_state <= S_STEP7;
+    end S_STEP7: begin
+        threshold <= threshold_tmp;
+        scaled_diff_sq <= scaled_diff_sq_tmp;
+        scaled_diff2_sq <= scaled_diff2_sq_tmp;
 
-    end else if (current_state == S_DETECT4) begin
+        current_state <= S_STEP8;
+    end S_STEP8: begin
         if (scaled_diff_sq < threshold) begin
             peak_idx <= 0;
             peak2_idx <= 0;
         end else if (scaled_diff2_sq < threshold)
             peak2_idx <= 0;
-        sum_o <= sum;
+        sum_o <= sum1;
         count_o <= count;
         current_state <= S_IDLE;
     end
+    endcase
 end
 
 endmodule

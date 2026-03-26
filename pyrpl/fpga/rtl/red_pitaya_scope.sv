@@ -388,13 +388,13 @@ end
 logic               fft_enable;
 logic               fft_trig_sync;
 
-typedef enum logic [2:0] {
-    S_IDLE  = 0,
-    S_DELAY = 1,
-    S_WAIT1 = 2,
-    S_FFT_UP = 3,
-    S_WAIT2 = 4,
-    S_FFT_DOWN = 5
+typedef enum {
+    S_IDLE,
+    S_DELAY,
+    S_WAIT1,
+    S_FFT_UP,
+    S_WAIT2,
+    S_FFT_DOWN
 } fft_state_t;
 
 fft_state_t         fft_state;

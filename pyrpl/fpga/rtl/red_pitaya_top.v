@@ -289,7 +289,8 @@ reg                   pwm_rstn;
 
 // ADC signals
 wire                  adc_clk;
-reg                   adc_rstn;
+reg                   adc_rstn_i;
+wire                  adc_rstn;
 reg          [14-1:0] adc_dat_a, adc_dat_b;
 wire  signed [14-1:0] adc_a    , adc_b    ;
 
@@ -342,7 +343,9 @@ BUFG bufg_pwm_clk    (.O (pwm_clk   ), .I (pll_pwm_clk   ));
 
 // ADC reset (active low) 
 always @(posedge adc_clk)
-adc_rstn <=  frstn[0] &  pll_locked;
+adc_rstn_i <=  frstn[0] &  pll_locked;
+
+BUFG bufg_rstn    (.O (adc_rstn   ), .I (adc_rstn_i   ));
 
 // DAC reset (active high)
 always @(posedge dac_clk_1x)
