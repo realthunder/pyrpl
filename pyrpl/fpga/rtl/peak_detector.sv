@@ -44,72 +44,71 @@ module peak_detector #(
 typedef enum {
     S_IDLE,
     S_STREAM,
-    S_STEP1,
-    S_STEP2,
-    S_STEP3,
-    S_STEP4,
-    S_STEP5,
-    S_STEP6,
-    S_STEP7,
-    S_STEP8
+    S_COMPUTE
 } peak_state_t;
 
 (* fsm_encoding = "one_hot" *) peak_state_t current_state;
 
-logic [SSZ+DSZ-1:0] sum, sum1; // sum of all data. Max value: 2^SSZ * 2^DSZ
-logic [SSZ:0] count;
+localparam PL1 = 2; // to meet the timing of data_sq
 
-localparam PIPELINE = 2; // to meet the timing of data_sq
-logic [DSZ-1:0]     data_r      [0:PIPELINE];
-logic [DSZ*2-1:0]   data_sq     [0:PIPELINE];
-logic [SSZ-1:0]     data_index_r[0:PIPELINE];
-logic               data_valid_r[0:PIPELINE];
-logic               data_last   [0:PIPELINE];
+logic [DSZ-1:0]     data_r      [0:PL1];
+logic [DSZ*2-1:0]   data_sq     [0:PL1];
+logic [SSZ-1:0]     data_index_r[0:PL1];
+logic               data_valid_r[0:PL1];
+logic               data_last   [0:PL1];
+
+localparam PL2 = 2; // to meet the timing of routing to DSP input register
+
+logic [DSZ-1:0] peak_r[0:PL2];
+assign peak = peak_r[0];
+
+logic [SSZ+DSZ-1:0] sum[0:PL2]; // sum of all data. Max value: 2^SSZ * 2^DSZ
+logic [SSZ:0] count[0:PL2];
 
 // sum of square of each data
-logic [SSZ+DSZ*2-1:0] sum_sq, sum_sq1;      // Max value: 2^SSZ * 2^DSZ * 2^DSZ
+logic [SSZ+DSZ*2-1:0] sum_sq[0:PL2];      // Max value: 2^SSZ * 2^DSZ * 2^DSZ
 
 // square of sum
-logic [(SSZ+DSZ)*2-1:0] S_sq, S_sq_tmp;
+logic [(SSZ+DSZ)*2-1:0] S_sq[0:PL2];
 // N * sum_of_square
-logic [(SSZ+DSZ)*2-1:0] N_S2, N_S2_tmp;
+logic [(SSZ+DSZ)*2-1:0] N_S2[0:PL2];
 
 // Scaled variance, i.e. N^2 * Variance = (N * sum_of_squrae - square_of_sum)
-logic [(SSZ+DSZ)*2-1:0] V_scaled, V_scaled_tmp;
+logic [(SSZ+DSZ)*2-1:0] V_scaled[0:PL2];
 
 // peak * N
-logic [SSZ+DSZ-1:0] scaled_peak, scaled_peak_tmp;
-// peak2 * N
-logic [SSZ+DSZ-1:0] scaled_peak2, scaled_peak2_tmp; 
+logic [SSZ+DSZ-1:0] scaled_peak[0:PL2];
 
 // scaled_peak - sum
-logic [SSZ+DSZ-1:0] scaled_diff, scaled_diff_tmp;
-// scaled_peak2 - sum
-logic [SSZ+DSZ-1:0] scaled_diff2, scaled_diff2_tmp; 
+logic [SSZ+DSZ-1:0] scaled_diff[0:PL2];
 
-logic [(SSZ+DSZ)*2-1:0] scaled_diff_sq, scaled_diff_sq_tmp; // scaled_diff ^ 2
-logic [(SSZ+DSZ)*2-1:0] scaled_diff2_sq, scaled_diff2_sq_tmp; // scaled_diff2 ^2
+logic [(SSZ+DSZ)*2-1:0] scaled_diff_sq[0:PL2]; // scaled_diff ^ 2
 
 logic [16-1:0] k_sq;
-logic [(SSZ+DSZ)*2-1:0] threshold, threshold_tmp;
+logic [(SSZ+DSZ)*2-1:0] threshold[0:PL2];
 
 assign ready = current_state==S_IDLE;
 
 assign state = current_state;
 
-logic [1:0] rst;
-always @(posedge clk)
+assign maxi_rdy = current_state == S_STREAM;
+
+logic [1:0] rstn;
+always @(posedge clk) begin
     if (!resetn)
-        rst <= 0;
+        rstn <= 0;
     else
-        rst <= {rst[0], 1'b1};
+        rstn <= {rstn[0], 1'b1};
+end
 
 integer i;
 
+logic [8-1:0] step_cnt;
+
 always @(posedge clk)
-if (!rst[1]) begin
+if (!rstn[1]) begin
     current_state <= S_IDLE;
-    maxi_rdy <= 0;
+    // maxi_rdy <= 0;
 
 end else begin
 
@@ -119,26 +118,62 @@ end else begin
     data_index_r[0] <= data_index;
     data_last[0] <= maxi_last;
 
+    for (i=0; i<PL2; i+=1) begin
+        count[i+1] <= count[i];
+        sum[i+1] <= sum[i];
+        sum_sq[i+1] <= sum_sq[i];
+        S_sq[i+1] <= S_sq[i];
+        N_S2[i+1] <= N_S2[i];
+        V_scaled[i+1] <= V_scaled[i];
+        scaled_peak[i+1] <= scaled_peak[i];
+        scaled_diff[i+1] <= scaled_diff[i];
+        scaled_diff_sq[i+1] <= scaled_diff_sq[i];
+        threshold[i+1] <= threshold[i];
+        peak_r[i+1] <= peak_r[i];
+    end
+
+    // PL2 cycles for inputs to propagate (to meet routing timing)
+
+    // 1 cycle computation
+    S_sq[0] <= sum[PL2] * sum[PL2]; // S^2
+    N_S2[0] <= count[PL2] * sum_sq[PL2]; // N * S2
+    scaled_peak[0] <= peak_r[PL2] * count[PL2];
+
+    // PL2 cycles for results to propagate
+
+    // 1 cycle
+    // TODO: do we need to worry about signess?
+    scaled_diff[0] <= scaled_peak[PL2] - sum[PL2];
+    V_scaled[0] <= N_S2[PL2] - S_sq[PL2];
+
+    // PL2 cycles for results
+
+    // 1 cycle
+    threshold[0] <= k_sq * V_scaled[PL2];
+    scaled_diff_sq[0] <= scaled_diff[PL2] * scaled_diff[PL2];
+
+    // PL2 cycles for results
+    //
+    // So total = 4*PL2 + 3
+
     case (current_state)
     S_IDLE:
         if (maxi_valid) begin
-            for (i=0;i<PIPELINE;i+=1) begin
+            for (i=0;i<PL1;i+=1) begin
                 data_valid_r[i+1] <= 0;
                 data_last[i+1] <= 0;
             end
             peak_idx <= 0;
-            peak2_idx <= 0;
-            peak <= 0;
-            peak2 <= 0;
-            count <= 0;
-            sum <= 0;
-            sum_sq <= 0;
+            peak_r[0] <= 0;
+            count[0] <= 0;
+            sum[0] <= 0;
+            sum_sq[0] <= 0;
             current_state <= S_STREAM;
-            maxi_rdy <= 1;
+            // maxi_rdy <= 1;
         end
 
     S_STREAM: begin
-        for (i=0;i<PIPELINE;i+=1) begin
+        for (i=0;i<PL1;i+=1) begin
             data_r[i+1] <= data_r[i];
             data_sq[i+1] <= data_sq[i];
             data_valid_r[i+1] <= data_valid_r[i];
@@ -146,82 +181,34 @@ end else begin
             data_last[i+1] <= data_last[i];
         end
 
-        if (data_valid_r[PIPELINE]) begin
-            if (peak <= data_r[PIPELINE]) begin
-                peak2 <= peak;
-                peak2_idx <= peak_idx;
-                peak <= data_r[PIPELINE];
-                peak_idx <= data_index_r[PIPELINE];
-            end else if (peak2 <= data_r[PIPELINE]) begin
-                peak2 <= data_r[PIPELINE];
-                peak2_idx <= data_index_r[PIPELINE];
+        if (data_valid_r[PL1]) begin
+            if (peak_r[0] <= data_r[PL1]) begin
+                peak_r[0] <= data_r[PL1];
+                peak_idx <= data_index_r[PL1];
             end
-            sum <= sum + data_r[PIPELINE];
-            sum_sq <= sum_sq + data_sq[PIPELINE-1];
-            count <= count + 1;
+            sum[0] <= sum[0] + data_r[PL1];
+            sum_sq[0] <= sum_sq[0] + data_sq[PL1-1];
+            count[0] <= count[0] + 1;
         end
 
-        if (data_last[PIPELINE]) begin
-            current_state <= S_STEP1;
-            maxi_rdy <= 0;
+        // if (maxi_last)
+        //     maxi_rdy <= 0;
+
+        if (data_last[PL1]) begin
+            current_state <= S_COMPUTE;
+            step_cnt <= 0;
         end
 
-    end S_STEP1: begin
-        sum1 <= sum;
-        sum_sq1 <= sum_sq;
-
-        current_state <= S_STEP2;
-    end S_STEP2: begin
-        S_sq_tmp <= sum1 * sum1; // S^2
-        N_S2_tmp <= count * sum_sq1; // N * S2
-        scaled_peak_tmp <= peak * count;
-        scaled_peak2_tmp <= peak2 * count;
-
-        current_state <= S_STEP3;
-    end S_STEP3: begin
-        S_sq <= S_sq_tmp;
-        N_S2 <= N_S2_tmp;
-        scaled_peak <= scaled_peak_tmp;
-        scaled_peak2 <= scaled_peak2_tmp;
-
-        current_state <= S_STEP4;
-    end S_STEP4: begin
-
-        // TODO: do we need to worry about signess?
-        scaled_diff_tmp <= scaled_peak - sum1;
-        scaled_diff2_tmp <= scaled_peak2 - sum1;
-        V_scaled_tmp <= N_S2 - S_sq;
-
-        current_state <= S_STEP5;
-    end S_STEP5: begin
-        scaled_diff <= scaled_diff_tmp;
-        scaled_diff2 <= scaled_diff2_tmp;
-        V_scaled <= V_scaled_tmp;
-        k_sq <= threshold_k_sq;
-
-        current_state <= S_STEP6;
-    end S_STEP6: begin
-        threshold_tmp <= k_sq * V_scaled;
-        scaled_diff_sq_tmp <= scaled_diff * scaled_diff;
-        scaled_diff2_sq_tmp <= scaled_diff2 * scaled_diff2;
-
-        current_state <= S_STEP7;
-    end S_STEP7: begin
-        threshold <= threshold_tmp;
-        scaled_diff_sq <= scaled_diff_sq_tmp;
-        scaled_diff2_sq <= scaled_diff2_sq_tmp;
-
-        current_state <= S_STEP8;
-    end S_STEP8: begin
-        if (scaled_diff_sq < threshold) begin
-            peak_idx <= 0;
-            peak2_idx <= 0;
-        end else if (scaled_diff2_sq < threshold)
-            peak2_idx <= 0;
-        sum_o <= sum1;
-        count_o <= count;
-        current_state <= S_IDLE;
-    end
+    end S_COMPUTE:
+        if (step_cnt != 4*PL2+3) 
+            step_cnt <= step_cnt + 1;
+        else begin
+            if (scaled_diff_sq[PL2] < threshold[PL2])
+                peak_idx <= 0;
+            sum_o <= sum[PL2];
+            count_o <= count[PL2];
+            current_state <= S_IDLE;
+        end
     endcase
 end
 
