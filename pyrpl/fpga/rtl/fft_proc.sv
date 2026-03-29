@@ -101,16 +101,14 @@ logic [ DSZ-1: 0]   fft_peak2;
 logic [ FSZ+DSZ-1:0]_fft_sum;
 logic [ FSZ: 0]     _fft_count;
 logic [ FSZ-1: 0]   fft_peak_rp;
-logic [ FSZ-1: 0]   fft_peak_data_index;
 logic               fft_peak_data_valid;
 logic [ DSZ-1: 0]   fft_peak_data;
-logic [ DSZ-1: 0]   fft_peak_data_in;
 logic [ DSZ-1: 0]   fft_peak_data_abs;
 
 logic [ 32-1:  0]   fft_maxi_phase;
 logic [ 32-1:  0]   fft_maxi_data;
 logic               fft_maxi_valid;
-logic               fft_maxi_rdy0, fft_maxi_rdy1;
+logic               fft_maxi_rdy;
 logic               fft_maxi_last;
 logic [ FSZ-1: 0]   fft_wp;
 // bit reverse fft_wp, because we are using FFT ip core bit reversed option to
@@ -282,7 +280,7 @@ if (rstn_i == 1'b0) begin
     fft_wp_index <= 0;
     fft_wp_last <= 0;
     up_out <= 1;
-end else if (fft_maxi_valid && fft_maxi_rdy1) begin
+end else if (fft_maxi_valid && fft_maxi_rdy) begin
     if (up_out)
         fft_buf_up[fft_wp_index] <= fft_maxi_data[DSZ-1:0];
     else
@@ -301,8 +299,7 @@ end
 assign fft_peak_rp = fft_wp_index;
 assign fft_peak_data = fft_maxi_data[DSZ-1:0];
 assign fft_peak_data_abs = fft_peak_data[DSZ-1] ? -fft_peak_data : fft_peak_data;
-logic fft_peak_maxi_last;
-logic fft_peak_maxi_valid;
+assign fft_peak_data_valid = fft_peak_rp>=fft_peak_start && fft_peak_rp<fft_length[FSZ:1] && fft_peak_data_abs>fft_peak_minimum;
 
 logic peak_up;
 logic peak_ready;
@@ -314,20 +311,7 @@ if (rstn_i == 1'b0) begin
     index_wp_plus_one <= 1;
     index_rp <= 0;
     peak_up <= 1;
-    fft_peak_data_valid <= 0;
-    fft_peak_maxi_valid <= 0;
-    fft_peak_maxi_last <= 0;
-    fft_maxi_rdy0 <= 0;
-    fft_maxi_rdy1 <= 0;
 end else begin
-    fft_maxi_rdy0 <= fft_peak_maxi_rdy;
-    fft_maxi_rdy1 <= fft_maxi_rdy0;
-    fft_peak_maxi_last <= fft_maxi_last;
-    fft_peak_maxi_valid <= fft_maxi_valid;
-    fft_peak_data_valid <= fft_peak_rp>=fft_peak_start && fft_peak_rp<fft_length[FSZ:1] && fft_peak_data_abs>fft_peak_minimum;
-    fft_peak_data_in <= fft_peak_data_abs;
-    fft_peak_data_index <= fft_peak_rp;
-
     if (fft_index_flush_i) begin
         index_wp <= 0;
         index_rp <= 0;
@@ -375,11 +359,11 @@ peak_detector #(.SSZ(FSZ), .DSZ(DSZ)) peak_detector_i (
     .clk            (clk_i),
     .resetn         (rstn_i),
     .data_valid     (fft_peak_data_valid),
-    .data_in        (fft_peak_data_in),
-    .data_index     (fft_peak_data_index),
-    .maxi_rdy       (fft_peak_maxi_rdy),
-    .maxi_valid     (fft_peak_maxi_valid),
-    .maxi_last      (fft_peak_maxi_last),
+    .data_in        (fft_peak_data_abs),
+    .data_index     (fft_peak_rp),
+    .maxi_rdy       (fft_maxi_rdy),
+    .maxi_valid     (fft_maxi_valid),
+    .maxi_last      (fft_maxi_last),
     .threshold_k_sq (fft_threshold_k),
     .peak_idx       (fft_peak_idx),
     .peak           (fft_peak),
@@ -394,7 +378,7 @@ fft_wrapper fft_i (
    .M_AXIS_DOUT_0_tdata         ({fft_maxi_phase, fft_maxi_data}),
    .M_AXIS_DOUT_0_tlast         (fft_maxi_last    ),
    .M_AXIS_DOUT_0_tvalid        (fft_maxi_valid   ),
-   .M_AXIS_DOUT_0_tready        (fft_maxi_rdy1    ),
+   .M_AXIS_DOUT_0_tready        (fft_maxi_rdy     ),
    .S_AXIS_CONFIG_0_tdata       (fft_conf_data    ),
    .S_AXIS_CONFIG_0_tready      (fft_conf_rdy     ),
    .S_AXIS_CONFIG_0_tvalid      (fft_conf_dvalid  ),
