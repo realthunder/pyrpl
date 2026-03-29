@@ -91,8 +91,6 @@ assign ready = current_state==S_IDLE;
 
 assign state = current_state;
 
-assign maxi_rdy = current_state == S_STREAM;
-
 logic [1:0] rstn;
 always @(posedge clk) begin
     if (!resetn)
@@ -108,7 +106,7 @@ logic [8-1:0] step_cnt;
 always @(posedge clk)
 if (!rstn[1]) begin
     current_state <= S_IDLE;
-    // maxi_rdy <= 0;
+    maxi_rdy <= 0;
 
 end else begin
 
@@ -169,7 +167,7 @@ end else begin
             sum[0] <= 0;
             sum_sq[0] <= 0;
             current_state <= S_STREAM;
-            // maxi_rdy <= 1;
+            maxi_rdy <= 1;
         end
 
     S_STREAM: begin
@@ -191,8 +189,8 @@ end else begin
             count[0] <= count[0] + 1;
         end
 
-        // if (maxi_last)
-        //     maxi_rdy <= 0;
+        if (maxi_last)
+            maxi_rdy <= 0;
 
         if (data_last[PL1]) begin
             current_state <= S_COMPUTE;
