@@ -78,7 +78,7 @@ logic [ASZ-1: 0] fft_queue[0:(1<<QSZ)-1];
 // logic [ASZ-1: 0] fft_queue2[0:(1<<QSZ)-1];
 logic [ASZ-1: 0] fft_last_data;
 logic            fft_inited;
-logic [ASZ-1: 0] fft_data;
+logic [DSZ-1: 0] fft_data;
 logic [QSZ-1: 0] fft_q_wp_plus_one;
 logic [QSZ-1: 0] fft_q_size = fft_q_wp - fft_q_rp;
 
@@ -100,7 +100,7 @@ logic [ FSZ-1: 0]   fft_peak2_idx;
 logic [ DSZ-1: 0]   fft_peak2;
 logic [ FSZ+DSZ-1:0]_fft_sum;
 logic [ FSZ: 0]     _fft_count;
-logic [ FSZ-1: 0]   fft_peak_rp;
+logic [ FSZ-1: 0]   fft_peak_data_index;
 logic               fft_peak_data_valid;
 logic [ DSZ-1: 0]   fft_peak_data;
 logic [ DSZ-1: 0]   fft_peak_data_abs;
@@ -296,10 +296,9 @@ end else if (fft_maxi_valid && fft_maxi_rdy) begin
     end
 end
 
-assign fft_peak_rp = fft_wp_index;
-assign fft_peak_data = fft_maxi_data[DSZ-1:0];
-assign fft_peak_data_abs = fft_peak_data[DSZ-1] ? -fft_peak_data : fft_peak_data;
-assign fft_peak_data_valid = fft_peak_rp>=fft_peak_start && fft_peak_rp<fft_length[FSZ:1] && fft_peak_data_abs>fft_peak_minimum;
+assign fft_data = fft_maxi_data[DSZ-1:0];
+assign fft_data_abs = fft_data[DSZ-1] ? -fft_data : fft_data;
+assign fft_data_valid = fft_wp_index>=fft_peak_start && fft_wp_index<fft_length[FSZ:1] && fft_data_abs>fft_peak_minimum;
 
 logic peak_up;
 logic peak_ready;
@@ -355,15 +354,40 @@ end else begin
     fft_peak_ready <= {fft_peak_ready[0], peak_ready};
 end
 
+xpm_fifo_axis #(
+    .TDATA_WIDTH    (32),
+    .TUSER_WIDTH    (FSZ),
+    .FIFO_DEPTH     (16),
+    .USE_ADV_FEATURES(16'h0000),   // Standard mode
+    .FIFO_MEMORY_TYPE("distributed")
+) i_fft_fifo (
+    .s_aclk         (clk_i),
+    .s_aresetn      (rstn_i),
+    
+    // Slave side (From FFT)
+    .s_axis_tdata   ({{32-DSZ{1'b0}}, fft_data_abs}),
+    .s_axis_tuser   (fft_wp_index),
+    .s_axis_tvalid  (fft_maxi_valid & fft_data_valid),
+    .s_axis_tready  (fft_maxi_rdy),
+    .s_axis_tlast   (fft_maxi_last),
+
+    // Master side (To Peak Detector)
+    .m_axis_tdata   (fft_peak_data),
+    .m_axis_tuser   (fft_peak_rp),
+    .m_axis_tvalid  (fft_peak_maxi_valid),
+    .m_axis_tready  (fft_peak_maxi_ready),
+    .m_axis_tlast   (fft_peak_maxi_last)
+);
+
 peak_detector #(.SSZ(FSZ), .DSZ(DSZ)) peak_detector_i (
     .clk            (clk_i),
     .resetn         (rstn_i),
-    .data_valid     (fft_peak_data_valid),
-    .data_in        (fft_peak_data_abs),
-    .data_index     (fft_peak_rp),
-    .maxi_rdy       (fft_maxi_rdy),
-    .maxi_valid     (fft_maxi_valid),
-    .maxi_last      (fft_maxi_last),
+    .data_valid     (1),
+    .data_in        (fft_peak_data[DSZ-1:0]),
+    .data_index     (fft_peak_data_index),
+    .maxi_rdy       (fft_peak_maxi_ready),
+    .maxi_valid     (fft_peak_maxi_valid),
+    .maxi_last      (fft_peak_maxi_last),
     .threshold_k_sq (fft_threshold_k),
     .peak_idx       (fft_peak_idx),
     .peak           (fft_peak),
