@@ -65,6 +65,9 @@ assign peak = peak_r[0];
 logic [SSZ+DSZ-1:0] sum[0:PL2]; // sum of all data. Max value: 2^SSZ * 2^DSZ
 logic [SSZ:0] count[0:PL2];
 
+assign sum_o = sum[PL2];
+assign count_o = count[PL2];
+
 // sum of square of each data
 logic [SSZ+DSZ*2-1:0] sum_sq[0:PL2];      // Max value: 2^SSZ * 2^DSZ * 2^DSZ
 
@@ -203,8 +206,6 @@ end else begin
         else begin
             if (scaled_diff_sq[PL2] < threshold[PL2])
                 peak_idx <= 0;
-            sum_o <= sum[PL2];
-            count_o <= count[PL2];
             current_state <= S_IDLE;
         end
     endcase
