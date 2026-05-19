@@ -447,6 +447,9 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_wp_last = IntRegister(0x68, doc="FFT last write size")
 
+    fft_q_wp = IntRegister(0x170, doc="FFT queue write count")
+    fft_q_rp = IntRegister(0x174, doc="FFT queue read count")
+
     fft_state = IntRegister(0x6C, doc="FFT internal state")
 
     fft_we_cnt = IntRegister(0x70, doc="FFT write count")
