@@ -50,8 +50,6 @@ module fft_proc #(
 
   output logic [ QSZ-1:0] fft_q_wp,
   output logic [ QSZ-1:0] fft_q_rp,
-  output logic [ QSZ-1:0] fft_q_rp_save,
-  output logic [ ASZ-1:0] fft_q_rdata_o,
 
   input logic  [  16-1:0] fft_conf_data_i,
   output logic [  32-1:0] fft_length,
@@ -74,14 +72,8 @@ logic [ QSZ-1:0] index_wp;
 logic [ QSZ-1:0] index_wp_plus_one;
 logic [ QSZ-1:0] index_rp;
 
-logic [ASZ-1: 0] fft_queue[0:(1<<QSZ)-1];
-// logic [ASZ-1: 0] fft_queue2[0:(1<<QSZ)-1];
-logic [ASZ-1: 0] fft_last_data;
-logic            fft_inited;
 logic [DSZ-1: 0] fft_data;
 logic [DSZ-1: 0] fft_data_abs;
-logic [QSZ-1: 0] fft_q_wp_plus_one;
-logic [QSZ-1: 0] fft_q_size = fft_q_wp - fft_q_rp;
 
 logic [ASZ-1: 0]    fft_data_i;
 logic [16-ASZ-1:0]  fft_data_ext;
@@ -123,8 +115,6 @@ logic [ HSZ-1: 0]   fft_hist_raddr1;
 logic [ HSZ-1: 0]   fft_hist_raddr2;
 logic [ FSZ-1: 0]   fft_raddr1;
 logic [ FSZ-1: 0]   fft_raddr2;
-logic [ HSZ-1: 0]   fft_q_raddr1;
-logic [ HSZ-1: 0]   fft_q_raddr2;
 
 // sign extend the data for padding according to xfft requirement
 assign fft_data_ext = {16-ASZ{fft_data_i[ASZ-1]}};
@@ -139,10 +129,6 @@ always @(posedge clk_i) begin
    fft_hist_raddr2 <= fft_hist_raddr1;
    fft_hist_rdata_down_o <= fft_hist_down[fft_hist_raddr2];
    fft_hist_rdata_up_o <= fft_hist_up[fft_hist_raddr2];
-
-   // fft_q_raddr1 <= sys_addr[QSZ-1+2:2]  ;
-   // fft_q_raddr2 <= fft_q_raddr1;
-   // fft_q_rdata_o <= fft_queue2[fft_q_rp_save + fft_q_raddr2];
 end
 
 always @(posedge clk_i)
@@ -214,52 +200,62 @@ logic up_in;
 logic [ FSZ-1:0]    padding_up;
 logic [ FSZ-1:0]    padding_down;
 assign  padding_cnt = up_in ? padding_up : padding_down;
+logic triggered = trig_i && fft_done && up_in;
+
+logic [ ASZ-1:0]    fin_dout;
+logic fin_rd = fft_we_cnt > 0 && (fft_we_cnt > fft_length2 || fft_saxi_rdy);
+
+xpm_fifo_async #(
+    .FIFO_WRITE_DEPTH(1<<QSZ),
+    .WRITE_DATA_WIDTH(ASZ),
+    .READ_DATA_WIDTH (ASZ),
+    .RD_DATA_COUNT_WIDTH(QSZ),
+    .WR_DATA_COUNT_WIDTH(QSZ),
+    .FIFO_READ_LATENCY(0),
+    .READ_MODE       ("fwft")
+) fifo_in (
+    .rst             (!rstn_i || triggered),
+    .wr_clk          (clk_i),
+    .wr_en           (enable_i & dvalid_i),
+    // .wr_data_count   (fft_q_wp),
+    .din             (data_i),
+
+    .rd_clk          (clk_i),
+    .rd_en           (padding_cnt==0 && fin_rd),
+    // .rd_data_count   (fft_q_rp),
+    .dout            (fin_dout),
+
+    .empty           (fin_empty),
+    .full            (fin_full)
+);
 
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
     fft_we_cnt <= 0;
-    fft_q_wp <= 0;
-    fft_q_wp_plus_one <= 1;
-    fft_q_rp <= 0;
     fft_done <= 1;
     up_in <= 1;
 end else begin
-    if (dvalid_i) begin
-        if (enable_i) begin
-            fft_queue[fft_q_wp] <= data_i;
-            fft_q_wp <= fft_q_wp_plus_one;
-            fft_q_wp_plus_one <= fft_q_wp_plus_one + 1;
-            fft_last_data <= data_i;
-        end else if (!fft_inited) begin
-            fft_last_data <= data_i;
-        end
-        fft_inited <= 1;
-    end
 
-    if (trig_i && fft_done && up_in) begin
-        fft_q_rp <= fft_q_wp;
-        fft_q_rp_save <= fft_q_wp;
+    if (triggered) begin
         fft_we_cnt <= fft_length2;
         padding_up <= 2**fft_nfft - fft_acq_up;
         padding_down <= 2**fft_nfft - fft_acq_down;
-    end else if ((padding_cnt > 0 || fft_q_size > 0) && fft_we_cnt > 0 && (fft_we_cnt > fft_length2 || fft_saxi_rdy)) begin
-        fft_data_i <= fft_q_size > 0 ? fft_queue[fft_q_rp] : fft_last_data;
-        if (padding_cnt == 0)
-            fft_q_rp <= fft_q_rp + 1;
-        else if (enable_i && dvalid_i && fft_q_wp_plus_one == fft_q_rp) begin
-            overflow_cnt <= overflow_cnt + 1;
-            fft_q_rp <= fft_q_rp + 1;
-        end else if (up_in)
-            padding_up <= padding_up - 1;
-        else
-            padding_down <= padding_down - 1;
+    end else if ((padding_cnt > 0 || !fin_empty) && fin_rd) begin
+        fft_data_i <= fin_dout;
+        if (padding_cnt > 0) begin
+            if (fin_full)
+                overflow_cnt <= overflow_cnt + 1;
+            else if (up_in)
+                padding_up <= padding_up - 1;
+            else
+                padding_down <= padding_down - 1;
+        end
         if (fft_we_cnt == 1 || fft_we_cnt == fft_length_plus_one)
             up_in <= up_in + up_toggle;
         fft_we_cnt <= fft_we_cnt - 1;
-    end else if (enable_i && dvalid_i && fft_q_wp_plus_one == fft_q_rp) begin
+    end else if (fin_full) begin
         // overflow
         overflow_cnt <= overflow_cnt + 1;
-        fft_q_rp <= fft_q_rp + 1;
         if (up_in)
             padding_up <= padding_up + 1;
         else
@@ -271,7 +267,7 @@ end else begin
 
     fft_done <= fft_we_cnt==0;
     fft_saxi_last <= fft_we_cnt == 1 || fft_we_cnt == fft_length_plus_one;
-    fft_saxi_valid <= (padding_cnt > 0 || fft_q_size > 0) && fft_we_cnt > 0 && fft_we_cnt <= fft_length2;
+    fft_saxi_valid <= (padding_cnt > 0 || !fin_empty) && fft_we_cnt > 0 && fft_we_cnt <= fft_length2;
 end
 
 logic up_out;
@@ -361,7 +357,7 @@ xpm_fifo_axis #(
     .TUSER_WIDTH    (FSZ+1),
     .FIFO_DEPTH     (16),
     .USE_ADV_FEATURES(16'h0000)   // Standard mode
-) i_fft_fifo (
+) fifo_peak_in (
     .s_aclk         (clk_i),
     .s_aresetn      (rstn_i),
     

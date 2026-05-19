@@ -426,13 +426,6 @@ logic [ DSZ-1: 0]   fft_rdata_down_b;
 
 logic [ QSZ-1:0] fft_q_wp_a;
 logic [ QSZ-1:0] fft_q_rp_a;
-logic [ QSZ-1:0] fft_q_rp_save_a;
-logic [ ASZ-1:0] fft_q_rdata_a;
-logic [ QSZ-1:0] fft_q_wp_b;
-logic [ QSZ-1:0] fft_q_rp_b;
-logic [ QSZ-1:0] fft_q_rp_save_b;
-logic [ ASZ-1:0] fft_q_rdata_b;
-
 logic [ 32-1: 0]    fft_overflow_cnt;
 logic [ 16-1: 0]    fft_threshold_k;
 logic [ FSZ-1:0]    fft_peak_start;
@@ -621,9 +614,6 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
 
    .fft_q_wp (fft_q_wp_a),
    .fft_q_rp (fft_q_rp_a),
-   .fft_q_rp_save (fft_q_rp_save_a),
-   .fft_q_rdata_o (fft_q_rdata_a),
-
    .fft_conf_data_i (fft_conf_data),
    .fft_length (fft_length),
 
@@ -670,11 +660,6 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .fft_peak_value_down (fft_peak_down_b),
    // .fft_frame_cnt (fft_frame_cnt),
    .fft_we_cnt (fft_we_cnt[1]),
-
-   .fft_q_wp (fft_q_wp_b),
-   .fft_q_rp (fft_q_rp_b),
-   .fft_q_rp_save (fft_q_rp_save_b),
-   .fft_q_rdata_o (fft_q_rdata_b),
 
    .fft_conf_data_i (fft_conf_data)
 );
@@ -1434,11 +1419,11 @@ end else begin
 
      20'h00170 : begin sys_ack <= sys_en;          sys_rdata <= fft_q_wp_a                          ; end
      20'h00174 : begin sys_ack <= sys_en;          sys_rdata <= fft_q_rp_a                          ; end
-     20'h00178 : begin sys_ack <= sys_en;          sys_rdata <= fft_q_rp_save_a                     ; end
-     20'h0017C : begin sys_ack <= sys_en;          sys_rdata <= fft_q_wp_b                          ; end
-     20'h00180 : begin sys_ack <= sys_en;          sys_rdata <= fft_q_rp_b                          ; end
-     20'h00184 : begin sys_ack <= sys_en;          sys_rdata <= fft_q_rp_save_b                     ; end
-
+     // 20'h00178 : begin sys_ack <= sys_en;          sys_rdata <= fft_q_rp_save_a                     ; end
+     // 20'h0017C : begin sys_ack <= sys_en;          sys_rdata <= fft_q_wp_b                          ; end
+     // 20'h00180 : begin sys_ack <= sys_en;          sys_rdata <= fft_q_rp_b                          ; end
+     // 20'h00184 : begin sys_ack <= sys_en;          sys_rdata <= fft_q_rp_save_b                     ; end
+     //
      20'h00188 : begin sys_ack <= sys_en;          sys_rdata <= {{16-RSZ{1'b0}}, y_step, {16-RSZ{1'b0}}, x_step}; end
 
      20'h0018C : begin sys_ack <= sys_en;          sys_rdata <= scope_sig_dly                     ; end
@@ -1458,8 +1443,8 @@ end else begin
 
      // For debugging purpose
      20'h7???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_index_rdata                     ; end
-     20'h8???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_q_rdata_a                       ; end
-     20'h9???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_q_rdata_b                       ; end
+     // 20'h8???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_q_rdata_a                       ; end
+     // 20'h9???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_q_rdata_b                       ; end
      20'ha???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_index_rdata2                    ; end
 
        default : begin sys_ack <= sys_en;          sys_rdata <=  32'h0                              ; end
