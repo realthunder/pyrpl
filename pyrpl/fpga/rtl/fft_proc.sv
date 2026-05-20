@@ -80,9 +80,6 @@ logic               fft_saxi_valid;
 logic [ FSZ-1: 0]   fft_hist_up[0:(1<<HSZ)-1];
 logic [ FSZ-1: 0]   fft_hist_down[0:(1<<HSZ)-1];
 
-logic [ DSZ-1: 0]   fft_buf_up[0:(1<<FSZ)-1];
-logic [ DSZ-1: 0]   fft_buf_down[0:(1<<FSZ)-1];
-
 logic [ FSZ-1: 0]   fft_peak_idx;
 logic [ DSZ-1: 0]   fft_peak;
 logic [ FSZ-1: 0]   fft_peak2_idx;
@@ -109,18 +106,55 @@ logic [ FSZ-1: 0]   fft_wp_index;
 
 logic [ HSZ-1: 0]   fft_hist_raddr1;
 logic [ HSZ-1: 0]   fft_hist_raddr2;
-logic [ FSZ-1: 0]   fft_raddr1;
-logic [ FSZ-1: 0]   fft_raddr2;
 
 // sign extend the data for padding according to xfft requirement
 assign fft_data_ext = {16-ASZ{fft_data_i[ASZ-1]}};
 
-always @(posedge clk_i) begin
-   fft_raddr1 <= sys_addr[FSZ-1+3:3] ;
-   fft_raddr2 <= fft_raddr1;
-   fft_rdata_up_o <= fft_buf_up[fft_raddr2];
-   fft_rdata_down_o <= fft_buf_down[fft_raddr2];
+logic [ FSZ-1: 0]   buf_raddr = sys_addr[FSZ-1+3:3];
 
+xpm_memory_sdpram #(
+    .MEMORY_SIZE            ((1<<FSZ)*DSZ),
+    .ADDR_WIDTH_A           (FSZ),
+    .ADDR_WIDTH_B           (FSZ),
+    .CLOCKING_MODE          ("independent_clock"),
+    .WRITE_DATA_WIDTH_A     (DSZ),
+    .READ_DATA_WIDTH_B      (DSZ),
+    .BYTE_WRITE_WIDTH_A     (DSZ)
+) fft_buf_up (
+    .addra  (fft_wp_index),
+    .addrb  (buf_raddr),
+    .clka   (clk_i),
+    .clkb   (clk_i),
+    .dina   (fft_maxi_data[DSZ-1:0]),
+    .doutb  (fft_rdata_up_o),
+    .ena    (fft_maxi_valid && fft_maxi_rdy),
+    .wea    (up_out),
+    .rstb   (!rstn_i),
+    .enb    (1)
+);
+
+xpm_memory_sdpram #(
+    .MEMORY_SIZE            ((1<<FSZ)*DSZ),
+    .ADDR_WIDTH_A           (FSZ),
+    .ADDR_WIDTH_B           (FSZ),
+    .CLOCKING_MODE          ("independent_clock"),
+    .WRITE_DATA_WIDTH_A     (DSZ),
+    .READ_DATA_WIDTH_B      (DSZ),
+    .BYTE_WRITE_WIDTH_A     (DSZ)
+) fft_buf_down (
+    .addra  (fft_wp_index),
+    .addrb  (buf_raddr),
+    .clka   (clk_i),
+    .clkb   (clk_i),
+    .dina   (fft_maxi_data[DSZ-1:0]),
+    .doutb  (fft_rdata_down_o),
+    .ena    (fft_maxi_valid && fft_maxi_rdy),
+    .wea    (!up_out),
+    .rstb   (!rstn_i),
+    .enb    (1)
+);
+
+always @(posedge clk_i) begin
    fft_hist_raddr1 <= sys_addr[HSZ-1+2:2]  ;
    fft_hist_raddr2 <= fft_hist_raddr1;
    fft_hist_rdata_down_o <= fft_hist_down[fft_hist_raddr2];
@@ -303,10 +337,6 @@ if (rstn_i == 1'b0) begin
     fft_wp_last <= 0;
     up_out <= 1;
 end else if (fft_maxi_valid && fft_maxi_rdy) begin
-    if (up_out)
-        fft_buf_up[fft_wp_index] <= fft_maxi_data[DSZ-1:0];
-    else
-        fft_buf_down[fft_wp_index] <= fft_maxi_data[DSZ-1:0];
     if (fft_maxi_last) begin
         fft_wp_last <= fft_wp;
         fft_wp <= 0;
