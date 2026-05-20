@@ -65,12 +65,8 @@ logic [ 32-1: 0] frame_cnt;
 logic [ 32-1: 0] scan_frame_cnt;
 logic [ 32-1: 0] clk_cnt;
 
-logic [ HSZ-1:0] fft_index_q[0:(1<<QSZ)-1];
 logic [ HSZ-1:0] fft_hist_index;
 logic [ HSZ-1:0] prev_hist_index;
-logic [ QSZ-1:0] index_wp;
-logic [ QSZ-1:0] index_wp_plus_one;
-logic [ QSZ-1:0] index_rp;
 
 logic [DSZ-1: 0] fft_data;
 logic [DSZ-1: 0] fft_data_abs;
@@ -209,8 +205,8 @@ xpm_fifo_async #(
     .FIFO_WRITE_DEPTH(1<<QSZ),
     .WRITE_DATA_WIDTH(ASZ),
     .READ_DATA_WIDTH (ASZ),
-    .RD_DATA_COUNT_WIDTH(QSZ),
-    .WR_DATA_COUNT_WIDTH(QSZ),
+    // .RD_DATA_COUNT_WIDTH(QSZ),
+    // .WR_DATA_COUNT_WIDTH(QSZ),
     .FIFO_READ_LATENCY(0),
     .READ_MODE       ("fwft")
 ) fifo_in (
@@ -228,6 +224,34 @@ xpm_fifo_async #(
     .empty           (fin_empty),
     .full            (fin_full)
 );
+
+
+logic  [ HSZ-1:0] fft_hist_index_o;
+logic             peak_ready_trig = {fft_peak_ready[0], peak_ready} == 2'b01;
+logic             peak_up, peak_ready;
+
+xpm_fifo_async #(
+    .FIFO_WRITE_DEPTH(1<<(QSZ-1)),
+    .WRITE_DATA_WIDTH(HSZ),
+    .READ_DATA_WIDTH (HSZ),
+    // .RD_DATA_COUNT_WIDTH(QSZ),
+    // .WR_DATA_COUNT_WIDTH(QSZ),
+    .FIFO_READ_LATENCY(0),
+    .READ_MODE       ("fwft")
+) fifo_index (
+    .rst             (!rstn_i || fft_index_flush_i),
+    .wr_clk          (clk_i),
+    .wr_en           (fft_index_valid_i),
+    .din             (fft_hist_index_i),
+
+    // .empty           (findex_empty),
+    // .full            (findex_full),
+
+    .rd_clk          (clk_i),
+    .rd_en           (peak_up != up_toggle && peak_ready_trig),
+    .dout            (fft_hist_index_o)
+);
+
 
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
@@ -298,34 +322,16 @@ assign fft_data = fft_maxi_data[DSZ-1:0];
 assign fft_data_abs = fft_data[DSZ-1] ? -fft_data : fft_data;
 assign fft_data_valid = fft_wp_index>=fft_peak_start && fft_wp_index<fft_length[FSZ:1] && fft_data_abs>fft_peak_minimum;
 
-logic peak_up;
-logic peak_ready;
-
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
     fft_peak_ready <= 2'b11;
-    index_wp <= 0;
-    index_wp_plus_one <= 1;
-    index_rp <= 0;
     peak_up <= 1;
 end else begin
     if (fft_index_flush_i) begin
-        index_wp <= 0;
-        index_rp <= 0;
         peak_up <= 1;
     end else begin
-        if (fft_index_valid_i) begin
-            fft_index_q[index_wp] <= fft_hist_index_i;
-            index_wp <= index_wp_plus_one;
-            index_wp_plus_one <= index_wp_plus_one + 1;
-        end else if ({fft_peak_ready[0], peak_ready} == 2'b01) begin
-            if (index_rp == index_wp)
-                fft_hist_index <= fft_hist_index_i;
-            else
-                fft_hist_index <= fft_index_q[index_rp];
-
-            if (peak_up != up_toggle)
-                index_rp <= index_rp + 1;
+        if (peak_ready_trig) begin
+            fft_hist_index <= fft_hist_index_o;
             peak_up <= peak_up + up_toggle;
 
             if (peak_up) begin
@@ -337,9 +343,7 @@ end else begin
             end
             fft_sum <= _fft_sum;
             fft_count <= _fft_count;
-
-        end else if (peak_up != up_toggle && index_wp_plus_one == index_rp)
-            index_rp <= index_rp + 1;
+        end
 
         if (fft_peak_ready == 2'b01) begin
             if (peak_up)
