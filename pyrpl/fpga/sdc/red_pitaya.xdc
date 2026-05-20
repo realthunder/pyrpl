@@ -234,3 +234,8 @@ set_false_path -from [get_clocks clk_fpga_0]  -to [get_clocks adc_clk]
 # set_false_path -from [get_clocks dac_clk_out] -to [get_clocks dac_2clk_out]
 # set_false_path -from [get_clocks dac_clk_out] -to [get_clocks dac_2ph_out]
 
+set_false_path -from [filter [all_fanout -from [get_ports clka] \
+    -flat -endpoints_only] {IS_LEAF}] -through [get_pins -of_objects \
+    [get_cells -hier * -filter {PRIMITIVE_SUBGROUP==LUTRAM || \
+    PRIMITIVE_SUBGROUP==dram || PRIMITIVE_SUBGROUP==drom}] \
+    -filter {DIRECTION==OUT}]
