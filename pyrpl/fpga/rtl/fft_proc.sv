@@ -77,9 +77,6 @@ logic               fft_saxi_last;
 logic               fft_saxi_rdy;
 logic               fft_saxi_valid;
 
-logic [ FSZ-1: 0]   fft_hist_up[0:(1<<HSZ)-1];
-logic [ FSZ-1: 0]   fft_hist_down[0:(1<<HSZ)-1];
-
 logic [ FSZ-1: 0]   fft_peak_idx;
 logic [ DSZ-1: 0]   fft_peak;
 logic [ FSZ-1: 0]   fft_peak2_idx;
@@ -103,9 +100,6 @@ logic [ FSZ-1: 0]   fft_wp;
 logic [ FSZ-1: 0]   fft_wp_plus_one = fft_wp+1;
 logic [ FSZ-1: 0]   fft_wp_reversed = {<<{fft_wp_plus_one}};
 logic [ FSZ-1: 0]   fft_wp_index;
-
-logic [ HSZ-1: 0]   fft_hist_raddr1;
-logic [ HSZ-1: 0]   fft_hist_raddr2;
 
 // sign extend the data for padding according to xfft requirement
 assign fft_data_ext = {16-ASZ{fft_data_i[ASZ-1]}};
@@ -143,7 +137,7 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_B           (FSZ),
     .CLOCKING_MODE          ("independent_clock"),
     .READ_LATENCY_B         (3),
-    .READ_RESET_VALUE_B     ("100000"),
+    .WRITE_MODE_B           ("write_first"),
     .READ_DATA_WIDTH_B      (DSZ),
     .WRITE_DATA_WIDTH_A     (DSZ),
     .BYTE_WRITE_WIDTH_A     (DSZ)
@@ -158,7 +152,6 @@ xpm_memory_sdpram #(
     .wea    ({up_out && fft_maxi_valid && fft_maxi_rdy}),
     .rstb   (!rstn_i),
     .regceb (1'b1),
-    .sleep  (1'b0),
     .enb    (1'b1)
 );
 
@@ -168,6 +161,7 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_B           (FSZ),
     .CLOCKING_MODE          ("independent_clock"),
     .READ_LATENCY_B         (3),
+    .WRITE_MODE_B           ("write_first"),
     .READ_DATA_WIDTH_B      (DSZ),
     .WRITE_DATA_WIDTH_A     (DSZ),
     .BYTE_WRITE_WIDTH_A     (DSZ)
@@ -182,16 +176,58 @@ xpm_memory_sdpram #(
     .wea    ({!up_out && fft_maxi_valid && fft_maxi_rdy}),
     .rstb   (!rstn_i),
     .regceb (1'b1),
-    .sleep  (1'b0),
     .enb    (1'b1)
 );
 
-always @(posedge clk_i) begin
-   fft_hist_raddr1 <= sys_addr[HSZ-1+2:2]  ;
-   fft_hist_raddr2 <= fft_hist_raddr1;
-   fft_hist_rdata_down_o <= fft_hist_down[fft_hist_raddr2];
-   fft_hist_rdata_up_o <= fft_hist_up[fft_hist_raddr2];
-end
+logic [ FSZ-1: 0]   hist_raddr = sys_addr[HSZ-1+2:2];
+
+xpm_memory_sdpram #(
+    .MEMORY_SIZE            ((1<<HSZ)*FSZ),
+    .ADDR_WIDTH_A           (HSZ),
+    .ADDR_WIDTH_B           (HSZ),
+    .CLOCKING_MODE          ("independent_clock"),
+    .READ_LATENCY_B         (3),
+    .WRITE_MODE_B           ("write_first"),
+    .READ_DATA_WIDTH_B      (FSZ),
+    .WRITE_DATA_WIDTH_A     (FSZ),
+    .BYTE_WRITE_WIDTH_A     (FSZ)
+) fft_hist_up (
+    .addra  (fft_hist_index),
+    .addrb  (hist_raddr),
+    .clka   (clk_i),
+    .clkb   (clk_i),
+    .dina   (fft_peak_index_down),
+    .doutb  (fft_hist_rdata_up_o),
+    .ena    (1'b1),
+    .wea    ({peak_up && fft_peak_ready == 2'b01}),
+    .rstb   (!rstn_i),
+    .regceb (1'b1),
+    .enb    (1'b1)
+);
+
+xpm_memory_sdpram #(
+    .MEMORY_SIZE            ((1<<HSZ)*FSZ),
+    .ADDR_WIDTH_A           (HSZ),
+    .ADDR_WIDTH_B           (HSZ),
+    .CLOCKING_MODE          ("independent_clock"),
+    .READ_LATENCY_B         (3),
+    .WRITE_MODE_B           ("write_first"),
+    .READ_DATA_WIDTH_B      (FSZ),
+    .WRITE_DATA_WIDTH_A     (FSZ),
+    .BYTE_WRITE_WIDTH_A     (FSZ)
+) fft_hist_down (
+    .addra  (fft_hist_index),
+    .addrb  (hist_raddr),
+    .clka   (clk_i),
+    .clkb   (clk_i),
+    .dina   (fft_peak_index_down),
+    .doutb  (fft_hist_rdata_down_o),
+    .ena    (1'b1),
+    .wea    ({!peak_up && fft_peak_ready == 2'b01}),
+    .rstb   (!rstn_i),
+    .regceb (1'b1),
+    .enb    (1'b1)
+);
 
 always @(posedge clk_i)
 if (clk_cnt >= 125000000) begin
@@ -378,13 +414,6 @@ end else begin
             end
             fft_sum <= _fft_sum;
             fft_count <= _fft_count;
-        end
-
-        if (fft_peak_ready == 2'b01) begin
-            if (peak_up)
-                fft_hist_up[fft_hist_index] <= fft_peak_index_up;
-            else
-                fft_hist_down[fft_hist_index] <= fft_peak_index_down;
         end
     end
 
