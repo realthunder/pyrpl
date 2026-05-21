@@ -110,6 +110,31 @@ logic [ HSZ-1: 0]   fft_hist_raddr2;
 // sign extend the data for padding according to xfft requirement
 assign fft_data_ext = {16-ASZ{fft_data_i[ASZ-1]}};
 
+logic [1:0] fft_rstn;
+always @(posedge clk_i) begin
+    if (!fft_rstn_i)
+        fft_rstn <= 0;
+    else
+        fft_rstn <= {fft_rstn[0], 1'b1};
+end
+
+logic       fft_conf_dvalid;
+logic [1:0] rstn;
+
+// always @(posedge clk_i) begin
+//     if (!fft_rstn_i || fft_conf_dvalid)
+//         rstn <= 0;
+//     else
+//         rstn <= {rstn[0], 1'b1};
+// end
+
+logic          rstn_i = fft_rstn[1];
+logic [16-1:0] fft_conf_data;
+logic [ 5-1:0] fft_nfft_i = fft_conf_data_i[5-1:0];
+logic [ 5-1:0] fft_nfft = fft_conf_data[5-1:0];
+logic [32-1:0] fft_length2, fft_length_plus_one;
+logic          up_out;
+logic          up_toggle = fft_length2 > fft_length;
 logic [ FSZ-1: 0]   buf_raddr = sys_addr[FSZ-1+3:3];
 
 xpm_memory_sdpram #(
@@ -117,8 +142,10 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (FSZ),
     .ADDR_WIDTH_B           (FSZ),
     .CLOCKING_MODE          ("independent_clock"),
-    .WRITE_DATA_WIDTH_A     (DSZ),
+    .READ_LATENCY_B         (3),
+    .READ_RESET_VALUE_B     ("100000"),
     .READ_DATA_WIDTH_B      (DSZ),
+    .WRITE_DATA_WIDTH_A     (DSZ),
     .BYTE_WRITE_WIDTH_A     (DSZ)
 ) fft_buf_up (
     .addra  (fft_wp_index),
@@ -127,10 +154,12 @@ xpm_memory_sdpram #(
     .clkb   (clk_i),
     .dina   (fft_maxi_data[DSZ-1:0]),
     .doutb  (fft_rdata_up_o),
-    .ena    (fft_maxi_valid && fft_maxi_rdy),
-    .wea    (up_out),
+    .ena    (1'b1),
+    .wea    ({up_out && fft_maxi_valid && fft_maxi_rdy}),
     .rstb   (!rstn_i),
-    .enb    (1)
+    .regceb (1'b1),
+    .sleep  (1'b0),
+    .enb    (1'b1)
 );
 
 xpm_memory_sdpram #(
@@ -138,8 +167,9 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (FSZ),
     .ADDR_WIDTH_B           (FSZ),
     .CLOCKING_MODE          ("independent_clock"),
-    .WRITE_DATA_WIDTH_A     (DSZ),
+    .READ_LATENCY_B         (3),
     .READ_DATA_WIDTH_B      (DSZ),
+    .WRITE_DATA_WIDTH_A     (DSZ),
     .BYTE_WRITE_WIDTH_A     (DSZ)
 ) fft_buf_down (
     .addra  (fft_wp_index),
@@ -148,10 +178,12 @@ xpm_memory_sdpram #(
     .clkb   (clk_i),
     .dina   (fft_maxi_data[DSZ-1:0]),
     .doutb  (fft_rdata_down_o),
-    .ena    (fft_maxi_valid && fft_maxi_rdy),
-    .wea    (!up_out),
+    .ena    (1'b1),
+    .wea    ({!up_out && fft_maxi_valid && fft_maxi_rdy}),
     .rstb   (!rstn_i),
-    .enb    (1)
+    .regceb (1'b1),
+    .sleep  (1'b0),
+    .enb    (1'b1)
 );
 
 always @(posedge clk_i) begin
@@ -184,31 +216,6 @@ end else begin
         prev_hist_index <= fft_hist_index;
     end
 end
-
-logic [1:0] fft_rstn;
-always @(posedge clk_i) begin
-    if (!fft_rstn_i)
-        fft_rstn <= 0;
-    else
-        fft_rstn <= {fft_rstn[0], 1'b1};
-end
-
-logic       fft_conf_dvalid;
-logic [1:0] rstn;
-
-// always @(posedge clk_i) begin
-//     if (!fft_rstn_i || fft_conf_dvalid)
-//         rstn <= 0;
-//     else
-//         rstn <= {rstn[0], 1'b1};
-// end
-
-logic          rstn_i = fft_rstn[1];
-logic [16-1:0] fft_conf_data;
-logic [ 5-1:0] fft_nfft_i = fft_conf_data_i[5-1:0];
-logic [ 5-1:0] fft_nfft = fft_conf_data[5-1:0];
-logic [32-1:0] fft_length2, fft_length_plus_one;
-logic          up_toggle = fft_length2 > fft_length;
 
 // Only allow one-time re-configuration after reset to avoid synchronization issue
 always @(posedge clk_i)
@@ -327,8 +334,6 @@ end else begin
     fft_saxi_last <= fft_we_cnt == 1 || fft_we_cnt == fft_length_plus_one;
     fft_saxi_valid <= (padding_cnt > 0 || !fin_empty) && fft_we_cnt > 0 && fft_we_cnt <= fft_length2;
 end
-
-logic up_out;
 
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
