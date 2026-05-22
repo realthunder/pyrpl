@@ -86,6 +86,7 @@ module red_pitaya_scope #(
    input                 trig_dsp_i      ,  // DSP module trigger
    output                trig_scope_o    ,  // copy of scope trigger
 
+   input                 fft_clk_i       ,  // FFT clock
    output logic          fft_active_o    ,  // fft captureing
    output                scope_sig_o     ,  // scan signaling
    output                x_step_0        ,  // x step
@@ -454,9 +455,9 @@ logic [ 32-1: 0]    fft_length;
 // logic               fft_index_flush = adc_rstn_i == 1'b0 || sync_rst_i;
 logic               fft_index_flush = sync_rst_i;
 
-logic [ 2-1 :  0]   fft_peak_ready_a;
-logic [ 2-1 :  0]   fft_peak_ready_b;
-logic [ 2-1 :  0]   fft_peak_ready;
+logic               fft_peak_ready_a;
+logic               fft_peak_ready_b;
+logic [ 2-1 : 0]    fft_peak_ready;
 
 logic [ 2-1:  0]    fft_rst_i;
 logic               fft_rstn_i;
@@ -571,8 +572,11 @@ assign fft_wp_last_a = 2**fft_nfft-1;
 assign fft_wp_last_b = 2**fft_nfft-1;
 
 fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_a (
+   .adc_clk_i (adc_clk_i),
+   .adc_rstn_i (fft_rstn_i),
+
    .clk_i (adc_clk_i),
-   .fft_rstn_i (fft_rstn_i),
+
    .data_i (adc_a_dat),
    .enable_i (fft_up || (fft_down && fft_nfft<RSZ-1)),
    .dvalid_i (fft_dvalid),
@@ -600,8 +604,8 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .fft_hist_rdata_down_o (fft_hist_rdata_down_a),
 
    .status_o (fft_status[0]),
-   .fft_done (fft_done[0]),
-   .fft_peak_ready (fft_peak_ready_a),
+   .fft_done_o (fft_done[0]),
+   .fft_peak_ready_o (fft_peak_ready_a),
    .fft_count (fft_count_a),
    .fft_sum (fft_sum_a),
    .fft_peak_index_up (fft_peak_index_up_a[FSZ-1:0]),
@@ -621,8 +625,11 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
 );
 
 fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_b (
+   .adc_clk_i (adc_clk_i),
+   .adc_rstn_i (fft_rstn_i),
+
    .clk_i (adc_clk_i),
-   .fft_rstn_i (fft_rstn_i),
+
    .data_i (fft_nfft<RSZ-1 ? adc_b_dat : adc_a_dat),
    .enable_i ((fft_nfft<RSZ-1 && fft_up) || fft_down),
    .dvalid_i (fft_dvalid),
@@ -650,8 +657,8 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .fft_hist_rdata_down_o (fft_hist_rdata_down_b),
 
    .status_o (fft_status[1]),
-   .fft_done (fft_done[1]),
-   .fft_peak_ready (fft_peak_ready_b),
+   .fft_done_o (fft_done[1]),
+   .fft_peak_ready_o (fft_peak_ready_b),
    .fft_count (fft_count_b),
    .fft_sum (fft_sum_b),
    .fft_peak_index_up (fft_peak_index_up_b[FSZ-1:0]),
@@ -699,11 +706,10 @@ if (fft_rstn_i == 0) begin
     fft_peak_ready <= 0;
 end else begin
 
-    if (fft_peak_ready_a == 2'b01)
+    if (fft_peak_ready_a)
         fft_peak_ready[0] <= 1;
-    if (fft_peak_ready_b == 2'b01)
+    if (fft_peak_ready_b)
         fft_peak_ready[1] <= 1;
-
     case (fft_state)
     S_IDLE: 
         if (fft_trig_i && &fft_done) begin
