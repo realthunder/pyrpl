@@ -341,6 +341,9 @@ BUFG bufg_dac_clk_2p (.O (dac_clk_2p), .I (pll_dac_clk_2p));
 BUFG bufg_ser_clk    (.O (ser_clk   ), .I (pll_ser_clk   ));
 BUFG bufg_pwm_clk    (.O (pwm_clk   ), .I (pll_pwm_clk   ));
 
+wire fft_clk;
+assign fft_clk = ser_clk;
+
 // ADC reset (active low) 
 always @(posedge adc_clk)
 adc_rstn_i <=  frstn[0] &  pll_locked;
@@ -471,6 +474,8 @@ red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .DSZ(FFT_WIDTH)) i_scope (
   .trig_asg_i      (  trig_asg_out               ),  // ASG trigger
   .trig_dsp_i      (  dsp_trigger                ),
   .trig_scope_o    (  trig_scope_out             ),  // scope trigger to feed other instruments
+
+  .fft_clk_i       (  fft_clk                    ),
   .fft_active_o    (  scope_fft_o                ),  // scope acquisition done signal
   .scope_sig_o     (  scope_sig_o                ),
   .x_step_0        (  x_step_0                   ),
