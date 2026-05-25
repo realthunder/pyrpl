@@ -575,7 +575,7 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .adc_clk_i (adc_clk_i),
    .adc_rstn_i (fft_rstn_i),
 
-   .clk_i (adc_clk_i),
+   .clk_i (fft_clk_i),
 
    .data_i (adc_a_dat),
    .enable_i (fft_up || (fft_down && fft_nfft<RSZ-1)),
@@ -628,7 +628,7 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .adc_clk_i (adc_clk_i),
    .adc_rstn_i (fft_rstn_i),
 
-   .clk_i (adc_clk_i),
+   .clk_i (fft_clk_i),
 
    .data_i (fft_nfft<RSZ-1 ? adc_b_dat : adc_a_dat),
    .enable_i ((fft_nfft<RSZ-1 && fft_up) || fft_down),
@@ -1338,7 +1338,8 @@ end else begin
                                                                  , adc_we_keep               // do not disarm on 
                                                                  , adc_dly_do                // trigger status
                                                                  , 1'b0                      // reset
-                                                                 , adc_we | (fft_enable & (~&fft_done | (fft_trig_sync & ~&fft_peak_ready))) }
+                                                                 // , adc_we | (fft_enable & (~&fft_done | (fft_trig_sync & ~&fft_peak_ready))) }
+                                                                 , adc_we | (fft_enable & (fft_trig_sync & (~&fft_done | ~&fft_peak_ready))) }
                                                                  ; end // arm
 
      20'h00004 : begin sys_ack <= sys_en;          sys_rdata <= {{32- 4{1'b0}}, set_trig_src}       ; end 

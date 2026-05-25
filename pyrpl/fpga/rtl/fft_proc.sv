@@ -64,7 +64,6 @@ assign overflow_cnt_o = {input_cnt, overflow_cnt};
 
 logic [ 32-1: 0] frame_cnt;
 logic [ 32-1: 0] scan_frame_cnt;
-logic [ 32-1: 0] clk_cnt;
 
 logic [ HSZ-1:0] fft_hist_index;
 logic [ HSZ-1:0] prev_hist_index;
@@ -105,13 +104,11 @@ logic [ FSZ-1: 0]   fft_wp_index;
 // sign extend the data for padding according to xfft requirement
 assign fft_data_ext = {16-ASZ{fft_data_i[ASZ-1]}};
 
-localparam SYNC_FF = 2;
-
 xpm_cdc_sync_rst #(
     .DEST_SYNC_FF (SYNC_FF)
 ) (
     .src_rst    (adc_rstn_i),
-    .dest_clk   (fft_clk_i),
+    .dest_clk   (clk_i),
     .dest_rst   (rstn_i)
 );
 
@@ -122,7 +119,7 @@ xpm_cdc_single #(
 ) (
     .src_clk   (adc_clk_i),
     .src_in    (trig_i),
-    .dest_clk  (fft_clk_i),
+    .dest_clk  (clk_i),
     .dest_out  (fft_trig)
 );
 
@@ -131,8 +128,8 @@ logic            up_in, fft_done;
 xpm_cdc_single #(
     .DEST_SYNC_FF (SYNC_FF)
 ) (
-    .src_clk   (fft_clk_i),
-    .src_in    (fft_done && up_in),
+    .src_clk   (clk_i),
+    .src_in    (fft_done),
     .dest_clk  (adc_clk_i),
     .dest_out  (fft_done_o)
 );
@@ -144,7 +141,7 @@ logic            peak_ready_trig = {fft_peak_ready[0], peak_ready} == 2'b01;
 xpm_cdc_single #(
     .DEST_SYNC_FF (SYNC_FF)
 ) (
-    .src_clk   (fft_clk_i),
+    .src_clk   (clk_i),
     .src_in    (fft_peak_ready == 2'b01),
     .dest_clk  (adc_clk_i),
     .dest_out  (fft_peak_ready_o)
@@ -256,29 +253,35 @@ xpm_memory_sdpram #(
     .enb    (1'b1)
 );
 
-always @(posedge adc_clk_i)
-if (clk_cnt >= 125000000) begin
-    clk_cnt <= 0;
-    fft_frame_cnt <= {1'b0, frame_cnt[32-1:1]};
-    fft_scan_frame_cnt <= scan_frame_cnt;
-    if (fft_frame_start) begin
-        frame_cnt <= 1;
-        scan_frame_cnt <= 1;
-        prev_hist_index <= fft_hist_index;
-    end else begin
-        frame_cnt <= 0;
-        scan_frame_cnt <= 0;
-    end
-end else begin
-    clk_cnt <= clk_cnt + 1;
-    if (fft_frame_start) begin
-        if (~&frame_cnt)
-            frame_cnt <= frame_cnt + 1;
-        if (~&scan_frame_cnt && prev_hist_index != fft_hist_index)
-            scan_frame_cnt <= scan_frame_cnt + 1;
-        prev_hist_index <= fft_hist_index;
-    end
+always @(posedge clk_i)
+if (fft_frame_start) begin
+    frame_cnt <= frame_cnt + 1;
+    if (prev_hist_index != fft_hist_index)
+        scan_frame_cnt <= scan_frame_cnt + 1;
+    prev_hist_index <= fft_hist_index;
 end
+
+localparam SYNC_FF = 2;
+
+xpm_cdc_gray #(
+    .WIDTH        (32),
+    .DEST_SYNC_FF (SYNC_FF)
+) (
+    .src_clk      (clk_i),
+    .src_in_bin   (frame_cnt),
+    .dest_clk     (adc_clk_i),
+    .dest_out_bin (fft_frame_cnt)
+);
+
+xpm_cdc_gray #(
+    .WIDTH        (32),
+    .DEST_SYNC_FF (SYNC_FF)
+) (
+    .src_clk      (clk_i),
+    .src_in_bin   (scan_frame_cnt),
+    .dest_clk     (adc_clk_i),
+    .dest_out_bin (fft_scan_frame_cnt)
+);
 
 logic       fft_conf_dvalid;
 
@@ -362,7 +365,7 @@ if (rstn_i == 1'b0) begin
     up_in <= 1;
 end else begin
 
-    if (fft_trig && fft_done && up_in) begin
+    if (fft_trig && fft_done) begin
         fft_we_cnt <= fft_length2;
         padding_up <= 2**fft_nfft - fft_acq_up;
         padding_down <= 2**fft_nfft - fft_acq_down;
