@@ -203,7 +203,10 @@ class PyrplWidget(QtWidgets.QMainWindow):
         record = records[0]
         self.timer_toolbar.stop()
         self.status_bar.showMessage(record)
-        self.status_bar.setStyleSheet('color: white;background-color: green;')
+        if record.startswith('CRITICAL:') or record.startswith('ERROR:'):
+            self.status_bar.setStyleSheet('color: white;background-color: red;')
+        else:
+            self.status_bar.setStyleSheet('color: white;background-color: green;')
         self._next_toolbar_style = 'color: grey;'
         self.timer_toolbar.start()
 
