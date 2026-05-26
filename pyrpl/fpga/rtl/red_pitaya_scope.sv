@@ -619,7 +619,7 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .fft_q_wp (fft_q_wp_a),
    .fft_q_rp (fft_q_rp_a),
    .fft_conf_data_i (fft_conf_data),
-   .fft_length (fft_length),
+   .fft_length_o (fft_length),
 
    .overflow_cnt_o (fft_overflow_cnt)
 );

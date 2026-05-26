@@ -53,7 +53,7 @@ module fft_proc #(
   output logic [ QSZ-1:0] fft_q_rp,
 
   input logic  [  16-1:0] fft_conf_data_i,
-  output logic [  32-1:0] fft_length,
+  output logic [  32-1:0] fft_length_o,
 
   output logic [  32-1:0] overflow_cnt_o
 );
@@ -104,6 +104,8 @@ logic [ FSZ-1: 0]   fft_wp_index;
 // sign extend the data for padding according to xfft requirement
 assign fft_data_ext = {16-ASZ{fft_data_i[ASZ-1]}};
 
+localparam SYNC_FF = 2;
+
 xpm_cdc_sync_rst #(
     .DEST_SYNC_FF (SYNC_FF)
 ) (
@@ -111,8 +113,6 @@ xpm_cdc_sync_rst #(
     .dest_clk   (clk_i),
     .dest_rst   (rstn_i)
 );
-
-logic fft_rstn_i = rstn_i;
 
 xpm_cdc_single #(
     .DEST_SYNC_FF (SYNC_FF)
@@ -147,12 +147,13 @@ xpm_cdc_single #(
     .dest_out  (fft_peak_ready_o)
 );
 
-logic [16-1:0] fft_conf_data;
+logic [16-1:0] fft_conf_data, conf_data, conf_data_reg, conf_data_i;
 logic [ 5-1:0] fft_nfft_i = fft_conf_data_i[5-1:0];
+logic [ 5-1:0] nfft_i = conf_data_reg[5-1:0];
 logic [ 5-1:0] fft_nfft = fft_conf_data[5-1:0];
-logic [32-1:0] fft_length2, fft_length_plus_one;
-logic          up_out;
-logic          up_toggle = fft_length2 > fft_length;
+logic [32-1:0] fft_length, fft_length2, fft_length_plus_one;
+logic          conf_send;
+logic          up_out, up_toggle;
 logic [ FSZ-1: 0]   buf_raddr = sys_addr[FSZ-1+3:3];
 
 xpm_memory_sdpram #(
@@ -255,13 +256,13 @@ xpm_memory_sdpram #(
 
 always @(posedge clk_i)
 if (fft_frame_start) begin
-    frame_cnt <= frame_cnt + 1;
+    if (up_in)
+        frame_cnt <= frame_cnt + 1;
     if (prev_hist_index != fft_hist_index)
         scan_frame_cnt <= scan_frame_cnt + 1;
     prev_hist_index <= fft_hist_index;
 end
 
-localparam SYNC_FF = 2;
 
 xpm_cdc_gray #(
     .WIDTH        (32),
@@ -283,22 +284,61 @@ xpm_cdc_gray #(
     .dest_out_bin (fft_scan_frame_cnt)
 );
 
-logic       fft_conf_dvalid;
+logic           fft_conf_dvalid;
+
+xpm_cdc_handshake #(
+    .WIDTH          (16),
+    .DEST_EXT_HSK   (1),
+    .SRC_SYNC_FF    (SYNC_FF),
+    .DEST_SYNC_FF   (SYNC_FF)
+) (
+    .src_clk        (adc_clk_i),
+    .src_in         (conf_data_i),
+    .src_rcv        (conf_recv),
+    .src_send       (conf_send),
+    .dest_clk       (clk_i),
+    .dest_out       (conf_data),
+    .dest_req       (conf_req)
+);
+
+always @(posedge adc_clk_i) begin
+    if (conf_recv)
+        conf_send <= 0;
+    else if (fft_conf_data_i != conf_data_i) begin
+        conf_send <= 1;
+        conf_data_i <= fft_conf_data_i;
+        fft_length_o <= 2**fft_nfft_i;
+        input_cnt <= input_cnt + 1;
+    end
+end
+
+logic [2-1 : 0]  fft_rstn = 2'b11;
 
 // Only allow one-time re-configuration after reset to avoid synchronization issue
-always @(posedge clk_i)
-if (fft_rstn_i == 1'b0) begin
-    fft_conf_data <= fft_conf_data_i;
-    fft_conf_dvalid <= 1;
-    fft_length <= 2**fft_nfft_i;
-    fft_length_plus_one = 2**fft_nfft_i + 1;
-    // We need 2x amount of samples, one for Fup and one for Fdown
-    if (fft_nfft_i < RSZ-1)
-        fft_length2 <= 2**(fft_nfft_i+1);
-    else
-        fft_length2 <= 2**fft_nfft_i;
-end else if (fft_conf_rdy) begin
-    fft_conf_dvalid <= 0;
+always @(posedge clk_i) begin
+    if (conf_req) begin
+        conf_data_reg <= conf_data;
+    end
+
+    // fft_rstn <= {fft_rstn[0], ~conf_req & rstn_i};
+    fft_rstn <= {fft_rstn[0], rstn_i};
+
+    if (~&fft_rstn) begin
+        fft_conf_data <= conf_data_reg;
+        fft_conf_dvalid <= 1;
+        fft_length <= 2**nfft_i;
+        fft_length_plus_one = 2**nfft_i + 1;
+        // We need 2x amount of samples, one for Fup and one for Fdown
+        if (nfft_i < RSZ-1) begin
+            fft_length2 <= 2**(nfft_i+1);
+            up_toggle <= 1;
+        end else begin
+            fft_length2 <= 2**nfft_i;
+            up_toggle <= 0;
+        end
+    end else if (fft_conf_rdy) begin
+        fft_conf_dvalid <= 0;
+    end
 end
 
 logic [ FSZ-1:0]    padding_up;
@@ -372,9 +412,9 @@ end else begin
     end else if ((padding_cnt > 0 || !fin_empty) && fin_rd) begin
         fft_data_i <= fin_dout;
         if (padding_cnt > 0) begin
-            if (fin_full)
+            if (fin_full) begin
                 overflow_cnt <= overflow_cnt + 1;
-            else if (up_in)
+            end else if (up_in)
                 padding_up <= padding_up - 1;
             else
                 padding_down <= padding_down - 1;
@@ -390,9 +430,6 @@ end else begin
         else
             padding_down <= padding_down + 1;
     end
-
-    if (fft_saxi_rdy && fft_saxi_valid)
-        input_cnt <= input_cnt + 1;
 
     fft_done <= fft_we_cnt==0;
     fft_saxi_last <= fft_we_cnt == 1 || fft_we_cnt == fft_length_plus_one;
@@ -504,7 +541,7 @@ fft_wrapper fft_i (
    .S_AXIS_DATA_0_tready        (fft_saxi_rdy     ),
    .S_AXIS_DATA_0_tvalid        (fft_saxi_valid   ),
    .aclk_0                      (clk_i            ),
-   .aresetn_0                   (fft_rstn_i       ),
+   .aresetn_0                   (&fft_rstn        ),
    .event_data_in_channel_halt_0(fft_in_halt      ),
    .event_data_out_channel_halt_0(fft_out_halt    ),
    .event_status_channel_halt_0 (fft_status_halt  ),
