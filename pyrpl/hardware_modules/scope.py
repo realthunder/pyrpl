@@ -445,6 +445,8 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_acq2_cnt = IntRegister(0x64, doc="FFT second stage acquisition time counter")
 
+    fft_overflow_cnt = IntRegister(0x190, doc="FFT buffer overflow count")
+
     fft_wp_last = IntRegister(0x68, doc="FFT last write size")
 
     fft_q_wp = IntRegister(0x170, doc="FFT queue write count")
