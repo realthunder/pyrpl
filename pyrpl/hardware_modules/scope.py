@@ -413,7 +413,8 @@ class Scope(HardwareModule, AcquisitionModule):
 
     status_bits = StatusBitsProperty()
 
-    fft_frame_cnt = IntRegister(0x30, doc="FFT frame counter")
+    fft_batch_cnt = IntRegister(0x30, doc="FFT batch counter")
+    fft_scan_batch_cnt = IntRegister(0x74, doc="FFT skipped batch counter")
 
     fft_peak_start = IntRegister(0x38, doc="FFT peak detection start index")
 
@@ -455,8 +456,6 @@ class Scope(HardwareModule, AcquisitionModule):
     fft_state = IntRegister(0x6C, doc="FFT internal state")
 
     fft_we_cnt = IntRegister(0x70, doc="FFT write count")
-
-    fft_scan_frame_cnt = IntRegister(0x74, doc="FFT skipped frame counter")
 
     fft_peak_state = IntRegister(0x78, doc="FFT peak detection internal state")
 

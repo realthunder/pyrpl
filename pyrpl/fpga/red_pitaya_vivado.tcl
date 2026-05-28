@@ -177,13 +177,16 @@ report_power             -file    $path_out/post_synth_power.rpt
 # set multicyle_path_to  [concat [get_cells i_dsp*/*iir*/p_*reg*] \
 #                                [get_cells i_dsp*/*iir*/overflow_reg*] \
 #                        ]
-#
-# set multicyle_path_from [get_cells i_scope*/fft*/fft_length*reg*]
-#
 # set_multicycle_path -setup 2 -to $multicyle_path_to
-# set_multicycle_path -setup 2 -from $multicyle_path_from
 # set_multicycle_path -hold 1 -to $multicyle_path_to
-# set_multicycle_path -hold 1 -from $multicyle_path_from
+
+set multicyle_path [concat [get_cells i_scope*/fft*/fft_length*reg*] \
+                           [get_cells i_scope*/fft*/fft_length*reg*] \
+                   ]
+set_multicycle_path -hold 1 -from $multicyle_path
+set_multicycle_path -setup 2 -from $multicyle_path
+set_multicycle_path -hold 1 -to $multicyle_path
+set_multicycle_path -setup 2 -to $multicyle_path
 
 opt_design
 power_opt_design
