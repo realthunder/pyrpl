@@ -53,7 +53,7 @@ module fft_proc #(
   output logic [ QSZ-1:0] fft_q_rp,
 
   input logic  [  16-1:0] fft_conf_data_i,
-  output logic [  32-1:0] fft_length_o,
+  output logic [  32-1:0] o_fft_length,
 
   output logic [  32-1:0] overflow_cnt_o
 );
@@ -104,7 +104,7 @@ logic [ FSZ-1: 0]   fft_wp_index;
 // sign extend the data for padding according to xfft requirement
 assign fft_data_ext = {16-ASZ{fft_data_i[ASZ-1]}};
 
-localparam SYNC_FF = 2;
+localparam SYNC_FF = 3;
 
 xpm_cdc_sync_rst #(
     .DEST_SYNC_FF (SYNC_FF)
@@ -129,7 +129,7 @@ xpm_cdc_single #(
     .DEST_SYNC_FF (SYNC_FF)
 ) (
     .src_clk   (clk_i),
-    .src_in    (fft_done),
+    .src_in    (fft_done && up_in),
     .dest_clk  (adc_clk_i),
     .dest_out  (fft_done_o)
 );
@@ -152,6 +152,7 @@ logic [ 5-1:0] fft_nfft_i = fft_conf_data_i[5-1:0];
 logic [ 5-1:0] nfft_i = conf_data_reg[5-1:0];
 logic [ 5-1:0] fft_nfft = fft_conf_data[5-1:0];
 logic [32-1:0] fft_length, fft_length2, fft_length_plus_one;
+assign fft_length_plus_one = fft_length + 1;
 logic          conf_send;
 logic          up_out, up_toggle;
 logic [ FSZ-1: 0]   buf_raddr = sys_addr[FSZ-1+3:3];
@@ -175,7 +176,8 @@ xpm_memory_sdpram #(
     .doutb  (fft_rdata_up_o),
     .ena    (1'b1),
     .wea    ({up_out && fft_maxi_valid && fft_maxi_rdy}),
-    .rstb   (!adc_rstn_i),
+    // .rstb   (!adc_rstn_i),
+    .rstb   (1'b0),
     .regceb (1'b1),
     .enb    (1'b1)
 );
@@ -199,7 +201,8 @@ xpm_memory_sdpram #(
     .doutb  (fft_rdata_down_o),
     .ena    (1'b1),
     .wea    ({!up_out && fft_maxi_valid && fft_maxi_rdy}),
-    .rstb   (!adc_rstn_i),
+    // .rstb   (!adc_rstn_i),
+    .rstb   (1'b0),
     .regceb (1'b1),
     .enb    (1'b1)
 );
@@ -225,7 +228,8 @@ xpm_memory_sdpram #(
     .doutb  (fft_hist_rdata_up_o),
     .ena    (1'b1),
     .wea    ({peak_up && fft_peak_ready == 2'b01}),
-    .rstb   (!adc_rstn_i),
+    // .rstb   (!adc_rstn_i),
+    .rstb   (1'b0),
     .regceb (1'b1),
     .enb    (1'b1)
 );
@@ -249,7 +253,8 @@ xpm_memory_sdpram #(
     .doutb  (fft_hist_rdata_down_o),
     .ena    (1'b1),
     .wea    ({!peak_up && fft_peak_ready == 2'b01}),
-    .rstb   (!adc_rstn_i),
+    // .rstb   (!adc_rstn_i),
+    .rstb   (1'b0),
     .regceb (1'b1),
     .enb    (1'b1)
 );
@@ -288,7 +293,7 @@ logic           fft_conf_dvalid;
 
 xpm_cdc_handshake #(
     .WIDTH          (16),
-    .DEST_EXT_HSK   (1),
+    .DEST_EXT_HSK   (0),
     .SRC_SYNC_FF    (SYNC_FF),
     .DEST_SYNC_FF   (SYNC_FF)
 ) (
@@ -307,8 +312,7 @@ always @(posedge adc_clk_i) begin
     else if (fft_conf_data_i != conf_data_i) begin
         conf_send <= 1;
         conf_data_i <= fft_conf_data_i;
-        fft_length_o <= 2**fft_nfft_i;
-        input_cnt <= input_cnt + 1;
+        o_fft_length <= 2**fft_nfft_i;
     end
 end
 
@@ -327,7 +331,8 @@ always @(posedge clk_i) begin
         fft_conf_data <= conf_data_reg;
         fft_conf_dvalid <= 1;
         fft_length <= 2**nfft_i;
-        fft_length_plus_one = 2**nfft_i + 1;
+        // fft_length_plus_one <= 2**nfft_i + 1;
+
         // We need 2x amount of samples, one for Fup and one for Fdown
         if (nfft_i < RSZ-1) begin
             fft_length2 <= 2**(nfft_i+1);
@@ -405,7 +410,7 @@ if (rstn_i == 1'b0) begin
     up_in <= 1;
 end else begin
 
-    if (fft_trig && fft_done) begin
+    if (fft_trig && fft_done && up_in) begin
         fft_we_cnt <= fft_length2;
         padding_up <= 2**fft_nfft - fft_acq_up;
         padding_down <= 2**fft_nfft - fft_acq_down;
