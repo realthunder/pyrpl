@@ -87,7 +87,7 @@ logic [SSZ+DSZ-1:0] scaled_diff[0:PL2];
 
 logic [(SSZ+DSZ)*2-1:0] scaled_diff_sq[0:PL2]; // scaled_diff ^ 2
 
-logic [16-1:0] k_sq;
+logic [16-1:0] k_sq = threshold_k_sq;
 logic [(SSZ+DSZ)*2-1:0] threshold[0:PL2];
 
 assign ready = current_state==S_IDLE;
