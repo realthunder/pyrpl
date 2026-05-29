@@ -257,14 +257,10 @@ end
 //---------------------------------------------------------------------------------
 //  ADC buffer RAM
 
-reg   [ ASZ-1: 0] adc_a_buf [0:(1<<RSZ)-1] ;
-reg   [ ASZ-1: 0] adc_b_buf [0:(1<<RSZ)-1] ;
-reg   [ ASZ-1: 0] adc_a_rd      ;
-reg   [ ASZ-1: 0] adc_b_rd      ;
+logic [ ASZ-1: 0] adc_a_rd      ;
+logic [ ASZ-1: 0] adc_b_rd      ;
 reg   [ RSZ-1: 0] adc_wp        ;
 reg   [ RSZ-1: 0] adc_raddr     ;
-reg   [ RSZ-1: 0] adc_a_raddr   ;
-reg   [ RSZ-1: 0] adc_b_raddr   ;
 reg   [   4-1: 0] adc_rval      ;
 wire              adc_rd_dv     ;
 reg               adc_we        ;
@@ -286,6 +282,54 @@ reg   [ 64 - 1:0] timestamp_trigger;
 reg   [ 64 - 1:0] ctr_value        ;
 reg   [ASZ - 1:0] pretrig_data_min; // make sure this amount of data has been acquired before trig
 reg 			  pretrig_ok;
+
+
+xpm_memory_sdpram #(
+    .MEMORY_SIZE            ((1<<RSZ)*ASZ),
+    .ADDR_WIDTH_A           (RSZ),
+    .ADDR_WIDTH_B           (RSZ),
+    .CLOCKING_MODE          ("common_clock"),
+    .READ_LATENCY_B         (3),
+    .WRITE_MODE_B           ("read_first"),
+    .READ_DATA_WIDTH_B      (ASZ),
+    .WRITE_DATA_WIDTH_A     (ASZ),
+    .BYTE_WRITE_WIDTH_A     (ASZ)
+) adc_a_buf (
+    .addra  (adc_wp),
+    .addrb  (adc_raddr),
+    .clka   (adc_clk_i),
+    .dina   (adc_a_dat),
+    .doutb  (adc_a_rd),
+    .ena    (1'b1),
+    .wea    ({adc_we && adc_dv}),
+    .rstb   (1'b0),
+    .regceb (1'b1),
+    .enb    (1'b1)
+);
+
+xpm_memory_sdpram #(
+    .MEMORY_SIZE            ((1<<RSZ)*ASZ),
+    .ADDR_WIDTH_A           (RSZ),
+    .ADDR_WIDTH_B           (RSZ),
+    .CLOCKING_MODE          ("common_clock"),
+    .READ_LATENCY_B         (3),
+    .WRITE_MODE_B           ("read_first"),
+    .READ_DATA_WIDTH_B      (ASZ),
+    .WRITE_DATA_WIDTH_A     (ASZ),
+    .BYTE_WRITE_WIDTH_A     (ASZ)
+) adc_b_buf (
+    .addra  (adc_wp),
+    .addrb  (adc_raddr),
+    .clka   (clk_i),
+    .clkb   (adc_clk_i),
+    .dina   (adc_b_dat),
+    .doutb  (adc_b_rd),
+    .ena    (1'b1),
+    .wea    ({adc_we && adc_dv}),
+    .rstb   (1'b0),
+    .regceb (1'b1),
+    .enb    (1'b1)
+);
 
 // Write
 always @(posedge adc_clk_i) begin
@@ -358,13 +402,6 @@ end
 
 assign trig_scope_o = triggered;
 
-always @(posedge adc_clk_i) begin
-   if (adc_we && adc_dv) begin
-      adc_a_buf[adc_wp] <= adc_a_dat ;
-      adc_b_buf[adc_wp] <= adc_b_dat ;
-   end
-end
-
 // Read
 always @(posedge adc_clk_i) begin
    if (adc_rstn_i == 1'b0)
@@ -376,12 +413,7 @@ assign adc_rd_dv = adc_rval[3];
 
 always @(posedge adc_clk_i) begin
    adc_raddr   <= sys_addr[RSZ-1+2:2] ; // address synchronous to clock
-   adc_a_raddr <= adc_raddr     ; // double register 
-   adc_b_raddr <= adc_raddr     ; // otherwise memory corruption at reading
-   adc_a_rd    <= adc_a_buf[adc_a_raddr] ;
-   adc_b_rd    <= adc_b_buf[adc_b_raddr] ;
 end
-
 
 
 //////////////// FFT /////////////////////
