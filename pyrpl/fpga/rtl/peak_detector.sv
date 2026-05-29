@@ -49,7 +49,7 @@ typedef enum {
 
 (* fsm_encoding = "one_hot" *) peak_state_t current_state;
 
-localparam PL1 = 2; // to meet the timing of data_sq
+localparam PL1 = 4; // to meet the timing of data_sq
 
 logic [DSZ-1:0]     data_r      [0:PL1];
 logic [DSZ*2-1:0]   data_sq     [0:PL1];
@@ -57,7 +57,7 @@ logic [SSZ-1:0]     data_index_r[0:PL1];
 logic               data_valid_r[0:PL1];
 logic               data_last   [0:PL1];
 
-localparam PL2 = 2; // to meet the timing of routing to DSP input register
+localparam PL2 = 4; // to meet the timing of routing to DSP input register
 
 logic [DSZ-1:0] peak_r[0:PL2];
 assign peak = peak_r[0];
@@ -188,7 +188,7 @@ end else begin
                 peak_idx <= data_index_r[PL1];
             end
             sum[0] <= sum[0] + data_r[PL1];
-            sum_sq[0] <= sum_sq[0] + data_sq[PL1-1];
+            sum_sq[0] <= sum_sq[0] + data_sq[PL1];
             count[0] <= count[0] + 1;
         end
 

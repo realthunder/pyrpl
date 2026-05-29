@@ -46,7 +46,7 @@ module fft_proc #(
   output logic [ DSZ-1:0] fft_peak_value_down,
   output logic [ 32-1: 0] fft_frame_cnt,
   output logic [ 32-1: 0] fft_scan_frame_cnt,
-  output logic [ 16-1: 0] fft_we_cnt,
+  output logic [ 32-1: 0] fft_we_cnt,
   output logic [ FSZ-1:0] padding_cnt,
 
   output logic [ QSZ-1:0] fft_q_wp,
@@ -146,24 +146,25 @@ xpm_cdc_single #(
     .dest_out  (fft_peak_ready_o)
 );
 
-logic [16-1:0] fft_conf_data, fft_conf_data_, conf_data_i;
-logic [ 5-1:0] fft_nfft_i = fft_conf_data_i[5-1:0];
-logic [ 5-1:0] fft_nfft = fft_conf_data[5-1:0];
-logic [16-1:0] fft_length, fft_length_, fft_length2, fft_length2_, fft_length_plus_one, fft_length_plus_one_;
-logic          conf_send;
-logic          up_out, up_toggle, up_toggle_;
+logic [ 16-1:0] fft_conf_data, fft_conf_data_, conf_data_i;
+logic [  5-1:0] fft_nfft, fft_nfft_;
+logic [ 32-1:0] fft_length, fft_length2, fft_length_plus_one;
+logic           conf_send;
+logic           up_out, up_toggle, up_toggle_;
 logic [FSZ-1:0] acq_up, acq_up_, acq_down, acq_down_;
 
 
-logic [ FSZ-1: 0] hist_raddr;
-logic [ FSZ-1: 0] buf_raddr;
+logic [ FSZ-1: 0] hist_raddr_, hist_raddr;
+logic [ FSZ-1: 0] buf_raddr_, buf_raddr;
 
-// memory read delay is 3 + 1 (address latch). The total delay is decided by
+// memory read delay is 2 + 2 (address latch). The total delay is decided by
 // red_pitaya_scope:adc_rd_dv = adc_rval[3], which is a 4-bit shift register
-localparam MEM_SYNC_FF = 3;
+localparam MEM_SYNC_FF = 2;
 always @(posedge adc_clk_i) begin
-    hist_raddr <= sys_addr[HSZ-1+2:2];
-    buf_raddr <= sys_addr[FSZ-1+3:3];
+    hist_raddr_ <= sys_addr[HSZ-1+2:2];
+    hist_raddr <= hist_raddr_;
+    buf_raddr_ <= sys_addr[FSZ-1+3:3];
+    buf_raddr <= buf_raddr_;
 end
 
 xpm_memory_sdpram #(
@@ -295,8 +296,7 @@ xpm_cdc_gray #(
 logic           fft_conf_dvalid;
 
 logic [16+FSZ+FSZ-1:0] fft_conf_input = {fft_acq_up, fft_acq_down, fft_conf_data_i};
-logic [16+FSZ+FSZ-1:0] fft_conf_reg, conf_data, conf_data_reg;
-logic [ 5-1:0]         nfft_i = conf_data_reg[5-1:0];
+logic [16+FSZ+FSZ-1:0] fft_conf_reg, conf_data;
 
 xpm_cdc_handshake #(
     .WIDTH          (16 + FSZ + FSZ),
@@ -331,33 +331,31 @@ logic            fft_rstn_i = &fft_rstn;
 // Only allow one-time re-configuration after reset to avoid synchronization issue
 always @(posedge clk_i) begin
     if (conf_req) begin
-        conf_data_reg <= conf_data;
+        fft_nfft_ <= conf_data[5-1:0];
+        acq_up_ <= conf_data[16+FSZ+FSZ-1:16+FSZ];
+        acq_down_ <= conf_data[16+FSZ-1:16];
+        fft_conf_data_ <= conf_data[16-1:0];
     end
 
-    fft_rstn <= {fft_rstn[0], (~conf_req) & rstn_i};
+    fft_nfft <= fft_nfft_;
+    acq_up <= acq_up_;
+    acq_down <= acq_down_;
+    fft_conf_data <= fft_conf_data_;
+
+    fft_rstn <= {fft_rstn[0], rstn_i};
 
     if (fft_rstn_i == 1'b0) begin
-        acq_up_ <= conf_data_reg[16+FSZ+FSZ-1:16+FSZ];
-        acq_up <= acq_up_;
-        acq_down_ <= conf_data_reg[16+FSZ-1:16];
-        acq_down <= acq_down_;
-        fft_conf_data_ <= conf_data_reg[16-1:0];
-        fft_conf_data <= fft_conf_data_;
-        fft_length_ <= 1<<nfft_i;
-        fft_length <= fft_length_;
-        fft_length_plus_one_ <= (1<<nfft_i) + 1;
-        fft_length_plus_one <= fft_length_plus_one_;
+        fft_length <= 1<<fft_nfft;
+        fft_length_plus_one <= (1<<fft_nfft) + 1;
 
         // We need 2x amount of samples, one for Fup and one for Fdown
-        if (nfft_i < RSZ-1) begin
-            fft_length2_ <= 1<<(nfft_i+1);
-            up_toggle_ <= 1;
+        if (fft_nfft < RSZ-1) begin
+            fft_length2 <= 1<<(fft_nfft+1);
+            up_toggle <= 1;
         end else begin
-            fft_length2_ <= 1<<nfft_i;
-            up_toggle_ <= 0;
+            fft_length2 <= 1<<fft_nfft;
+            up_toggle <= 0;
         end
-        fft_length2 <= fft_length2_;
-        up_toggle <= up_toggle_;
         fft_conf_dvalid <= 1;
     end else if (fft_conf_rdy) begin
         fft_conf_dvalid <= 0;
