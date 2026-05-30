@@ -257,11 +257,14 @@ end
 //---------------------------------------------------------------------------------
 //  ADC buffer RAM
 
+localparam SYS_ADDR_DELAY = (5-1);
+
 logic [ ASZ-1: 0] adc_a_rd      ;
 logic [ ASZ-1: 0] adc_b_rd      ;
 reg   [ RSZ-1: 0] adc_wp        ;
-reg   [ RSZ-1: 0] adc_raddr     ;
-reg   [   4-1: 0] adc_rval      ;
+reg   [ RSZ-1: 0] adc_a_raddr   ;
+reg   [ RSZ-1: 0] adc_b_raddr   ;
+reg   [ SYS_ADDR_DELAY: 0] adc_rval;
 wire              adc_rd_dv     ;
 reg               adc_we        ;
 reg               adc_we_keep   ;
@@ -289,14 +292,14 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (RSZ),
     .ADDR_WIDTH_B           (RSZ),
     .CLOCKING_MODE          ("common_clock"),
-    .READ_LATENCY_B         (3),
+    .READ_LATENCY_B         (SYS_ADDR_DELAY-2),
     .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (ASZ),
     .WRITE_DATA_WIDTH_A     (ASZ),
     .BYTE_WRITE_WIDTH_A     (ASZ)
 ) adc_a_buf (
     .addra  (adc_wp),
-    .addrb  (adc_raddr),
+    .addrb  (adc_a_raddr),
     .clka   (adc_clk_i),
     .dina   (adc_a_dat),
     .doutb  (adc_a_rd),
@@ -312,16 +315,15 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (RSZ),
     .ADDR_WIDTH_B           (RSZ),
     .CLOCKING_MODE          ("common_clock"),
-    .READ_LATENCY_B         (3),
+    .READ_LATENCY_B         (SYS_ADDR_DELAY-2),
     .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (ASZ),
     .WRITE_DATA_WIDTH_A     (ASZ),
     .BYTE_WRITE_WIDTH_A     (ASZ)
 ) adc_b_buf (
     .addra  (adc_wp),
-    .addrb  (adc_raddr),
-    .clka   (clk_i),
-    .clkb   (adc_clk_i),
+    .addrb  (adc_b_raddr),
+    .clka   (adc_clk_i),
     .dina   (adc_b_dat),
     .doutb  (adc_b_rd),
     .ena    (1'b1),
@@ -407,12 +409,13 @@ always @(posedge adc_clk_i) begin
    if (adc_rstn_i == 1'b0)
       adc_rval <= 4'h0 ;
    else
-      adc_rval <= {adc_rval[2:0], (sys_ren || sys_wen)};
+      adc_rval <= {adc_rval[SYS_ADDR_DELAY-1:0], (sys_ren || sys_wen)};
 end
-assign adc_rd_dv = adc_rval[3];
+assign adc_rd_dv = adc_rval[SYS_ADDR_DELAY];
 
 always @(posedge adc_clk_i) begin
-   adc_raddr   <= sys_addr[RSZ-1+2:2] ; // address synchronous to clock
+   adc_a_raddr <= sys_addr[RSZ-1+2:2]; // address synchronous to clock
+   adc_b_raddr <= sys_addr[RSZ-1+2:2];
 end
 
 
@@ -444,18 +447,18 @@ logic [ HSZ-1: 0]   fft_hist_step;
 logic [ RSZ-1: 0]   x_step;
 logic [ RSZ-1: 0]   y_step;
 
-logic [ FSZ-1: 0]   fft_hist_rdata_up_a;
-logic [ FSZ-1: 0]   fft_hist_rdata_down_a;
-logic [ FSZ-1: 0]   fft_hist_rdata_up_b;
-logic [ FSZ-1: 0]   fft_hist_rdata_down_b;
+logic [ FSZ-1: 0]   fft_hist_rdata_up_a, fft_hist_rdata_up_a_;
+logic [ FSZ-1: 0]   fft_hist_rdata_down_a, fft_hist_rdata_down_a_;
+logic [ FSZ-1: 0]   fft_hist_rdata_up_b, fft_hist_rdata_up_b_;
+logic [ FSZ-1: 0]   fft_hist_rdata_down_b, fft_hist_rdata_down_b_;
 
 logic [ 16-1:  0]   fft_wp_last_a;
 logic [ 16-1:  0]   fft_wp_last_b;
 
-logic [ DSZ-1: 0]   fft_rdata_up_a;
-logic [ DSZ-1: 0]   fft_rdata_down_a;
-logic [ DSZ-1: 0]   fft_rdata_up_b;
-logic [ DSZ-1: 0]   fft_rdata_down_b;
+logic [ DSZ-1: 0]   fft_rdata_up_a, fft_rdata_up_a_;
+logic [ DSZ-1: 0]   fft_rdata_down_a, fft_rdata_down_a_;
+logic [ DSZ-1: 0]   fft_rdata_up_b, fft_rdata_up_b_;
+logic [ DSZ-1: 0]   fft_rdata_down_b, fft_rdata_down_b_;
 
 logic [ QSZ-1:0]    fft_q_wp_a;
 logic [ QSZ-1:0]    fft_q_rp_a;
@@ -602,7 +605,29 @@ logic [16-1: 0] fft_conf_data = {{7-1{1'b0}}, fft_fwd_inv, {3-1{1'b0}}, fft_nfft
 assign fft_wp_last_a = 2**fft_nfft-1;
 assign fft_wp_last_b = 2**fft_nfft-1;
 
-fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_a (
+always @(posedge adc_clk_i) begin
+    fft_rdata_up_a <= fft_rdata_up_a_;
+    fft_rdata_up_b <= fft_rdata_up_b_;
+    fft_rdata_down_b <= fft_rdata_down_b_;
+    fft_hist_rdata_up_a <= fft_hist_rdata_up_a_;
+    fft_hist_rdata_up_b <= fft_hist_rdata_up_b_;
+    fft_hist_rdata_down_b <= fft_hist_rdata_down_b_;
+    if (fft_nfft < RSZ-1) begin
+        fft_rdata_down_a <= fft_rdata_down_a_;
+        fft_hist_rdata_down_a <= fft_hist_rdata_down_a_;
+    end else begin
+        fft_rdata_down_a <= fft_rdata_up_b_;
+        fft_hist_rdata_down_a <= fft_hist_rdata_up_b_;
+    end
+end
+
+fft_proc #(.ASZ(ASZ),
+           .QSZ(QSZ),
+           .DSZ(DSZ),
+           .FSZ(FSZ),
+           .RSZ(RSZ),
+           .HSZ(HSZ),
+           .SYNC_FF(SYS_ADDR_DELAY-2)) fft_a (
    .adc_clk_i (adc_clk_i),
    .adc_rstn_i (fft_rstn_i),
 
@@ -623,16 +648,16 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
 
    .sys_addr (sys_addr),
 
-   .fft_rdata_up_o (fft_rdata_up_a),
-   .fft_rdata_down_o (fft_rdata_down_a),
+   .fft_rdata_up_o (fft_rdata_up_a_),
+   .fft_rdata_down_o (fft_rdata_down_a_),
    // .fft_wp_last (fft_wp_last_a[FSZ-1:0]),
 
    .fft_index_flush_i (fft_index_flush),
    .fft_index_valid_i (fft_index_valid[IDX_PIPELINE+2]),
    .fft_hist_index_i (fft_hist_index[IDX_PIPELINE]),
 
-   .fft_hist_rdata_up_o (fft_hist_rdata_up_a),
-   .fft_hist_rdata_down_o (fft_hist_rdata_down_a),
+   .fft_hist_rdata_up_o (fft_hist_rdata_up_a_),
+   .fft_hist_rdata_down_o (fft_hist_rdata_down_a_),
 
    .status_o (fft_status[0]),
    .fft_done_o (fft_done[0]),
@@ -654,7 +679,13 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
    .overflow_cnt_o (fft_overflow_cnt)
 );
 
-fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft_b (
+fft_proc #(.ASZ(ASZ),
+           .QSZ(QSZ),
+           .DSZ(DSZ),
+           .FSZ(FSZ),
+           .RSZ(RSZ),
+           .HSZ(HSZ),
+           .SYNC_FF(SYS_ADDR_DELAY-2)) fft_b (
    .adc_clk_i (adc_clk_i),
    .adc_rstn_i (fft_rstn_i),
 
@@ -675,16 +706,16 @@ fft_proc #(.ASZ(ASZ), .QSZ(QSZ), .DSZ(DSZ), .FSZ(FSZ), .RSZ(RSZ), .HSZ(HSZ)) fft
 
    .sys_addr (sys_addr),
 
-   .fft_rdata_up_o (fft_rdata_up_b),
-   .fft_rdata_down_o (fft_rdata_down_b),
+   .fft_rdata_up_o (fft_rdata_up_b_),
+   .fft_rdata_down_o (fft_rdata_down_b_),
    // .fft_wp_last (fft_wp_last_b[FSZ-1:0]),
 
    .fft_index_flush_i (fft_index_flush),
    .fft_index_valid_i (fft_index_valid[IDX_PIPELINE+2]),
    .fft_hist_index_i (fft_hist_index[IDX_PIPELINE]),
 
-   .fft_hist_rdata_up_o (fft_hist_rdata_up_b),
-   .fft_hist_rdata_down_o (fft_hist_rdata_down_b),
+   .fft_hist_rdata_up_o (fft_hist_rdata_up_b_),
+   .fft_hist_rdata_down_o (fft_hist_rdata_down_b_),
 
    .status_o (fft_status[1]),
    .fft_done_o (fft_done[1]),
@@ -1471,11 +1502,10 @@ end else begin
      20'h1???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_a_rd}              ; end
      20'h2???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_b_rd}              ; end
 
-     20'h3???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= sys_addr[2] ? (fft_nfft<RSZ-1 ? fft_rdata_down_a : fft_rdata_up_b) : fft_rdata_up_a; end
+     20'h3???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= sys_addr[2] ? fft_rdata_down_a : fft_rdata_up_a; end
      20'h4???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= sys_addr[2] ? fft_rdata_down_b : fft_rdata_up_b; end
 
-     20'h5???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, (fft_nfft<RSZ-1 ? fft_hist_rdata_down_a : fft_hist_rdata_up_b),
-                                                                 {16-FSZ{1'b0}}, fft_hist_rdata_up_a} ; end
+     20'h5???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, fft_hist_rdata_down_a, {16-FSZ{1'b0}}, fft_hist_rdata_up_a} ; end
      20'h6???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, fft_hist_rdata_down_b, {16-FSZ{1'b0}}, fft_hist_rdata_up_b} ; end
 
      // For debugging purpose

@@ -4,7 +4,8 @@ module fft_proc #(
   parameter FSZ,        // FFT transform length 2^FSZ
   parameter RSZ,        // RAM size 2^RSZ
   parameter HSZ,        // fft history buffer size 2^HSZ (Note: consider word size of 32bit, better not exceed 64KBytes in total)
-  parameter QSZ         // FFT queue size 2^QSZ
+  parameter QSZ,        // FFT queue size 2^QSZ
+  parameter SYNC_FF     // memory read delay
 )(
   input logic             adc_clk_i,
   input logic             clk_i,
@@ -103,8 +104,6 @@ logic [ FSZ-1: 0]   fft_wp_index;
 // sign extend the data for padding according to xfft requirement
 assign fft_data_ext = {16-ASZ{fft_data_i[ASZ-1]}};
 
-localparam SYNC_FF = 3;
-
 xpm_cdc_sync_rst #(
     .DEST_SYNC_FF (SYNC_FF)
 ) (
@@ -154,17 +153,12 @@ logic           up_out, up_toggle, up_toggle_;
 logic [FSZ-1:0] acq_up, acq_up_, acq_down, acq_down_;
 
 
-logic [ FSZ-1: 0] hist_raddr_, hist_raddr;
-logic [ FSZ-1: 0] buf_raddr_, buf_raddr;
+logic [ FSZ-1: 0] hist_raddr;
+logic [ FSZ-1: 0] buf_raddr;
 
-// memory read delay is 2 + 2 (address latch). The total delay is decided by
-// red_pitaya_scope:adc_rd_dv = adc_rval[3], which is a 4-bit shift register
-localparam MEM_SYNC_FF = 2;
 always @(posedge adc_clk_i) begin
-    hist_raddr_ <= sys_addr[HSZ-1+2:2];
-    hist_raddr <= hist_raddr_;
-    buf_raddr_ <= sys_addr[FSZ-1+3:3];
-    buf_raddr <= buf_raddr_;
+    hist_raddr <= sys_addr[HSZ-1+2:2];
+    buf_raddr <= sys_addr[FSZ-1+3:3];
 end
 
 xpm_memory_sdpram #(
@@ -172,7 +166,7 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (FSZ),
     .ADDR_WIDTH_B           (FSZ),
     .CLOCKING_MODE          ("independent_clock"),
-    .READ_LATENCY_B         (MEM_SYNC_FF),
+    .READ_LATENCY_B         (SYNC_FF),
     .WRITE_MODE_B           ("write_first"),
     .READ_DATA_WIDTH_B      (DSZ),
     .WRITE_DATA_WIDTH_A     (DSZ),
@@ -196,7 +190,7 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (FSZ),
     .ADDR_WIDTH_B           (FSZ),
     .CLOCKING_MODE          ("independent_clock"),
-    .READ_LATENCY_B         (MEM_SYNC_FF),
+    .READ_LATENCY_B         (SYNC_FF),
     .WRITE_MODE_B           ("write_first"),
     .READ_DATA_WIDTH_B      (DSZ),
     .WRITE_DATA_WIDTH_A     (DSZ),
@@ -220,7 +214,7 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (HSZ),
     .ADDR_WIDTH_B           (HSZ),
     .CLOCKING_MODE          ("independent_clock"),
-    .READ_LATENCY_B         (MEM_SYNC_FF),
+    .READ_LATENCY_B         (SYNC_FF),
     .WRITE_MODE_B           ("write_first"),
     .READ_DATA_WIDTH_B      (FSZ),
     .WRITE_DATA_WIDTH_A     (FSZ),
@@ -244,7 +238,7 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (HSZ),
     .ADDR_WIDTH_B           (HSZ),
     .CLOCKING_MODE          ("independent_clock"),
-    .READ_LATENCY_B         (MEM_SYNC_FF),
+    .READ_LATENCY_B         (SYNC_FF),
     .WRITE_MODE_B           ("write_first"),
     .READ_DATA_WIDTH_B      (FSZ),
     .WRITE_DATA_WIDTH_A     (FSZ),
@@ -321,9 +315,6 @@ always @(posedge adc_clk_i) begin
         fft_conf_reg <= fft_conf_input;
     end
 end
-
-// logic [3-1 : 0]  fft_rstn = 3'b111;
-// logic            fft_rstn_i = &fft_rstn[2:1];
 
 logic [2-1 : 0]  fft_rstn = 2'b11;
 logic            fft_rstn_i = &fft_rstn;

@@ -180,15 +180,16 @@ report_power             -file    $path_out/post_synth_power.rpt
 # set_multicycle_path -setup 2 -to $multicyle_path_to
 # set_multicycle_path -hold 1 -to $multicyle_path_to
 
-# set multicyle_path [concat [get_cells i_scope*/fft*/fft_length*reg*] \
-#                            [get_cells i_scope*/fft*/fft_length*reg*] \
-#                    ]
-# set_multicycle_path -hold 1 -from $multicyle_path
-# set_multicycle_path -setup 2 -from $multicyle_path
-# set_multicycle_path -hold 1 -to $multicyle_path
-# set_multicycle_path -setup 2 -to $multicyle_path
+set multicyle_path [concat [get_cells i_scope*/fft_nfft*reg*] \
+                           [get_cells i_scope*/fft*/fft_nfft*reg*] \
+                   ]
+set_multicycle_path -hold 1 -from $multicyle_path
+set_multicycle_path -setup 2 -from $multicyle_path
+set_multicycle_path -hold 1 -to $multicyle_path
+set_multicycle_path -setup 2 -to $multicyle_path
 
 opt_design
+# opt_design -directive NoBramPowerOpt
 power_opt_design
 place_design
 phys_opt_design
