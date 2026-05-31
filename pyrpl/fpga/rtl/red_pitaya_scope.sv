@@ -761,6 +761,15 @@ end else if (sys_wen) begin
     end
 end
 
+xpm_cdc_single #(
+    .DEST_SYNC_FF (2)
+) (
+    .src_clk   (fft_clk_i),
+    .src_in    (fft_we_cnt[0] <= 2**(FSZ+1)),
+    .dest_clk  (adc_clk_i),
+    .dest_out  (fft_we_cnt_ready)
+);
+
 always @(posedge adc_clk_i)
 if (fft_rstn_i == 0) begin
     fft_state <= S_IDLE;
@@ -782,7 +791,7 @@ end else begin
         end else
             fft_active_o <= 0;
     S_DELAY:
-        if (fft_we_cnt[0] <= 2**(FSZ+1))
+        if (fft_we_cnt_ready)
             fft_state <= S_WAIT1;
     S_WAIT1:
         if (fft_state_cnt >= fft_wait1_cnt) begin

@@ -180,8 +180,8 @@ report_power             -file    $path_out/post_synth_power.rpt
 # set_multicycle_path -setup 2 -to $multicyle_path_to
 # set_multicycle_path -hold 1 -to $multicyle_path_to
 
-set multicyle_path [concat [get_cells i_scope*/fft_nfft*reg*] \
-                           [get_cells i_scope*/fft*/fft_nfft*reg*] \
+set multicyle_path [concat [get_cells i_scope*/fft_nfft*] \
+                           [get_cells i_scope*/fft*/fft_nfft*] \
                    ]
 set_multicycle_path -hold 1 -from $multicyle_path
 set_multicycle_path -setup 2 -from $multicyle_path
