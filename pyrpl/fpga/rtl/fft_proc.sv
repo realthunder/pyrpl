@@ -5,33 +5,32 @@ module fft_proc #(
   parameter RSZ,        // RAM size 2^RSZ
   parameter HSZ,        // fft history buffer size 2^HSZ (Note: consider word size of 32bit, better not exceed 64KBytes in total)
   parameter QSZ,        // FFT queue size 2^QSZ
-  parameter SYNC_FF     // memory read delay
+  parameter OUT_DELAY   // memory output read delay
 )(
   input logic             adc_clk_i,
   input logic             clk_i,
-  input logic             adc_rstn_i,
-  input logic  [ ASZ-1:0] data_i,
-  input logic             enable_i,
-  input logic             dvalid_i, 
-  input logic             trig_i,
-  input logic  [ 32-1: 0] set_dly,
+  input logic             adc_rstn_in,
+  input logic  [ ASZ-1:0] data_in,
+  input logic             enable_in,
+  input logic             dvalid_in, 
+  input logic             trig_in,
 
-  input logic  [ 16-1: 0] fft_threshold_k,
-  input logic  [ FSZ-1:0] fft_peak_start,
-  input logic  [ DSZ-1:0] fft_peak_minimum,
+  input logic  [ 16-1: 0] fft_threshold_k_in,
+  input logic  [ FSZ-1:0] fft_peak_start_in,
+  input logic  [ DSZ-1:0] fft_peak_minimum_in,
 
-  input logic  [ FSZ-1:0] fft_acq_up,
-  input logic  [ FSZ-1:0] fft_acq_down,
+  input logic  [ FSZ-1:0] fft_acq_up_in,
+  input logic  [ FSZ-1:0] fft_acq_down_in,
 
-  input logic  [ 32-1: 0] sys_addr,
+  input logic  [ 32-1: 0] sys_addr_in,
 
   output logic [DSZ-1: 0] fft_rdata_up_o,
   output logic [DSZ-1: 0] fft_rdata_down_o,
   output logic [FSZ-1: 0] fft_wp_last,
 
-  input logic             fft_index_flush_i,
-  input logic             fft_index_valid_i,
-  input logic  [ HSZ-1:0] fft_hist_index_i,
+  input logic             fft_index_flush_in,
+  input logic             fft_index_valid_in,
+  input logic  [ HSZ-1:0] fft_hist_index_in,
 
   output logic [ FSZ-1:0] fft_hist_rdata_up_o,
   output logic [ FSZ-1:0] fft_hist_rdata_down_o,
@@ -39,21 +38,20 @@ module fft_proc #(
   output logic [  6-1: 0] status_o,
   output logic            fft_done_o,
   output logic            fft_peak_ready_o,
-  output logic [ FSZ : 0] fft_count,
-  output logic [ FSZ+DSZ-1: 0]fft_sum,
-  output logic [ FSZ-1:0] fft_peak_index_up,
-  output logic [ FSZ-1:0] fft_peak_index_down,
-  output logic [ DSZ-1:0] fft_peak_value_up,
-  output logic [ DSZ-1:0] fft_peak_value_down,
-  output logic [ 32-1: 0] fft_frame_cnt,
-  output logic [ 32-1: 0] fft_scan_frame_cnt,
+
+  output logic [ FSZ : 0] fft_count_o,
+  output logic [ FSZ+DSZ-1: 0]fft_sum_o,
+  output logic [ FSZ-1:0] fft_peak_index_up_o,
+  output logic [ FSZ-1:0] fft_peak_index_down_o,
+  output logic [ DSZ-1:0] fft_peak_value_up_o,
+  output logic [ DSZ-1:0] fft_peak_value_down_o,
+
   output logic [ 32-1: 0] fft_we_cnt,
-  output logic [ FSZ-1:0] padding_cnt,
 
-  output logic [ QSZ-1:0] fft_q_wp,
-  output logic [ QSZ-1:0] fft_q_rp,
+  output logic [ 32-1: 0] frame_cnt_o,
+  output logic [ 32-1: 0] scan_frame_cnt_o,
 
-  input logic  [  16-1:0] fft_conf_data_i,
+  input logic  [  16-1:0] fft_conf_data_in,
 
   output logic [  32-1:0] overflow_cnt_o
 );
@@ -104,6 +102,56 @@ logic [ FSZ-1: 0]   fft_wp_index;
 // sign extend the data for padding according to xfft requirement
 assign fft_data_ext = {16-ASZ{fft_data_i[ASZ-1]}};
 
+logic [ FSZ-1: 0] hist_raddr;
+logic [ FSZ-1: 0] buf_raddr;
+
+logic             adc_rstn_i;
+logic  [ ASZ-1:0] data_i;
+logic             enable_i;
+logic             dvalid_i; 
+logic             trig_i;
+
+logic  [ 16-1: 0] fft_threshold_k_arg;
+logic  [ FSZ-1:0] fft_peak_start_arg;
+logic  [ DSZ-1:0] fft_peak_minimum_arg;
+
+logic  [ FSZ-1:0] fft_acq_up_i;
+logic  [ FSZ-1:0] fft_acq_down_i;
+
+logic  [ 32-1: 0] sys_addr_i;
+
+logic             fft_index_flush_i;
+logic             fft_index_valid_i;
+logic  [ HSZ-1:0] fft_hist_index_i;
+
+logic  [  16-1:0] fft_conf_data_i;
+
+always @(posedge adc_clk_i) begin
+    hist_raddr <= sys_addr_in[HSZ-1+2:2];
+    buf_raddr <= sys_addr_in[FSZ-1+3:3];
+end
+
+always @(posedge adc_clk_i) begin
+    adc_rstn_i <= adc_rstn_in;
+    data_i <= data_in;
+    enable_i <= enable_in;
+    dvalid_i <= dvalid_in; 
+    trig_i <= trig_in;
+    fft_threshold_k_arg <= fft_threshold_k_in;
+    fft_peak_start_arg <= fft_peak_start_in;
+    fft_peak_minimum_arg <= fft_peak_minimum_in;
+    fft_acq_up_i <= fft_acq_up_in;
+    fft_acq_down_i <= fft_acq_down_in;
+    sys_addr_i <= sys_addr_in;
+    fft_index_flush_i <= fft_index_flush_in;
+    fft_index_valid_i <= fft_index_valid_in;
+    fft_hist_index_i <= fft_hist_index_in;
+    fft_conf_data_i <= fft_conf_data_in;
+end
+
+localparam SYNC_FF = 2;
+localparam MEM_SYNC_FF = OUT_DELAY-1;
+
 xpm_cdc_sync_rst #(
     .DEST_SYNC_FF (SYNC_FF)
 ) (
@@ -145,29 +193,57 @@ xpm_cdc_single #(
     .dest_out  (fft_peak_ready_o)
 );
 
+logic [ FSZ : 0]        fft_count, fft_count_;
+logic [ FSZ+DSZ-1: 0]   fft_sum, fft_sum_;
+logic [ FSZ-1:0]        fft_peak_index_up, fft_peak_index_up_;
+logic [ FSZ-1:0]        fft_peak_index_down, fft_peak_index_down_;
+logic [ DSZ-1:0]        fft_peak_value_up, fft_peak_value_up_;
+logic [ DSZ-1:0]        fft_peak_value_down, fft_peak_value_down_;
+logic                   out_send, out_send_;
+
+xpm_cdc_handshake #(
+    .WIDTH          (FSZ+1 + FSZ+DSZ + FSZ + FSZ + DSZ + DSZ),
+    .DEST_EXT_HSK   (0),
+    .SRC_SYNC_FF    (SYNC_FF),
+    .DEST_SYNC_FF   (SYNC_FF)
+) out_sync (
+    .src_clk        (clk_i),
+    .src_in         ({fft_count,
+                      fft_sum,
+                      fft_peak_index_up,
+                      fft_peak_index_down,
+                      fft_peak_value_up,
+                      fft_peak_value_down
+                     }),
+    .src_rcv        (out_recv),
+    .src_send       (out_send),
+    .dest_clk       (adc_clk_i),
+    .dest_out       ({fft_count_,
+                      fft_sum_,
+                      fft_peak_index_up_,
+                      fft_peak_index_down_,
+                      fft_peak_value_up_,
+                      fft_peak_value_down_
+                     }),
+    .dest_req       (out_req)
+);
+
 logic [ 16-1:0] fft_conf_data, fft_conf_data_, conf_data_i;
-logic [  5-1:0] fft_nfft, fft_nfft_;
-logic [ 32-1:0] fft_length, fft_length2, fft_length_plus_one;
+logic [  5-1:0] fft_nfft, fft_nfft_, fft_shift, fft_shift_;
+logic [ 32-1:0] fft_length, fft_length2, fft_length_plus_two;
+logic [ 32-1:0] fft_length_, fft_length2_, fft_length_plus_two_;
 logic           conf_send;
 logic           up_out, up_toggle, up_toggle_;
 logic [FSZ-1:0] acq_up, acq_up_, acq_down, acq_down_;
 
-
-logic [ FSZ-1: 0] hist_raddr;
-logic [ FSZ-1: 0] buf_raddr;
-
-always @(posedge adc_clk_i) begin
-    hist_raddr <= sys_addr[HSZ-1+2:2];
-    buf_raddr <= sys_addr[FSZ-1+3:3];
-end
-
 xpm_memory_sdpram #(
+    .MEMORY_PRIMITIVE       ("block"),
     .MEMORY_SIZE            ((1<<FSZ)*DSZ),
     .ADDR_WIDTH_A           (FSZ),
     .ADDR_WIDTH_B           (FSZ),
     .CLOCKING_MODE          ("independent_clock"),
-    .READ_LATENCY_B         (SYNC_FF),
-    .WRITE_MODE_B           ("write_first"),
+    .READ_LATENCY_B         (MEM_SYNC_FF),
+    .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (DSZ),
     .WRITE_DATA_WIDTH_A     (DSZ),
     .BYTE_WRITE_WIDTH_A     (DSZ)
@@ -179,19 +255,20 @@ xpm_memory_sdpram #(
     .dina   (fft_maxi_data[DSZ-1:0]),
     .doutb  (fft_rdata_up_o),
     .ena    (1'b1),
-    .wea    ({up_out && fft_maxi_valid && fft_maxi_rdy}),
+    .wea    (up_out && fft_maxi_valid && fft_maxi_rdy),
     .rstb   (1'b0),
     .regceb (1'b1),
     .enb    (1'b1)
 );
 
 xpm_memory_sdpram #(
+    .MEMORY_PRIMITIVE       ("block"),
     .MEMORY_SIZE            ((1<<FSZ)*DSZ),
     .ADDR_WIDTH_A           (FSZ),
     .ADDR_WIDTH_B           (FSZ),
     .CLOCKING_MODE          ("independent_clock"),
-    .READ_LATENCY_B         (SYNC_FF),
-    .WRITE_MODE_B           ("write_first"),
+    .READ_LATENCY_B         (MEM_SYNC_FF),
+    .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (DSZ),
     .WRITE_DATA_WIDTH_A     (DSZ),
     .BYTE_WRITE_WIDTH_A     (DSZ)
@@ -203,19 +280,20 @@ xpm_memory_sdpram #(
     .dina   (fft_maxi_data[DSZ-1:0]),
     .doutb  (fft_rdata_down_o),
     .ena    (1'b1),
-    .wea    ({!up_out && fft_maxi_valid && fft_maxi_rdy}),
+    .wea    (!up_out && fft_maxi_valid && fft_maxi_rdy),
     .rstb   (1'b0),
     .regceb (1'b1),
     .enb    (1'b1)
 );
 
 xpm_memory_sdpram #(
+    .MEMORY_PRIMITIVE       ("block"),
     .MEMORY_SIZE            ((1<<HSZ)*FSZ),
     .ADDR_WIDTH_A           (HSZ),
     .ADDR_WIDTH_B           (HSZ),
     .CLOCKING_MODE          ("independent_clock"),
-    .READ_LATENCY_B         (SYNC_FF),
-    .WRITE_MODE_B           ("write_first"),
+    .READ_LATENCY_B         (MEM_SYNC_FF),
+    .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (FSZ),
     .WRITE_DATA_WIDTH_A     (FSZ),
     .BYTE_WRITE_WIDTH_A     (FSZ)
@@ -227,19 +305,20 @@ xpm_memory_sdpram #(
     .dina   (fft_peak_index_down),
     .doutb  (fft_hist_rdata_up_o),
     .ena    (1'b1),
-    .wea    ({peak_up && fft_peak_ready == 2'b01}),
+    .wea    (peak_up && fft_peak_ready == 2'b01),
     .rstb   (1'b0),
     .regceb (1'b1),
     .enb    (1'b1)
 );
 
 xpm_memory_sdpram #(
+    .MEMORY_PRIMITIVE       ("block"),
     .MEMORY_SIZE            ((1<<HSZ)*FSZ),
     .ADDR_WIDTH_A           (HSZ),
     .ADDR_WIDTH_B           (HSZ),
     .CLOCKING_MODE          ("independent_clock"),
-    .READ_LATENCY_B         (SYNC_FF),
-    .WRITE_MODE_B           ("write_first"),
+    .READ_LATENCY_B         (MEM_SYNC_FF),
+    .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (FSZ),
     .WRITE_DATA_WIDTH_A     (FSZ),
     .BYTE_WRITE_WIDTH_A     (FSZ)
@@ -251,11 +330,21 @@ xpm_memory_sdpram #(
     .dina   (fft_peak_index_down),
     .doutb  (fft_hist_rdata_down_o),
     .ena    (1'b1),
-    .wea    ({!peak_up && fft_peak_ready == 2'b01}),
+    .wea    (!peak_up && fft_peak_ready == 2'b01),
     .rstb   (1'b0),
     .regceb (1'b1),
     .enb    (1'b1)
 );
+
+always @(posedge adc_clk_i)
+if (out_req) begin
+    fft_count_o <= fft_count_;
+    fft_sum_o <= fft_sum_;
+    fft_peak_index_up_o <= fft_peak_index_up_;
+    fft_peak_index_down_o <= fft_peak_index_down_;
+    fft_peak_value_up_o <= fft_peak_value_up_;
+    fft_peak_value_down_o <= fft_peak_value_down_;
+end
 
 always @(posedge clk_i)
 if (fft_frame_start) begin
@@ -274,7 +363,7 @@ xpm_cdc_gray #(
     .src_clk      (clk_i),
     .src_in_bin   (frame_cnt),
     .dest_clk     (adc_clk_i),
-    .dest_out_bin (fft_frame_cnt)
+    .dest_out_bin (frame_cnt_o)
 );
 
 xpm_cdc_gray #(
@@ -284,12 +373,12 @@ xpm_cdc_gray #(
     .src_clk      (clk_i),
     .src_in_bin   (scan_frame_cnt),
     .dest_clk     (adc_clk_i),
-    .dest_out_bin (fft_scan_frame_cnt)
+    .dest_out_bin (scan_frame_cnt_o)
 );
 
 logic           fft_conf_dvalid;
 
-logic [16+FSZ+FSZ-1:0] fft_conf_input = {fft_acq_up, fft_acq_down, fft_conf_data_i};
+logic [16+FSZ+FSZ-1:0] fft_conf_input = {fft_acq_up_i, fft_acq_down_i, fft_conf_data_i};
 logic [16+FSZ+FSZ-1:0] fft_conf_reg, conf_data;
 
 xpm_cdc_handshake #(
@@ -319,6 +408,9 @@ end
 logic [2-1 : 0]  fft_rstn = 2'b11;
 logic            fft_rstn_i = &fft_rstn;
 
+logic [ FSZ-1:0] padding_up, padding_down;
+logic [ FSZ-1:0] padding_up_, padding_down_;
+
 // Only allow one-time re-configuration after reset to avoid synchronization issue
 always @(posedge clk_i) begin
     if (conf_req) begin
@@ -332,20 +424,30 @@ always @(posedge clk_i) begin
     acq_up <= acq_up_;
     acq_down <= acq_down_;
     fft_conf_data <= fft_conf_data_;
+    fft_length <= fft_length_;
+    fft_length2 <= fft_length2_;
+    fft_shift <= fft_shift_;
+    fft_length_plus_two <= fft_length_plus_two_;
+    padding_up <= padding_up_;
+    padding_down <= padding_down_;
+    up_toggle <= up_toggle_;
 
     fft_rstn <= {fft_rstn[0], rstn_i};
 
     if (fft_rstn_i == 1'b0) begin
-        fft_length <= 1<<fft_nfft;
-        fft_length_plus_one <= (1<<fft_nfft) + 1;
+        fft_length_ <= 1<<fft_nfft;
+        fft_shift_ <= FSZ - fft_nfft;
+        fft_length_plus_two_ <= (1<<fft_nfft) + 2;
+        padding_up_ <= (1<<fft_nfft) - acq_up;
+        padding_down_ <= (1<<fft_nfft) - acq_down;
 
         // We need 2x amount of samples, one for Fup and one for Fdown
         if (fft_nfft < RSZ-1) begin
-            fft_length2 <= 1<<(fft_nfft+1);
-            up_toggle <= 1;
+            fft_length2_ <= 1<<(fft_nfft+1);
+            up_toggle_ <= 1;
         end else begin
-            fft_length2 <= 1<<fft_nfft;
-            up_toggle <= 0;
+            fft_length2_ <= 1<<fft_nfft;
+            up_toggle_ <= 0;
         end
         fft_conf_dvalid <= 1;
     end else if (fft_conf_rdy) begin
@@ -353,14 +455,13 @@ always @(posedge clk_i) begin
     end
 end
 
-logic [ FSZ-1:0]    padding_up;
-logic [ FSZ-1:0]    padding_down;
-assign  padding_cnt = up_in ? padding_up : padding_down;
-
-logic [ ASZ-1:0]    fin_dout;
-logic fin_rd = fft_we_cnt > 0 && (fft_we_cnt > fft_length2 || fft_saxi_rdy);
+logic [ ASZ-1:0]    fin_dout, fin_dout_;
+logic               fin_rd, fin_empty, fin_empty_;
+logic               padding_done;
+logic [ FSZ-1:0]    padding_cnt;
 
 xpm_fifo_async #(
+    .FIFO_MEMORY_TYPE("block"),
     .FIFO_WRITE_DEPTH(1<<QSZ),
     .WRITE_DATA_WIDTH(ASZ),
     .READ_DATA_WIDTH (ASZ),
@@ -372,22 +473,20 @@ xpm_fifo_async #(
     .rst             (!adc_rstn_i || (trig_i && fft_done_o)),
     .wr_clk          (adc_clk_i),
     .wr_en           (enable_i & dvalid_i),
-    // .wr_data_count   (fft_q_wp),
     .din             (data_i),
 
     .rd_clk          (clk_i),
-    .rd_en           (padding_cnt==0 && fin_rd),
-    // .rd_data_count   (fft_q_rp),
-    .dout            (fin_dout),
+    .rd_en           (padding_done & fin_rd),
+    .dout            (fin_dout_),
 
-    .empty           (fin_empty),
+    .empty           (fin_empty_),
     .full            (fin_full)
 );
-
 
 logic  [ HSZ-1:0] fft_hist_index_o;
 
 xpm_fifo_async #(
+    .FIFO_MEMORY_TYPE("block"),
     .FIFO_WRITE_DEPTH(1<<(QSZ-1)),
     .WRITE_DATA_WIDTH(HSZ),
     .READ_DATA_WIDTH (HSZ),
@@ -409,39 +508,57 @@ xpm_fifo_async #(
     .dout            (fft_hist_index_o)
 );
 
+logic fft_we_one;
+logic fft_we_length_plus_one;
 
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
     fft_we_cnt <= 0;
+    fft_we_one <= 0;
+    fft_we_length_plus_one <= 0;
+    fin_rd <= 0;
     fft_done <= 1;
     up_in <= 1;
+    padding_cnt <= 0;
+    padding_done <= 0;
 end else begin
 
     if (fin_full) begin
         overflow_cnt <= overflow_cnt + 1;
     end
 
+    fin_dout <= fin_dout_;
     fft_data_i <= fin_dout;
+    fin_empty <= fin_empty_;
 
     if (fft_trig && fft_done && up_in) begin
         fft_we_cnt <= fft_length2;
-        padding_up <= (1<<fft_nfft) - acq_up;
-        padding_down <= (1<<fft_nfft) - acq_down;
-    end else if ((padding_cnt > 0 || !fin_empty) && fin_rd) begin
-        if (padding_cnt > 0) begin
-            if (up_in)
-                padding_up <= padding_up - 1;
-            else
-                padding_down <= padding_down - 1;
+        fft_we_one <= 0;
+        fft_we_length_plus_one <= 0;
+        fin_rd <= 1;
+        padding_cnt <= padding_up;
+        padding_done <= 0;
+    end else if ((!padding_done || !fin_empty) && fin_rd) begin
+        if (!padding_done) begin
+            padding_cnt <= padding_cnt - 1;
+            padding_done <= padding_cnt == 1;
         end
-        if (fft_we_cnt == 1 || fft_we_cnt == fft_length_plus_one)
-            up_in <= up_in + up_toggle;
+        if (fft_we_one) begin
+            up_in <= 1;
+            fin_rd <= 0;
+        end else if (fft_we_length_plus_one) begin
+            up_in <= 0;
+            padding_cnt <= padding_down;
+            padding_done <= 0;
+        end
+        fft_we_one <= fft_we_cnt == 2;
+        fft_we_length_plus_one <= fft_we_cnt == fft_length_plus_two;
         fft_we_cnt <= fft_we_cnt - 1;
     end
 
     fft_done <= fft_we_cnt==0;
-    fft_saxi_last <= fft_we_cnt == 1 || fft_we_cnt == fft_length_plus_one;
-    fft_saxi_valid <= (padding_cnt > 0 || !fin_empty) && fft_we_cnt > 0 && fft_we_cnt <= fft_length2;
+    fft_saxi_last <= fft_we_one || fft_we_length_plus_one;
+    fft_saxi_valid <= (!padding_done || !fin_empty) && fin_rd;
 end
 
 always @(posedge clk_i)
@@ -458,19 +575,25 @@ end else if (fft_maxi_valid && fft_maxi_rdy) begin
         up_out <= up_out + up_toggle;
     end else begin
         fft_wp <= fft_wp + 1;
-        fft_wp_index <= fft_wp_reversed >> (FSZ-fft_nfft);
+        fft_wp_index <= fft_wp_reversed >> fft_shift;
     end
 end
 
 assign fft_data = fft_maxi_data[DSZ-1:0];
 assign fft_data_abs = fft_data[DSZ-1] ? -fft_data : fft_data;
-assign fft_data_valid = fft_wp_index>=fft_peak_start && fft_wp_index<fft_length[FSZ:1] && fft_data_abs>fft_peak_minimum;
+assign fft_data_valid = fft_wp_index>=fft_peak_start_arg && fft_wp_index<fft_length[FSZ:1] && fft_data_abs>fft_peak_minimum_arg;
 
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
     fft_peak_ready <= 2'b11;
     peak_up <= 1;
 end else begin
+
+    if (out_recv)
+        out_send <= 0;
+    else if (out_send_)
+        out_send <= 1;
+
     if (fft_index_flush_i) begin
         peak_up <= 1;
     end else begin
@@ -487,17 +610,19 @@ end else begin
             end
             fft_sum <= _fft_sum;
             fft_count <= _fft_count;
-        end
+            out_send_ <= 1;
+        end else
+            out_send_ <= 0;
     end
 
     fft_peak_ready <= {fft_peak_ready[0], peak_ready};
 end
 
 xpm_fifo_axis #(
-    .TDATA_WIDTH    (32),
-    .TUSER_WIDTH    (FSZ+1),
-    .FIFO_DEPTH     (16),
-    .USE_ADV_FEATURES(16'h0000)   // Standard mode
+    .TDATA_WIDTH        (32),
+    .TUSER_WIDTH        (FSZ+1),
+    .FIFO_DEPTH         (16),
+    .USE_ADV_FEATURES   (16'h0000)   // Standard mode
 ) fifo_peak_in (
     .s_aclk         (clk_i),
     .s_aresetn      (rstn_i),
@@ -526,7 +651,7 @@ peak_detector #(.SSZ(FSZ), .DSZ(DSZ)) peak_detector_i (
     .maxi_rdy       (fft_peak_maxi_ready),
     .maxi_valid     (fft_peak_maxi_valid),
     .maxi_last      (fft_peak_maxi_last),
-    .threshold_k_sq (fft_threshold_k),
+    .threshold_k_sq (fft_threshold_k_arg),
     .peak_idx       (fft_peak_idx),
     .peak           (fft_peak),
     .peak2_idx      (fft_peak2_idx),
@@ -561,11 +686,19 @@ fft_wrapper fft_i (
 //---------------------------------------------------------------------------------
 //  System bus connection
 
-assign status_o = {fft_in_halt
+xpm_cdc_array_single #(
+    .WIDTH          (6),
+    .DEST_SYNC_FF   (SYNC_FF)
+) status_sync (
+    .src_clk    (clk_i),
+    .src_in     ({fft_in_halt
                    , fft_out_halt
                    , fft_status_halt
                    , fft_frame_start
                    , fft_tlast_missing
-                   , fft_tlast_unexp};
+                   , fft_tlast_unexp}),
+    .dest_clk   (adc_clk_i),
+    .dest_out   (status_o)
+);
 
 endmodule
