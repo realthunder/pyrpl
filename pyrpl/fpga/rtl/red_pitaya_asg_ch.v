@@ -84,9 +84,7 @@ module red_pitaya_asg_ch #(
 //
 //  DAC buffer RAM
 
-reg   [  14-1: 0] dac_buf [0:(1<<RSZ)-1] ;
-reg   [  14-1: 0] dac_rd    ;
-reg   [  14-1: 0] dac_rdat  ;
+wire  [  14-1: 0] dac_rdat  ;
 reg   [ RSZ-1: 0] dac_rp    ;
 reg   [RSZ+16-1: 0] dac_pnt   ; // read pointer
 reg   [RSZ+16-1: 0] dac_pntp  ; // previous read pointer
@@ -101,31 +99,47 @@ wire              dac_npnt_sub_neg;
 reg   [  28-1: 0] dac_mult  ;
 reg   [  15-1: 0] dac_sum   ;
 
+reg               buf_we;
+reg   [  14-1: 0] dac_wd;
+reg   [  14-1: 0] buf_addr;
+
+xpm_memory_sdpram #(
+    .MEMORY_PRIMITIVE       ("block"),
+    .MEMORY_SIZE            ((1<<RSZ)*14),
+    .ADDR_WIDTH_A           (RSZ),
+    .ADDR_WIDTH_B           (RSZ),
+    .CLOCKING_MODE          ("common_clock"),
+    .WRITE_MODE_B           ("read_first"),
+    .READ_LATENCY_B         (2),
+    .READ_DATA_WIDTH_B      (14),
+    .WRITE_DATA_WIDTH_A     (14),
+    .BYTE_WRITE_WIDTH_A     (14)
+) dac_buf (
+    .addra  (buf_addr),
+    .addrb  (dac_rp),
+    .clka   (dac_clk_i),
+    .dina   (dac_wd),
+    .doutb  (dac_rdat),
+    .ena    (buf_we),
+    .wea    (1'b1),
+    .rstb   (1'b0),
+    .regceb (1'b1),
+    .enb    (1'b1)
+);
+
 // read
 always @(posedge dac_clk_i)
 begin
    buf_rpnt_o <= dac_pnt[16+RSZ-1:16];
    dac_rp     <= (rand_on_i == 1'b1) ? rand_pnt_i : dac_pnt[RSZ+15:16];
-   dac_rd     <= dac_buf[dac_rp] ;
-   dac_rdat   <= dac_rd ;  // improve timing
 end
-
-reg             buf_we;
-reg [  14-1: 0] dac_wd;
 
 // write
 always @(posedge dac_clk_i) begin
-    if (buf_we_i || buf_we)  begin
-        dac_wd <= buf_wdata_i[14-1:0];
-        dac_buf[buf_addr_i] <=  dac_wd;
-    end
+    dac_wd <= buf_wdata_i[14-1:0];
+    buf_addr <= buf_addr_i;
     buf_we <= buf_we_i;
 end
-
-
-// read-back disabled
-//always @(posedge dac_clk_i)
-//buf_rdata_o <= dac_buf[buf_addr_i] ;
 
 // scale and offset
 always @(posedge dac_clk_i)
