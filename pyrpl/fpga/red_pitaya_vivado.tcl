@@ -62,7 +62,7 @@ source                            $path_ip/system_bd.tcl
 
 # generate SDK files
 generate_target all [get_files    system.bd]
-write_hwdef              -file    $path_sdk/red_pitaya.hwdef
+write_hwdef              -file    $path_out/red_pitaya.hwdef
 
 source                            $path_ip/fft_bd.tcl
 generate_target all [get_files    fft.bd]
@@ -180,17 +180,17 @@ report_power             -file    $path_out/post_synth_power.rpt
 # set_multicycle_path -setup 2 -to $multicyle_path_to
 # set_multicycle_path -hold 1 -to $multicyle_path_to
 
-set multicyle_path [concat [get_cells i_scope*/fft_nfft*] \
-                           [get_cells i_scope*/fft*/fft_nfft*] \
-                           [get_cells i_scope*/fft*/*_arg_*] \
-                   ]
-set_multicycle_path -hold 1 -from $multicyle_path
-set_multicycle_path -setup 2 -from $multicyle_path
-set_multicycle_path -hold 1 -to $multicyle_path
-set_multicycle_path -setup 2 -to $multicyle_path
+# set multicyle_path [concat [get_cells i_scope*/fft_nfft*] \
+#                            [get_cells i_scope*/fft*/fft_nfft*] \
+#                            [get_cells i_scope*/fft*/*_arg_*] \
+#                    ]
+# set_multicycle_path -hold 1 -from $multicyle_path
+# set_multicycle_path -setup 2 -from $multicyle_path
+# set_multicycle_path -hold 1 -to $multicyle_path
+# set_multicycle_path -setup 2 -to $multicyle_path
 
-opt_design
-# opt_design -directive NoBramPowerOpt
+# opt_design
+opt_design -directive NoBramPowerOpt
 power_opt_design
 place_design
 phys_opt_design
@@ -248,8 +248,7 @@ write_cfgmem -force -format BIN -size 4 -interface SMAPx32 -disablebitswap -load
 # generate system definition
 ################################################################################
 
-write_sysdef             -hwdef   $path_sdk/red_pitaya.hwdef \
-                         -bitfile $path_out/red_pitaya.bit \
-                         -file    $path_sdk/red_pitaya.sysdef
+write_sysdef             -bitfile $path_out/red_pitaya.bit \
+                         -file    $path_out/red_pitaya.sysdef
 
 

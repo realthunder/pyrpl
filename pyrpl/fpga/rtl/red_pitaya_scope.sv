@@ -257,14 +257,14 @@ end
 //---------------------------------------------------------------------------------
 //  ADC buffer RAM
 
-localparam SYS_ADDR_DELAY = (5-1);
+localparam READ_DELAY = (10-1);
 
 logic [ ASZ-1: 0] adc_a_rd      ;
 logic [ ASZ-1: 0] adc_b_rd      ;
 reg   [ RSZ-1: 0] adc_wp        ;
 reg   [ RSZ-1: 0] adc_a_raddr   ;
 reg   [ RSZ-1: 0] adc_b_raddr   ;
-reg   [ SYS_ADDR_DELAY: 0] adc_rval;
+reg   [ READ_DELAY: 0] adc_rval ;
 wire              adc_rd_dv     ;
 reg               adc_we        ;
 reg               adc_we_keep   ;
@@ -288,13 +288,13 @@ reg 			  pretrig_ok;
 
 
 xpm_memory_sdpram #(
-    .MEMORY_PRIMITIVE       ("block"),
+    // .MEMORY_PRIMITIVE       ("block"),
     .MEMORY_SIZE            ((1<<RSZ)*ASZ),
     .ADDR_WIDTH_A           (RSZ),
     .ADDR_WIDTH_B           (RSZ),
     .CLOCKING_MODE          ("common_clock"),
-    .READ_LATENCY_B         (SYS_ADDR_DELAY-2),
-    .WRITE_MODE_B           ("read_first"),
+    .READ_LATENCY_B         (READ_DELAY-1),
+    // .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (ASZ),
     .WRITE_DATA_WIDTH_A     (ASZ),
     .BYTE_WRITE_WIDTH_A     (ASZ)
@@ -312,13 +312,13 @@ xpm_memory_sdpram #(
 );
 
 xpm_memory_sdpram #(
-    .MEMORY_PRIMITIVE       ("block"),
+    // .MEMORY_PRIMITIVE       ("block"),
     .MEMORY_SIZE            ((1<<RSZ)*ASZ),
     .ADDR_WIDTH_A           (RSZ),
     .ADDR_WIDTH_B           (RSZ),
     .CLOCKING_MODE          ("common_clock"),
-    .READ_LATENCY_B         (SYS_ADDR_DELAY-2),
-    .WRITE_MODE_B           ("read_first"),
+    .READ_LATENCY_B         (READ_DELAY-1),
+    // .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (ASZ),
     .WRITE_DATA_WIDTH_A     (ASZ),
     .BYTE_WRITE_WIDTH_A     (ASZ)
@@ -411,9 +411,9 @@ always @(posedge adc_clk_i) begin
    if (adc_rstn_i == 1'b0)
       adc_rval <= 4'h0 ;
    else
-      adc_rval <= {adc_rval[SYS_ADDR_DELAY-1:0], (sys_ren || sys_wen)};
+      adc_rval <= {adc_rval[READ_DELAY-1:0], (sys_ren || sys_wen)};
 end
-assign adc_rd_dv = adc_rval[SYS_ADDR_DELAY];
+assign adc_rd_dv = adc_rval[READ_DELAY];
 
 always @(posedge adc_clk_i) begin
    adc_a_raddr <= sys_addr[RSZ-1+2:2]; // address synchronous to clock
@@ -631,7 +631,7 @@ fft_proc #(.ASZ(ASZ),
            .FSZ(FSZ),
            .RSZ(RSZ),
            .HSZ(HSZ),
-           .OUT_DELAY(SYS_ADDR_DELAY)) 
+           .READ_DELAY(READ_DELAY)) 
 fft_a (
    .adc_clk_i (adc_clk_i),
    .adc_rstn_in (fft_rstn_i),
@@ -688,7 +688,7 @@ fft_proc #(.ASZ(ASZ),
            .FSZ(FSZ),
            .RSZ(RSZ),
            .HSZ(HSZ),
-           .OUT_DELAY(SYS_ADDR_DELAY)
+           .READ_DELAY(READ_DELAY)
 ) fft_b (
    .adc_clk_i (adc_clk_i),
    .adc_rstn_in (fft_rstn_i),
