@@ -257,14 +257,14 @@ end
 //---------------------------------------------------------------------------------
 //  ADC buffer RAM
 
-localparam SYS_ADDR_DELAY = (5-1);
+localparam READ_DELAY = (10-1);
 
 logic [ ASZ-1: 0] adc_a_rd      ;
 logic [ ASZ-1: 0] adc_b_rd      ;
 reg   [ RSZ-1: 0] adc_wp        ;
 reg   [ RSZ-1: 0] adc_a_raddr   ;
 reg   [ RSZ-1: 0] adc_b_raddr   ;
-reg   [ SYS_ADDR_DELAY: 0] adc_rval;
+reg   [ READ_DELAY: 0] adc_rval ;
 wire              adc_rd_dv     ;
 reg               adc_we        ;
 reg               adc_we_keep   ;
@@ -288,13 +288,13 @@ reg 			  pretrig_ok;
 
 
 xpm_memory_sdpram #(
-    .MEMORY_PRIMITIVE       ("block"),
+    // .MEMORY_PRIMITIVE       ("block"),
     .MEMORY_SIZE            ((1<<RSZ)*ASZ),
     .ADDR_WIDTH_A           (RSZ),
     .ADDR_WIDTH_B           (RSZ),
     .CLOCKING_MODE          ("common_clock"),
-    .READ_LATENCY_B         (SYS_ADDR_DELAY-2),
-    .WRITE_MODE_B           ("read_first"),
+    .READ_LATENCY_B         (READ_DELAY-1),
+    // .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (ASZ),
     .WRITE_DATA_WIDTH_A     (ASZ),
     .BYTE_WRITE_WIDTH_A     (ASZ)
@@ -312,13 +312,13 @@ xpm_memory_sdpram #(
 );
 
 xpm_memory_sdpram #(
-    .MEMORY_PRIMITIVE       ("block"),
+    // .MEMORY_PRIMITIVE       ("block"),
     .MEMORY_SIZE            ((1<<RSZ)*ASZ),
     .ADDR_WIDTH_A           (RSZ),
     .ADDR_WIDTH_B           (RSZ),
     .CLOCKING_MODE          ("common_clock"),
-    .READ_LATENCY_B         (SYS_ADDR_DELAY-2),
-    .WRITE_MODE_B           ("read_first"),
+    .READ_LATENCY_B         (READ_DELAY-1),
+    // .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (ASZ),
     .WRITE_DATA_WIDTH_A     (ASZ),
     .BYTE_WRITE_WIDTH_A     (ASZ)
@@ -411,9 +411,9 @@ always @(posedge adc_clk_i) begin
    if (adc_rstn_i == 1'b0)
       adc_rval <= 4'h0 ;
    else
-      adc_rval <= {adc_rval[SYS_ADDR_DELAY-1:0], (sys_ren || sys_wen)};
+      adc_rval <= {adc_rval[READ_DELAY-1:0], (sys_ren || sys_wen)};
 end
-assign adc_rd_dv = adc_rval[SYS_ADDR_DELAY];
+assign adc_rd_dv = adc_rval[READ_DELAY];
 
 always @(posedge adc_clk_i) begin
    adc_a_raddr <= sys_addr[RSZ-1+2:2]; // address synchronous to clock
@@ -428,7 +428,6 @@ logic               fft_trig_sync;
 
 typedef enum {
     S_IDLE,
-    S_DELAY,
     S_WAIT1,
     S_FFT_UP,
     S_WAIT2,
@@ -608,6 +607,8 @@ logic [16-1: 0] fft_conf_data = {{7-1{1'b0}}, fft_fwd_inv, {3-1{1'b0}}, fft_nfft
 assign fft_wp_last_a = (1<<fft_nfft)-1;
 assign fft_wp_last_b = (1<<fft_nfft)-1;
 
+logic fft_input_clk = adc_clk_i;
+
 always @(posedge adc_clk_i) begin
     fft_parallel <= fft_nfft<RSZ-1;
     // fft_rdata_up_a <= fft_rdata_up_a_;
@@ -631,12 +632,12 @@ fft_proc #(.ASZ(ASZ),
            .FSZ(FSZ),
            .RSZ(RSZ),
            .HSZ(HSZ),
-           .OUT_DELAY(SYS_ADDR_DELAY)) 
+           .READ_DELAY(READ_DELAY)) 
 fft_a (
    .adc_clk_i (adc_clk_i),
    .adc_rstn_in (fft_rstn_i),
 
-   .clk_i (fft_clk_i),
+   .clk_i (fft_input_clk),
 
    .data_in (adc_a_dat),
    .enable_in (fft_up || (fft_down && fft_parallel)),
@@ -654,7 +655,6 @@ fft_a (
 
    .fft_rdata_up_o (fft_rdata_up_a),
    .fft_rdata_down_o (fft_rdata_down_a),
-   // .fft_wp_last (fft_wp_last_a[FSZ-1:0]),
 
    .fft_index_flush_in (fft_index_flush),
    .fft_index_valid_in (fft_index_valid[IDX_PIPELINE+2]),
@@ -688,12 +688,12 @@ fft_proc #(.ASZ(ASZ),
            .FSZ(FSZ),
            .RSZ(RSZ),
            .HSZ(HSZ),
-           .OUT_DELAY(SYS_ADDR_DELAY)
+           .READ_DELAY(READ_DELAY)
 ) fft_b (
    .adc_clk_i (adc_clk_i),
    .adc_rstn_in (fft_rstn_i),
 
-   .clk_i (fft_clk_i),
+   .clk_i (fft_input_clk),
 
    .data_in (fft_parallel ? adc_b_dat : adc_a_dat),
    .enable_in ((fft_parallel && fft_up) || fft_down),
@@ -711,7 +711,6 @@ fft_proc #(.ASZ(ASZ),
 
    .fft_rdata_up_o (fft_rdata_up_b),
    .fft_rdata_down_o (fft_rdata_down_b),
-   // .fft_wp_last (fft_wp_last_b[FSZ-1:0]),
 
    .fft_index_flush_in (fft_index_flush),
    .fft_index_valid_in (fft_index_valid[IDX_PIPELINE+2]),
@@ -768,15 +767,6 @@ end else if (sys_wen) begin
     end
 end
 
-xpm_cdc_single #(
-    .DEST_SYNC_FF (2)
-) (
-    .src_clk   (fft_clk_i),
-    .src_in    (fft_we_cnt[0] <= 2**(FSZ+1)),
-    .dest_clk  (adc_clk_i),
-    .dest_out  (fft_we_cnt_ready)
-);
-
 always @(posedge adc_clk_i)
 if (fft_rstn_i == 0) begin
     fft_state <= S_IDLE;
@@ -791,15 +781,9 @@ end else begin
     S_IDLE: 
         if (fft_trig_i && &fft_done) begin
             fft_state_cnt <= 0;
-            if (set_dly <= 2**(FSZ+1))
-                fft_state <= S_WAIT1;
-            else
-                fft_state <= S_DELAY;
+            fft_state <= S_WAIT1;
         end else
             fft_active_o <= 0;
-    S_DELAY:
-        if (fft_we_cnt_ready)
-            fft_state <= S_WAIT1;
     S_WAIT1:
         if (fft_state_cnt >= fft_wait1_cnt) begin
             fft_state_cnt <= 0;
