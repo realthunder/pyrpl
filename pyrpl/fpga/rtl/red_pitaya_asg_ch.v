@@ -104,12 +104,12 @@ reg   [  14-1: 0] dac_wd;
 reg   [  14-1: 0] buf_addr;
 
 xpm_memory_sdpram #(
-    .MEMORY_PRIMITIVE       ("block"),
+    // .MEMORY_PRIMITIVE       ("block"),
     .MEMORY_SIZE            ((1<<RSZ)*14),
     .ADDR_WIDTH_A           (RSZ),
     .ADDR_WIDTH_B           (RSZ),
     .CLOCKING_MODE          ("common_clock"),
-    .WRITE_MODE_B           ("read_first"),
+    // .WRITE_MODE_B           ("read_first"),
     .READ_LATENCY_B         (2),
     .READ_DATA_WIDTH_B      (14),
     .WRITE_DATA_WIDTH_A     (14),
