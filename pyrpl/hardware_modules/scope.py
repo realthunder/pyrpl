@@ -581,15 +581,16 @@ class Scope(HardwareModule, AcquisitionModule):
         #  return min(length1, length2)
         return self.fft_length
 
-    def get_fft_data(self, addr):
+    def get_fft_data(self, addr1, addr2):
         """raw data from fft"""
-        length = self._fft_length
-        d = np.array(self._reads(addr, length), dtype=np.uint32)
+        length = self._fft_length//2
+        d1 = np.array(self._reads(addr1, length), dtype=np.uint32)
+        d2 = np.array(self._reads(addr2, length), dtype=np.uint32)
         width = self.fft_data_width
-        d[d >= 2 ** (width-1)] -= 2 ** width
-        d = np.array(d, dtype=float) / 2**(width-3)
-        d1 = d[np.arange(0, length, 2)]
-        d2 = d[np.arange(1, length, 2)]
+        d1[d1 >= 2 ** (width-1)] -= 2 ** width
+        d2[d2 >= 2 ** (width-1)] -= 2 ** width
+        d1 = np.array(d1, dtype=float) / 2**(width-3)
+        d2 = np.array(d2, dtype=float) / 2**(width-3)
         return d2, d1
 
     def get_fft_history(self, addr, length):
@@ -601,11 +602,11 @@ class Scope(HardwareModule, AcquisitionModule):
 
     @property
     def _fftdata_ch1(self):
-        return self.get_fft_data(0x30000)
+        return self.get_fft_data(0x30000, 0x40000 if self.nfft < 13 else 0x50000)
 
     @property
     def _fftdata_ch2(self):
-        return self.get_fft_data(0x40000)
+        return self.get_fft_data(0x50000, 0x60000)
 
     def _ffthist_ch1(self, length):
         return self.get_fft_history(0x50000, length)
