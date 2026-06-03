@@ -510,7 +510,7 @@ xpm_fifo_async #(
     .din             (data_i),
 
     .rd_clk          (clk_i),
-    .rd_en           (padding_done & fin_rd),
+    .rd_en           (padding_done & fin_rd && fft_saxi_rdy),
     .dout            (fin_dout),
 
     .empty           (fin_empty),
@@ -570,7 +570,7 @@ end else begin
         fin_rd <= 1;
         padding_cnt <= padding_up;
         padding_done <= 0;
-    end else if ((!padding_done || !fin_empty) && fin_rd) begin
+    end else if ((!padding_done || !fin_empty) && fin_rd && fft_saxi_rdy) begin
         if (!padding_done) begin
             padding_cnt <= padding_cnt - 1;
             padding_done <= padding_cnt == 1;
