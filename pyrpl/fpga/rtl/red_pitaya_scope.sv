@@ -257,7 +257,7 @@ end
 //---------------------------------------------------------------------------------
 //  ADC buffer RAM
 
-localparam READ_DELAY = (10-1);
+localparam READ_DELAY = (11-1);
 
 logic [ ASZ-1: 0] adc_a_rd      ;
 logic [ ASZ-1: 0] adc_b_rd      ;
@@ -494,14 +494,18 @@ logic               fft_peak_ready_a;
 logic               fft_peak_ready_b;
 logic [ 2-1 : 0]    fft_peak_ready;
 
-logic [ 2-1:  0]    fft_rst_i;
+logic [ 2-1:  0]    fft_rstn;
 logic               fft_rstn_i;
+
 always @(posedge adc_clk_i) begin
-    fft_rst_i <= {fft_rst_i[0], (fft_trig_sync && adc_rst_do) || sync_rst_i};
+    if  ((fft_trig_sync && adc_rst_do) || sync_rst_i || !adc_rstn_i)
+        fft_rstn <= 0;
+    else
+        fft_rstn <= {fft_rstn[0], 1'b1};
 end
 
-assign fft_rstn_i = adc_rstn_i && ~|fft_rst_i;
-// assign fft_rstn_i = ~|fft_rst_i;
+// assign fft_rstn_i = adc_rstn_i && ~|fft_rst_i;
+assign fft_rstn_i = fft_rstn[1];
 
 logic fft_trig;
 logic fft_trig_i = fft_trig_sync ? (adc_trig && !adc_dly_do && pretrig_ok) : fft_trig;
@@ -612,19 +616,19 @@ logic fft_input_clk = fft_clk_i;
 always @(posedge adc_clk_i) begin
     fft_single <= fft_nfft<RSZ-1;
 
-    // fft_rdata_up_a <= fft_rdata_up_a_;
-    // fft_rdata_up_b <= fft_rdata_up_b_;
-    // fft_rdata_down_b <= fft_rdata_down_b_;
-    // fft_hist_rdata_up_a <= fft_hist_rdata_up_a_;
-    // fft_hist_rdata_up_b <= fft_hist_rdata_up_b_;
-    // fft_hist_rdata_down_b <= fft_hist_rdata_down_b_;
-    // if (fft_single) begin
-    //     fft_rdata_down_a <= fft_rdata_down_a_;
-    //     fft_hist_rdata_down_a <= fft_hist_rdata_down_a_;
-    // end else begin
-    //     fft_rdata_down_a <= fft_rdata_up_b_;
-    //     fft_hist_rdata_down_a <= fft_hist_rdata_up_b_;
-    // end
+    fft_rdata_up_a <= fft_rdata_up_a_;
+    fft_rdata_up_b <= fft_rdata_up_b_;
+    fft_rdata_down_b <= fft_rdata_down_b_;
+    fft_hist_rdata_up_a <= fft_hist_rdata_up_a_;
+    fft_hist_rdata_up_b <= fft_hist_rdata_up_b_;
+    fft_hist_rdata_down_b <= fft_hist_rdata_down_b_;
+    if (fft_single) begin
+        fft_rdata_down_a <= fft_rdata_down_a_;
+        fft_hist_rdata_down_a <= fft_hist_rdata_down_a_;
+    end else begin
+        fft_rdata_down_a <= fft_rdata_up_b_;
+        fft_hist_rdata_down_a <= fft_hist_rdata_up_b_;
+    end
 end
 
 fft_proc #(.ASZ(ASZ),
@@ -633,7 +637,7 @@ fft_proc #(.ASZ(ASZ),
            .FSZ(FSZ),
            .RSZ(RSZ),
            .HSZ(HSZ),
-           .READ_DELAY(READ_DELAY)) 
+           .READ_DELAY(READ_DELAY-2)) 
 fft_a (
    .adc_clk_i (adc_clk_i),
    .adc_rstn_in (fft_rstn_i),
@@ -654,15 +658,15 @@ fft_a (
 
    .sys_addr_in (sys_addr),
 
-   .fft_rdata_up_o (fft_rdata_up_a),
-   .fft_rdata_down_o (fft_rdata_down_a),
+   .fft_rdata_up_o (fft_rdata_up_a_),
+   .fft_rdata_down_o (fft_rdata_down_a_),
 
    .fft_index_flush_in (fft_index_flush),
    .fft_index_valid_in (fft_index_valid[IDX_PIPELINE+2]),
    .fft_hist_index_in (fft_hist_index[IDX_PIPELINE]),
 
-   .fft_hist_rdata_up_o (fft_hist_rdata_up_a),
-   .fft_hist_rdata_down_o (fft_hist_rdata_down_a),
+   .fft_hist_rdata_up_o (fft_hist_rdata_up_a_),
+   .fft_hist_rdata_down_o (fft_hist_rdata_down_a_),
 
    .status_o (fft_status[0]),
    .fft_done_o (fft_done[0]),
@@ -689,7 +693,7 @@ fft_proc #(.ASZ(ASZ),
            .FSZ(FSZ),
            .RSZ(RSZ),
            .HSZ(HSZ),
-           .READ_DELAY(READ_DELAY)
+           .READ_DELAY(READ_DELAY-2)
 ) fft_b (
    .adc_clk_i (adc_clk_i),
    .adc_rstn_in (fft_rstn_i),
@@ -710,15 +714,15 @@ fft_proc #(.ASZ(ASZ),
 
    .sys_addr_in (sys_addr),
 
-   .fft_rdata_up_o (fft_rdata_up_b),
-   .fft_rdata_down_o (fft_rdata_down_b),
+   .fft_rdata_up_o (fft_rdata_up_b_),
+   .fft_rdata_down_o (fft_rdata_down_b_),
 
    .fft_index_flush_in (fft_index_flush),
    .fft_index_valid_in (fft_index_valid[IDX_PIPELINE+2]),
    .fft_hist_index_in (fft_hist_index[IDX_PIPELINE]),
 
-   .fft_hist_rdata_up_o (fft_hist_rdata_up_b),
-   .fft_hist_rdata_down_o (fft_hist_rdata_down_b),
+   .fft_hist_rdata_up_o (fft_hist_rdata_up_b_),
+   .fft_hist_rdata_down_o (fft_hist_rdata_down_b_),
 
    .status_o (fft_status[1]),
    .fft_done_o (fft_done[1]),
@@ -1503,11 +1507,12 @@ end else begin
      20'h1???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_a_rd}              ; end
      20'h2???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_b_rd}              ; end
 
-     20'h3???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_rdata_up_a                      ; end
-     20'h4???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_rdata_down_a                    ; end
-     20'h5???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_rdata_up_b                      ; end
-     20'h6???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= fft_rdata_down_b                    ; end
+     // 20'h3???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= sys_addr[2] ? (fft_single ? fft_rdata_up_b : fft_rdata_down_a) : fft_rdata_up_a; end
+     20'h3???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= sys_addr[2] ? fft_rdata_down_a : fft_rdata_up_a; end
+     20'h4???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= sys_addr[2] ? fft_rdata_down_b : fft_rdata_up_b; end
 
+     // 20'h5???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, (fft_single ? fft_hist_rdata_up_b : fft_hist_rdata_down_a),
+     //                                                             {16-FSZ{1'b0}}, fft_hist_rdata_up_a} ; end
      20'h5???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, fft_hist_rdata_down_a, {16-FSZ{1'b0}}, fft_hist_rdata_up_a} ; end
      20'h6???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, fft_hist_rdata_down_b, {16-FSZ{1'b0}}, fft_hist_rdata_up_b} ; end
 

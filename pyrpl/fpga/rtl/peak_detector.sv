@@ -94,20 +94,23 @@ assign ready = current_state==S_IDLE;
 
 assign state = current_state;
 
-logic [1:0] rstn;
-always @(posedge clk) begin
-    if (!resetn)
-        rstn <= 0;
-    else
-        rstn <= {rstn[0], 1'b1};
-end
+// logic [1:0] rstn_reg;
+// logic       rstn = rstn[1]
+// always @(posedge clk) begin
+//     if (!resetn)
+//         rstn_reg <= 0;
+//     else
+//         rstn_reg <= {rstn_reg[0], 1'b1};
+// end
+
+logic rstn = resetn;
 
 integer i;
 
 logic [8-1:0] step_cnt;
 
 always @(posedge clk)
-if (!rstn[1]) begin
+if (!rstn) begin
     current_state <= S_IDLE;
     maxi_rdy <= 0;
 
