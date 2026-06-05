@@ -14,6 +14,7 @@ module fft_proc #(
   input logic             enable_in,
   input logic             dvalid_in, 
   input logic             trig_in,
+  input logic             fft_parallel_in,
 
   input logic  [ 16-1: 0] fft_threshold_k_in,
   input logic  [ FSZ-1:0] fft_peak_start_in,
@@ -103,9 +104,10 @@ assign fft_data_ext = {16-ASZ{fft_data_i[ASZ-1]}};
 
 logic             adc_rstn_i;
 
-localparam READ_LATENCY = READ_DELAY-2;
 localparam ADDR_A_DELAY = 2;
 localparam ADDR_B_DELAY = 2;
+localparam READ_A_DELAY = READ_DELAY - ADDR_A_DELAY-2;
+localparam READ_B_DELAY = READ_DELAY - ADDR_B_DELAY-2;
 localparam WRITE_DELAY = 3-1;
 
 logic [ FSZ-1: 0]   buf_a_waddr  [0 : WRITE_DELAY];
@@ -130,6 +132,8 @@ logic  [ ASZ-1:0] data_i;
 logic             enable_i;
 logic             dvalid_i; 
 logic             trig_i;
+
+logic             fft_parallel_i, fft_parallel;
 
 logic  [ 16-1: 0] fft_threshold_k_arg;
 logic  [ FSZ-1:0] fft_peak_start_arg;
@@ -169,6 +173,7 @@ always @(posedge adc_clk_i) begin
     enable_i <= enable_in;
     dvalid_i <= dvalid_in; 
     trig_i <= trig_in;
+    fft_parallel_i <= fft_parallel_in;
     fft_threshold_k_arg <= fft_threshold_k_in;
     fft_peak_start_arg <= fft_peak_start_in;
     fft_peak_minimum_arg <= fft_peak_minimum_in;
@@ -191,13 +196,14 @@ xpm_cdc_sync_rst #(
     .dest_rst   (rstn_i)
 );
 
-xpm_cdc_single #(
+xpm_cdc_array_single #(
+    .WIDTH        (2),
     .DEST_SYNC_FF (SYNC_FF)
-) trig_sync (
+) input_arg_sync (
     .src_clk   (adc_clk_i),
-    .src_in    (trig_i),
+    .src_in    ({fft_parallel_i, trig_i}),
     .dest_clk  (clk_i),
-    .dest_out  (fft_trig)
+    .dest_out  ({fft_parallel, fft_trig})
 );
 
 logic            up_in, fft_done;
@@ -206,7 +212,7 @@ xpm_cdc_single #(
     .DEST_SYNC_FF (SYNC_FF)
 ) done_sync (
     .src_clk   (clk_i),
-    .src_in    (fft_done && up_in),
+    .src_in    (fft_done & up_in),
     .dest_clk  (adc_clk_i),
     .dest_out  (fft_done_o)
 );
@@ -273,7 +279,7 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (FSZ),
     .ADDR_WIDTH_B           (FSZ),
     .CLOCKING_MODE          ("independent_clock"),
-    .READ_LATENCY_B         (READ_LATENCY-ADDR_A_DELAY),
+    .READ_LATENCY_B         (READ_A_DELAY),
     .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (DSZ),
     .WRITE_DATA_WIDTH_A     (DSZ),
@@ -298,7 +304,7 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (FSZ),
     .ADDR_WIDTH_B           (FSZ),
     .CLOCKING_MODE          ("independent_clock"),
-    .READ_LATENCY_B         (READ_LATENCY-ADDR_B_DELAY),
+    .READ_LATENCY_B         (READ_B_DELAY),
     .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (DSZ),
     .WRITE_DATA_WIDTH_A     (DSZ),
@@ -323,7 +329,7 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (HSZ),
     .ADDR_WIDTH_B           (HSZ),
     .CLOCKING_MODE          ("independent_clock"),
-    .READ_LATENCY_B         (READ_LATENCY-ADDR_A_DELAY),
+    .READ_LATENCY_B         (READ_A_DELAY),
     .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (FSZ),
     .WRITE_DATA_WIDTH_A     (FSZ),
@@ -348,7 +354,7 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (HSZ),
     .ADDR_WIDTH_B           (HSZ),
     .CLOCKING_MODE          ("independent_clock"),
-    .READ_LATENCY_B         (READ_LATENCY-ADDR_B_DELAY),
+    .READ_LATENCY_B         (READ_B_DELAY),
     .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (FSZ),
     .WRITE_DATA_WIDTH_A     (FSZ),
@@ -381,8 +387,8 @@ always @(posedge clk_i) begin
     if (fft_frame_start) begin
         if (up_in)
             frame_cnt <= frame_cnt + 1;
-        if (prev_hist_index != fft_hist_index)
-            scan_frame_cnt <= scan_frame_cnt + 1;
+        // if (prev_hist_index != fft_hist_index)
+        //     scan_frame_cnt <= scan_frame_cnt + 1;
         prev_hist_index <= fft_hist_index;
     end
 end
@@ -440,8 +446,8 @@ end
 logic [2-1 : 0]  fft_rstn;
 logic            fft_rstn_i = fft_rstn[1];
 
-logic [ FSZ-1:0] padding_up, padding_down;
-logic [ FSZ-1:0] padding_up_, padding_down_;
+logic [ FSZ  :0] padding_up, padding_down;
+logic [ FSZ  :0] padding_up_, padding_down_;
 
 // Only allow one-time re-configuration after reset to avoid synchronization issue
 always @(posedge clk_i) begin
@@ -459,7 +465,7 @@ always @(posedge clk_i) begin
     padding_down_ <= (1<<fft_nfft) - acq_down;
 
     // We need 2x amount of samples, one for Fup and one for Fdown
-    if (fft_nfft < RSZ-1) begin
+    if (!fft_parallel) begin
         fft_length2_ <= 1<<(fft_nfft+1);
         up_toggle_ <= 1;
     end else begin
@@ -484,20 +490,18 @@ always @(posedge clk_i) begin
     end else
         fft_rstn <= {fft_rstn[0], 1'b1};
 
-    overflow_cnt <= fft_conf_data;
-
     if (fft_rstn_i == 1'b0) begin
         fft_conf_dvalid <= 1;
     end else if (fft_conf_rdy) begin
-        input_cnt <= fft_conf_data;
         fft_conf_dvalid <= 0;
     end
 end
 
 logic [ ASZ-1:0]    fin_dout;
+assign              fft_data_i = fin_dout;
 logic               fin_rd, fin_empty;
 logic               padding_done;
-logic [ FSZ-1:0]    padding_cnt;
+logic [ FSZ  :0]    padding_cnt;
 
 xpm_fifo_async #(
     .FIFO_MEMORY_TYPE("block"),
@@ -507,6 +511,7 @@ xpm_fifo_async #(
     // .RD_DATA_COUNT_WIDTH(QSZ),
     // .WR_DATA_COUNT_WIDTH(QSZ),
     .FIFO_READ_LATENCY(0),
+    .RELATED_CLOCKS(1),
     .READ_MODE       ("fwft")
 ) fifo_in (
     .rst             (!adc_rstn_i || (trig_i && fft_done_o)),
@@ -532,9 +537,10 @@ xpm_fifo_async #(
     // .RD_DATA_COUNT_WIDTH(QSZ),
     // .WR_DATA_COUNT_WIDTH(QSZ),
     .FIFO_READ_LATENCY(0),
+    .RELATED_CLOCKS(1),
     .READ_MODE       ("fwft")
 ) fifo_index (
-    .rst             (!adc_rstn_i || fft_index_flush_i),
+    .rst             (fft_index_flush_i),
     .wr_clk          (adc_clk_i),
     .wr_en           (fft_index_valid_i),
     .din             (fft_hist_index_i),
@@ -543,7 +549,7 @@ xpm_fifo_async #(
     // .full            (findex_full),
 
     .rd_clk          (clk_i),
-    .rd_en           (peak_up != up_toggle && peak_ready_trig),
+    .rd_en           (peak_up != up_toggle & peak_ready_trig),
     .dout            (fft_hist_index_o)
 );
 
@@ -566,7 +572,7 @@ end else begin
         // overflow_cnt <= overflow_cnt + 1;
     end
 
-    fft_data_i <= fin_dout;
+    // fft_data_i <= fin_dout;
 
     if (fft_trig && fft_done && up_in) begin
         fft_we_cnt <= fft_length2;
@@ -575,7 +581,7 @@ end else begin
         fin_rd <= 1;
         padding_cnt <= padding_up;
         padding_done <= 0;
-    end else if ((!padding_done || !fin_empty) && fin_rd && fft_saxi_rdy) begin
+    end else if ((!padding_done || !fin_empty) && fin_rd & fft_saxi_rdy & fft_saxi_valid) begin
         if (fft_we_one) begin
             up_in <= 1;
             fin_rd <= 0;
@@ -592,9 +598,11 @@ end else begin
         fft_we_cnt <= fft_we_cnt - 1;
     end
 
+    overflow_cnt <= fft_we_cnt;
+    input_cnt <= fin_empty;
     fft_done <= fft_we_cnt==0;
     fft_saxi_last <= fft_we_one || fft_we_length_plus_one;
-    fft_saxi_valid <= (!padding_done || !fin_empty) && fin_rd;
+    fft_saxi_valid <= (!padding_done || !fin_empty) && fin_rd && fft_saxi_rdy;
 end
 
 always @(posedge clk_i) begin
@@ -643,6 +651,7 @@ end else if (fft_maxi_valid && fft_maxi_rdy) begin
         fft_wp <= 0;
         fft_wp_index <= 0;
         up_out <= up_out + up_toggle;
+        scan_frame_cnt <= scan_frame_cnt + 1;
     end else begin
         fft_wp <= fft_wp + 1;
         fft_wp_index <= fft_wp_reversed >> fft_shift;
