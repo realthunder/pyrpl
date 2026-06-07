@@ -188,7 +188,7 @@ xpm_cdc_sync_rst #(
 ) rstn_sync (
     .src_rst    (adc_rstn_i),
     .dest_clk   (clk_i),
-    .dest_rst   (rstn_i)
+    .dest_rst   (rstn)
 );
 
 xpm_cdc_single #(
@@ -379,11 +379,11 @@ end
 
 always @(posedge clk_i) begin
     if (fft_frame_start) begin
-        if (up_in)
-            frame_cnt <= frame_cnt + 1;
-        if (prev_hist_index != fft_hist_index)
-            scan_frame_cnt <= scan_frame_cnt + 1;
-        prev_hist_index <= fft_hist_index;
+        // if (up_in)
+        //     frame_cnt <= frame_cnt + 1;
+        // if (prev_hist_index != fft_hist_index)
+        //     scan_frame_cnt <= scan_frame_cnt + 1;
+        // prev_hist_index <= fft_hist_index;
     end
 end
 
@@ -437,8 +437,10 @@ always @(posedge adc_clk_i) begin
     end
 end
 
-logic [2-1 : 0]  fft_rstn;
-logic            fft_rstn_i = fft_rstn[1];
+localparam RESET_DELAY = 4-1;
+logic [RESET_DELAY : 0]  fft_rstn;
+logic                    fft_rstn_i = fft_rstn[RESET_DELAY];
+logic                    rstn_i = fft_rstn_i & ~fft_conf_dvalid;
 
 logic [ FSZ-1:0] padding_up, padding_down;
 logic [ FSZ-1:0] padding_up_, padding_down_;
@@ -479,17 +481,14 @@ always @(posedge clk_i) begin
     padding_down <= padding_down_;
     up_toggle <= up_toggle_;
 
-    if (!rstn_i || conf_req) begin
+    if (!rstn || conf_req) begin
         fft_rstn <= 0;
     end else
-        fft_rstn <= {fft_rstn[0], 1'b1};
-
-    overflow_cnt <= fft_conf_data;
+        fft_rstn <= {fft_rstn[RESET_DELAY-1:0], 1'b1};
 
     if (fft_rstn_i == 1'b0) begin
         fft_conf_dvalid <= 1;
     end else if (fft_conf_rdy) begin
-        input_cnt <= fft_conf_data;
         fft_conf_dvalid <= 0;
     end
 end
@@ -498,39 +497,38 @@ logic [ ASZ-1:0]    fin_dout;
 logic               fin_rd, fin_empty;
 logic               padding_done;
 logic [ FSZ-1:0]    padding_cnt;
+logic               fin_rst = !adc_rstn_i || (trig_i && fft_done_o);
 
 xpm_fifo_async #(
-    .FIFO_MEMORY_TYPE("block"),
     .FIFO_WRITE_DEPTH(1<<QSZ),
     .WRITE_DATA_WIDTH(ASZ),
     .READ_DATA_WIDTH (ASZ),
-    // .RD_DATA_COUNT_WIDTH(QSZ),
-    // .WR_DATA_COUNT_WIDTH(QSZ),
     .FIFO_READ_LATENCY(0),
+    .USE_ADV_FEATURES("1001"), // enables data_valid and overflow
     .READ_MODE       ("fwft")
 ) fifo_in (
-    .rst             (!adc_rstn_i || (trig_i && fft_done_o)),
+    .rst             (fin_rst),
     .wr_clk          (adc_clk_i),
     .wr_en           (enable_i & dvalid_i),
     .din             (data_i),
 
     .rd_clk          (clk_i),
-    .rd_en           (padding_done & fin_rd & fft_saxi_rdy),
+    .rd_en           (padding_done & fft_saxi_rdy & fft_saxi_valid),
     .dout            (fin_dout),
+    .data_valid      (fin_dvalid),
 
-    .empty           (fin_empty),
-    .full            (fin_full)
+    // .empty           (fin_empty),
+    // .full            (fin_full)
+    .overflow        (fin_full)
 );
 
 logic  [ HSZ-1:0] fft_hist_index_o;
 
 xpm_fifo_async #(
-    .FIFO_MEMORY_TYPE("block"),
-    .FIFO_WRITE_DEPTH(1<<(QSZ-1)),
+    // .FIFO_MEMORY_TYPE("block"),
+    .FIFO_WRITE_DEPTH(128),
     .WRITE_DATA_WIDTH(HSZ),
     .READ_DATA_WIDTH (HSZ),
-    // .RD_DATA_COUNT_WIDTH(QSZ),
-    // .WR_DATA_COUNT_WIDTH(QSZ),
     .FIFO_READ_LATENCY(0),
     .READ_MODE       ("fwft")
 ) fifo_index (
@@ -539,16 +537,16 @@ xpm_fifo_async #(
     .wr_en           (fft_index_valid_i),
     .din             (fft_hist_index_i),
 
-    // .empty           (findex_empty),
-    // .full            (findex_full),
-
     .rd_clk          (clk_i),
     .rd_en           (peak_up != up_toggle && peak_ready_trig),
     .dout            (fft_hist_index_o)
 );
 
-logic fft_we_one;
-logic fft_we_length_plus_one;
+logic  fft_we_one;
+logic  fft_we_length_plus_one;
+assign fft_saxi_last = fft_we_one || fft_we_length_plus_one;
+assign fft_saxi_valid = (!padding_done || fin_dvalid) && fin_rd;
+assign fft_data_i = fin_dout;
 
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
@@ -566,8 +564,6 @@ end else begin
         // overflow_cnt <= overflow_cnt + 1;
     end
 
-    fft_data_i <= fin_dout;
-
     if (fft_trig && fft_done && up_in) begin
         fft_we_cnt <= fft_length2;
         fft_we_one <= 0;
@@ -575,26 +571,26 @@ end else begin
         fin_rd <= 1;
         padding_cnt <= padding_up;
         padding_done <= 0;
-    end else if ((!padding_done || !fin_empty) && fin_rd && fft_saxi_rdy) begin
-        if (fft_we_one) begin
-            up_in <= 1;
-            fin_rd <= 0;
-        end else if (fft_we_length_plus_one) begin
-            up_in <= 0;
-            padding_cnt <= padding_down;
-            padding_done <= 0;
-        end else if (!padding_done) begin
-            padding_cnt <= padding_cnt - 1;
-            padding_done <= padding_cnt == 1;
+    end else begin
+        if (fft_saxi_valid && fft_saxi_rdy) begin
+            frame_cnt <= frame_cnt + 1;
+            if (fft_we_one) begin
+                up_in <= 1;
+                fin_rd <= 0;
+            end else if (fft_we_length_plus_one) begin
+                up_in <= 0;
+                padding_cnt <= padding_down;
+                padding_done <= 0;
+            end else if (!padding_done) begin
+                padding_cnt <= padding_cnt - 1;
+                padding_done <= padding_cnt == 1;
+            end
+            fft_we_one <= fft_we_cnt == 2;
+            fft_we_length_plus_one <= fft_we_cnt == fft_length_plus_two;
+            fft_we_cnt <= fft_we_cnt - 1;
         end
-        fft_we_one <= fft_we_cnt == 2;
-        fft_we_length_plus_one <= fft_we_cnt == fft_length_plus_two;
-        fft_we_cnt <= fft_we_cnt - 1;
+        fft_done <= fft_we_cnt==0;
     end
-
-    fft_done <= fft_we_cnt==0;
-    fft_saxi_last <= fft_we_one || fft_we_length_plus_one;
-    fft_saxi_valid <= (!padding_done || !fin_empty) && fin_rd;
 end
 
 always @(posedge clk_i) begin
@@ -639,7 +635,9 @@ if (rstn_i == 1'b0) begin
     fft_wp_index <= 0;
     up_out <= 1;
 end else if (fft_maxi_valid && fft_maxi_rdy) begin
+    scan_frame_cnt <= scan_frame_cnt + 1;
     if (fft_maxi_last) begin
+        input_cnt <= input_cnt + 1;
         fft_wp <= 0;
         fft_wp_index <= 0;
         up_out <= up_out + up_toggle;
@@ -685,13 +683,17 @@ end else begin
             out_send_ <= 0;
     end
 
+    if (fft_maxi_rdy)
+        overflow_cnt <= overflow_cnt + 1;
+
+
     fft_peak_ready <= {fft_peak_ready[0], peak_ready};
 end
 
 xpm_fifo_axis #(
     .TDATA_WIDTH        (32),
     .TUSER_WIDTH        (FSZ+1),
-    .FIFO_DEPTH         (16),
+    .FIFO_DEPTH         (128),
     .USE_ADV_FEATURES   (16'h0000)   // Standard mode
 ) fifo_peak_in (
     .s_aclk         (clk_i),
@@ -720,7 +722,7 @@ peak_detector #(.SSZ(FSZ), .DSZ(DSZ)) peak_detector_i (
     .data_index     (fft_peak_data_index),
     .maxi_rdy       (fft_peak_maxi_ready),
     .maxi_valid     (fft_peak_maxi_valid),
-    .maxi_last      (fft_peak_maxi_last),
+    .maxi_last      (fft_peak_maxi_last & fft_peak_maxi_valid),
     .threshold_k_sq (fft_threshold_k_arg),
     .peak_idx       (fft_peak_idx),
     .peak           (fft_peak),
