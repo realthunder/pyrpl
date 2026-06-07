@@ -143,6 +143,8 @@ class StatusBitsProperty(StringProperty):
         6:'fft_trig_sync',
         7:'fft_a_done',
         8:'fft_b_done',
+        9:'fft_a_peak_ready',
+        10:'fft_b_peak_ready',
         16:'fft_a_tlast_unexp',
         17:'fft_a_tlast_missing',
         18:'fft_a_frame_start',
@@ -450,8 +452,9 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_wp_last = IntRegister(0x68, doc="FFT last write size")
 
-    fft_q_wp = IntRegister(0x170, doc="FFT queue write count")
-    fft_q_rp = IntRegister(0x174, doc="FFT queue read count")
+    fft_debug = IntRegister(0x170)
+    fft_debug2 = IntRegister(0x174)
+    fft_debug3 = IntRegister(0x178)
 
     fft_state = IntRegister(0x6C, doc="FFT internal state")
 

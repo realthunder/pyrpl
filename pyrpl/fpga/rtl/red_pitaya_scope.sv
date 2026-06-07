@@ -68,7 +68,7 @@
 
 module red_pitaya_scope #(
   parameter ASZ = 14,  // ADC input sample data width
-  parameter QSZ = 10,  // FFT buffer queue size 2^QSZ
+  parameter QSZ = 12,  // FFT buffer queue size 2^QSZ
   parameter DSZ = 28,  // FFT_output width
   parameter FSZ = 13,  // FFT transform length 2^FSZ
   parameter RSZ = 14,  // RAM size 2^RSZ
@@ -772,16 +772,24 @@ end else if (sys_wen) begin
     end
 end
 
+logic [32-1 : 0] fft_debug_cnt;
+logic [32-1 : 0] fft_debug_cnt2;
+logic [32-1 : 0] fft_debug_cnt3;
+
 always @(posedge adc_clk_i)
 if (fft_rstn_i == 0) begin
     fft_state <= S_IDLE;
     fft_peak_ready <= 0;
+    fft_debug_cnt <= fft_debug_cnt + 1;
 end else begin
-
-    if (fft_peak_ready_a)
+    if (fft_peak_ready_a) begin
         fft_peak_ready[0] <= 1;
-    if (fft_peak_ready_b)
+        fft_debug_cnt2 <= fft_debug_cnt2 + 1;
+    end
+    if (fft_peak_ready_b) begin
         fft_peak_ready[1] <= 1;
+        fft_debug_cnt3 <= fft_debug_cnt3 + 1;
+    end
     case (fft_state)
     S_IDLE: 
         if (fft_trig_i && &fft_done) begin
@@ -1396,7 +1404,8 @@ end else begin
                                                                  , {8-6{1'b0}}
                                                                  , fft_status[0]
 
-                                                                 , {16-9{1'b0}}
+                                                                 , {16-11{1'b0}}
+                                                                 , fft_peak_ready[2-1:0]
                                                                  , fft_done[2-1:0]
                                                                  , fft_trig_sync
                                                                  , fft_enable
@@ -1426,7 +1435,7 @@ end else begin
 
      20'h0002C : begin sys_ack <= sys_en;          sys_rdata <=                 adc_we_cnt          ; end
 
-     20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= fft_single?fft_frame_cnt:(fft_frame_cnt<<1); end
+     20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= fft_frame_cnt                       ; end
      20'h00034 : begin sys_ack <= sys_en;          sys_rdata <= DSZ                                 ; end
      20'h00038 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_start                      ; end
      20'h0003C : begin sys_ack <= sys_en;          sys_rdata <= fft_threshold_k                     ; end
@@ -1489,6 +1498,10 @@ end else begin
 	 20'h00168 : begin sys_ack <= sys_en;          sys_rdata <= timestamp_trigger[64-1:32]	        ; end
      
      20'h0016c : begin sys_ack <= sys_en;          sys_rdata <= {{32-1{1'b0}}, pretrig_ok}          ; end
+
+     20'h00170 : begin sys_ack <= sys_en;          sys_rdata <= fft_debug_cnt                       ; end
+     20'h00174 : begin sys_ack <= sys_en;          sys_rdata <= fft_debug_cnt2                      ; end
+     20'h00178 : begin sys_ack <= sys_en;          sys_rdata <= fft_debug_cnt3                      ; end
 
      // 20'h00170 : begin sys_ack <= sys_en;          sys_rdata <= fft_q_wp_a                          ; end
      // 20'h00174 : begin sys_ack <= sys_en;          sys_rdata <= fft_q_rp_a                          ; end
