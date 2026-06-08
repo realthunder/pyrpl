@@ -440,7 +440,7 @@ end
 localparam RESET_DELAY = 4-1;
 logic [RESET_DELAY : 0]  fft_rstn;
 logic                    fft_rstn_i = fft_rstn[RESET_DELAY];
-logic                    rstn_i = fft_rstn_i & ~fft_conf_dvalid;
+logic                    rstn_i = fft_rstn_i;
 
 logic [ FSZ-1:0] padding_up, padding_down;
 logic [ FSZ-1:0] padding_up_, padding_down_;
@@ -558,7 +558,14 @@ if (rstn_i == 1'b0) begin
     up_in <= 1;
     padding_cnt <= 0;
     padding_done <= 0;
+
 end else begin
+
+    if (fft_frame_start)
+        scan_frame_cnt <= scan_frame_cnt + 1;
+
+    if (fft_saxi_last)
+        input_cnt <= input_cnt + 1;
 
     if (fin_full) begin
         // overflow_cnt <= overflow_cnt + 1;
@@ -585,15 +592,16 @@ end else begin
                 padding_cnt <= padding_cnt - 1;
                 padding_done <= padding_cnt == 1;
             end
-            fft_we_one <= fft_we_cnt == 2;
-            fft_we_length_plus_one <= fft_we_cnt == fft_length_plus_two;
             fft_we_cnt <= fft_we_cnt - 1;
         end
         fft_done <= fft_we_cnt==0;
+        fft_we_one <= fft_we_cnt == 2;
+        fft_we_length_plus_one <= fft_we_cnt == fft_length_plus_two;
     end
 end
 
 always @(posedge clk_i) begin
+
     buf_a_waddr[0] <= fft_wp_index;
     buf_b_waddr[0] <= fft_wp_index;
     buf_a_wdata[0] <= fft_maxi_data[DSZ-1:0];
@@ -635,9 +643,9 @@ if (rstn_i == 1'b0) begin
     fft_wp_index <= 0;
     up_out <= 1;
 end else if (fft_maxi_valid && fft_maxi_rdy) begin
-    scan_frame_cnt <= scan_frame_cnt + 1;
+    overflow_cnt <= overflow_cnt + 1;
     if (fft_maxi_last) begin
-        input_cnt <= input_cnt + 1;
+        // input_cnt <= input_cnt + 1;
         fft_wp <= 0;
         fft_wp_index <= 0;
         up_out <= up_out + up_toggle;
@@ -682,10 +690,6 @@ end else begin
         end else
             out_send_ <= 0;
     end
-
-    if (fft_maxi_rdy)
-        overflow_cnt <= overflow_cnt + 1;
-
 
     fft_peak_ready <= {fft_peak_ready[0], peak_ready};
 end

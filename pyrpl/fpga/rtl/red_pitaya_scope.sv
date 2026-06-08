@@ -497,10 +497,14 @@ logic [ 2-1 : 0]    fft_peak_ready;
 logic [ 2-1:  0]    fft_rstn;
 logic               fft_rstn_i;
 
+logic [32-1 : 0] fft_debug_cnt;
+logic [32-1 : 0] fft_debug_cnt2;
+logic [32-1 : 0] fft_debug_cnt3;
+
 always @(posedge adc_clk_i) begin
-    if  ((fft_trig_sync && adc_rst_do) || sync_rst_i || !adc_rstn_i)
+    if  ((fft_trig_sync && adc_rst_do) || sync_rst_i || !adc_rstn_i) begin
         fft_rstn <= 0;
-    else
+    end else
         fft_rstn <= {fft_rstn[0], 1'b1};
 end
 
@@ -611,7 +615,7 @@ logic [16-1: 0] fft_conf_data = {{7-1{1'b0}}, fft_fwd_inv, {3-1{1'b0}}, fft_nfft
 assign fft_wp_last_a = (1<<fft_nfft)-1;
 assign fft_wp_last_b = (1<<fft_nfft)-1;
 
-logic fft_input_clk = fft_clk_i;
+logic fft_input_clk = adc_clk_i;
 
 always @(posedge adc_clk_i) begin
     fft_single <= fft_nfft<RSZ-1;
@@ -772,29 +776,28 @@ end else if (sys_wen) begin
     end
 end
 
-logic [32-1 : 0] fft_debug_cnt;
-logic [32-1 : 0] fft_debug_cnt2;
-logic [32-1 : 0] fft_debug_cnt3;
-
 always @(posedge adc_clk_i)
 if (fft_rstn_i == 0) begin
     fft_state <= S_IDLE;
-    fft_peak_ready <= 0;
-    fft_debug_cnt <= fft_debug_cnt + 1;
 end else begin
-    if (fft_peak_ready_a) begin
+    if (sys_wen && (sys_addr[19:0]==20'h0) && sys_wdata[9])
+        fft_peak_ready[0] <= 0;
+    else if (fft_peak_ready_a) begin
         fft_peak_ready[0] <= 1;
         fft_debug_cnt2 <= fft_debug_cnt2 + 1;
     end
-    if (fft_peak_ready_b) begin
+    if (sys_wen && (sys_addr[19:0]==20'h0) && sys_wdata[10])
+        fft_peak_ready[1] <= 0;
+    else if (fft_peak_ready_b) begin
         fft_peak_ready[1] <= 1;
-        fft_debug_cnt3 <= fft_debug_cnt3 + 1;
     end
+
     case (fft_state)
     S_IDLE: 
         if (fft_trig_i && &fft_done) begin
             fft_state_cnt <= 0;
             fft_state <= S_WAIT1;
+            fft_debug_cnt3 <= fft_debug_cnt3 + 1;
         end else
             fft_active_o <= 0;
     S_WAIT1:
