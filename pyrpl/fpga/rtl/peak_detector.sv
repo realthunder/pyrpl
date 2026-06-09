@@ -11,9 +11,9 @@ module peak_detector #(
 
     input logic [16-1: 0] threshold_k_sq,
 
-    output logic          maxi_rdy,
-    input logic           maxi_valid,
-    input logic           maxi_last,
+    output logic          saxi_rdy,
+    input logic           saxi_valid,
+    input logic           saxi_last,
     
     output logic [SSZ-1:0] peak_idx,
     output logic [DSZ-1:0] peak,
@@ -112,15 +112,15 @@ logic [8-1:0] step_cnt;
 always @(posedge clk)
 if (!rstn) begin
     current_state <= S_IDLE;
-    maxi_rdy <= 0;
+    saxi_rdy <= 0;
 
 end else begin
 
     data_sq[0] <= data_r[0] * data_r[0];
     data_r[0] <= data_in;
-    data_valid_r[0] <= data_valid & maxi_valid;
+    data_valid_r[0] <= data_valid & saxi_valid;
     data_index_r[0] <= data_index;
-    data_last[0] <= maxi_last;
+    data_last[0] <= saxi_last;
 
     for (i=0; i<PL2; i+=1) begin
         count[i+1] <= count[i];
@@ -162,7 +162,7 @@ end else begin
 
     case (current_state)
     S_IDLE:
-        if (maxi_valid) begin
+        if (saxi_valid) begin
             for (i=0;i<PL1;i+=1) begin
                 data_valid_r[i+1] <= 0;
                 data_last[i+1] <= 0;
@@ -173,7 +173,7 @@ end else begin
             sum[0] <= 0;
             sum_sq[0] <= 0;
             current_state <= S_STREAM;
-            maxi_rdy <= 1;
+            saxi_rdy <= 1;
         end
 
     S_STREAM: begin
@@ -195,8 +195,8 @@ end else begin
             count[0] <= count[0] + 1;
         end
 
-        if (maxi_last)
-            maxi_rdy <= 0;
+        if (saxi_last)
+            saxi_rdy <= 0;
 
         if (data_last[PL1]) begin
             current_state <= S_COMPUTE;
