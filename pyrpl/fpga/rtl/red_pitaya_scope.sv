@@ -258,7 +258,7 @@ end
 //  ADC buffer RAM
 
 localparam READ_DELAY = (4-1);
-localparam FFT_RDELAY = (11-1);
+localparam FFT_RDELAY = (12-1);
 
 logic [ ASZ-1: 0] adc_a_rd      ;
 logic [ ASZ-1: 0] adc_b_rd      ;
@@ -575,7 +575,6 @@ logic fft_dvalid = (!fft_trig_sync || adc_we) && adc_dv;
 logic fft_up = fft_state == S_FFT_UP;
 logic fft_down = fft_state == S_FFT_DOWN;
 
-integer i;
 localparam IDXSZ = 8;
 localparam IHSZ = 10;
 
