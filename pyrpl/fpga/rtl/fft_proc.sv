@@ -14,6 +14,7 @@ module fft_proc #(
   input logic             enable_in,
   input logic             dvalid_in, 
   input logic             trig_in,
+  input logic             fft_parallel_in,
 
   input logic  [ 16-1: 0] fft_threshold_k_in,
   input logic  [ FSZ-1:0] fft_peak_start_in,
@@ -103,9 +104,10 @@ assign fft_data_ext = {16-ASZ{fft_data_i[ASZ-1]}};
 
 logic             adc_rstn_i;
 
-localparam READ_LATENCY = READ_DELAY-2;
 localparam ADDR_A_DELAY = 2;
 localparam ADDR_B_DELAY = 2;
+localparam READ_A_DELAY = READ_DELAY - ADDR_A_DELAY-2;
+localparam READ_B_DELAY = READ_DELAY - ADDR_B_DELAY-2;
 localparam WRITE_DELAY = 3-1;
 
 logic [ FSZ-1: 0]   buf_a_waddr  [0 : WRITE_DELAY];
@@ -130,6 +132,8 @@ logic  [ ASZ-1:0] data_i;
 logic             enable_i;
 logic             dvalid_i; 
 logic             trig_i;
+
+logic             fft_parallel_i, fft_parallel;
 
 logic  [ 16-1: 0] fft_threshold_k_arg;
 logic  [ FSZ-1:0] fft_peak_start_arg;
@@ -169,6 +173,7 @@ always @(posedge adc_clk_i) begin
     enable_i <= enable_in;
     dvalid_i <= dvalid_in; 
     trig_i <= trig_in;
+    fft_parallel_i <= fft_parallel_in;
     fft_threshold_k_arg <= fft_threshold_k_in;
     fft_peak_start_arg <= fft_peak_start_in;
     fft_peak_minimum_arg <= fft_peak_minimum_in;
@@ -191,13 +196,14 @@ xpm_cdc_sync_rst #(
     .dest_rst   (rstn)
 );
 
-xpm_cdc_single #(
+xpm_cdc_array_single #(
+    .WIDTH        (2),
     .DEST_SYNC_FF (SYNC_FF)
-) trig_sync (
+) input_arg_sync (
     .src_clk   (adc_clk_i),
-    .src_in    (trig_i),
+    .src_in    ({fft_parallel_i, trig_i}),
     .dest_clk  (clk_i),
-    .dest_out  (fft_trig)
+    .dest_out  ({fft_parallel, fft_trig})
 );
 
 logic            up_in, fft_done;
@@ -273,7 +279,7 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (FSZ),
     .ADDR_WIDTH_B           (FSZ),
     .CLOCKING_MODE          ("independent_clock"),
-    .READ_LATENCY_B         (READ_LATENCY-ADDR_A_DELAY),
+    .READ_LATENCY_B         (READ_A_DELAY),
     .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (DSZ),
     .WRITE_DATA_WIDTH_A     (DSZ),
@@ -298,7 +304,7 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (FSZ),
     .ADDR_WIDTH_B           (FSZ),
     .CLOCKING_MODE          ("independent_clock"),
-    .READ_LATENCY_B         (READ_LATENCY-ADDR_B_DELAY),
+    .READ_LATENCY_B         (READ_B_DELAY),
     .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (DSZ),
     .WRITE_DATA_WIDTH_A     (DSZ),
@@ -323,7 +329,7 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (HSZ),
     .ADDR_WIDTH_B           (HSZ),
     .CLOCKING_MODE          ("independent_clock"),
-    .READ_LATENCY_B         (READ_LATENCY-ADDR_A_DELAY),
+    .READ_LATENCY_B         (READ_A_DELAY),
     .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (FSZ),
     .WRITE_DATA_WIDTH_A     (FSZ),
@@ -348,7 +354,7 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (HSZ),
     .ADDR_WIDTH_B           (HSZ),
     .CLOCKING_MODE          ("independent_clock"),
-    .READ_LATENCY_B         (READ_LATENCY-ADDR_B_DELAY),
+    .READ_LATENCY_B         (READ_B_DELAY),
     .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (FSZ),
     .WRITE_DATA_WIDTH_A     (FSZ),
@@ -461,7 +467,7 @@ always @(posedge clk_i) begin
     padding_down_ <= (1<<fft_nfft) - acq_down;
 
     // We need 2x amount of samples, one for Fup and one for Fdown
-    if (fft_nfft < RSZ-1) begin
+    if (!fft_parallel) begin
         fft_length2_ <= 1<<(fft_nfft+1);
         up_toggle_ <= 1;
     end else begin

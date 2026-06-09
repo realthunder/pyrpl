@@ -257,7 +257,8 @@ end
 //---------------------------------------------------------------------------------
 //  ADC buffer RAM
 
-localparam READ_DELAY = (11-1);
+localparam READ_DELAY = (4-1);
+localparam FFT_RDELAY = (11-1);
 
 logic [ ASZ-1: 0] adc_a_rd      ;
 logic [ ASZ-1: 0] adc_b_rd      ;
@@ -266,6 +267,8 @@ reg   [ RSZ-1: 0] adc_a_raddr   ;
 reg   [ RSZ-1: 0] adc_b_raddr   ;
 reg   [ READ_DELAY: 0] adc_rval ;
 wire              adc_rd_dv     ;
+reg   [ FFT_RDELAY: 0] fft_rval ;
+wire              fft_rd_dv     ;
 reg               adc_we        ;
 reg               adc_we_keep   ;
 reg               adc_trig      ;
@@ -286,6 +289,38 @@ reg   [ 64 - 1:0] ctr_value        ;
 reg   [ASZ - 1:0] pretrig_data_min; // make sure this amount of data has been acquired before trig
 reg 			  pretrig_ok;
 
+integer i;
+
+`ifndef USE_XPM_MEMORY
+
+reg   [ ASZ-1: 0] adc_a_buf [0:(1<<RSZ)-1] ;
+reg   [ ASZ-1: 0] adc_b_buf [0:(1<<RSZ)-1] ;
+reg   [ RSZ-1: 0] adc_raddr     ;
+
+always @(posedge adc_clk_i) begin
+   if (adc_we && adc_dv) begin
+      adc_a_buf[adc_wp] <= adc_a_dat ;
+      adc_b_buf[adc_wp] <= adc_b_dat ;
+   end
+end
+
+always @(posedge adc_clk_i) begin
+   adc_raddr   <= sys_addr[RSZ-1+2:2] ; // address synchronous to clock
+   adc_a_raddr <= adc_raddr     ; // double register 
+   adc_b_raddr <= adc_raddr     ; // otherwise memory corruption at reading
+   adc_a_rd    <= adc_a_buf[adc_a_raddr] ;
+   adc_b_rd    <= adc_b_buf[adc_b_raddr] ;
+end
+
+`else
+
+localparam        WRITE_DELAY = 2-1;
+logic [ ASZ-1: 0] adc_a_wdata   [0:WRITE_DELAY];
+logic [ ASZ-1: 0] adc_b_wdata   [0:WRITE_DELAY];
+logic [ RSZ-1: 0] adc_a_waddr   [0:WRITE_DELAY];
+logic [ RSZ-1: 0] adc_b_waddr   [0:WRITE_DELAY];
+logic             adc_a_we      [0:WRITE_DELAY];
+logic             adc_b_we      [0:WRITE_DELAY];
 
 xpm_memory_sdpram #(
     // .MEMORY_PRIMITIVE       ("block"),
@@ -293,19 +328,19 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (RSZ),
     .ADDR_WIDTH_B           (RSZ),
     .CLOCKING_MODE          ("common_clock"),
-    .READ_LATENCY_B         (READ_DELAY-1),
+    .READ_LATENCY_B         (READ_DELAY-2),
     // .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (ASZ),
     .WRITE_DATA_WIDTH_A     (ASZ),
     .BYTE_WRITE_WIDTH_A     (ASZ)
 ) adc_a_buf (
-    .addra  (adc_wp),
-    .addrb  (adc_a_raddr),
     .clka   (adc_clk_i),
-    .dina   (adc_a_dat),
-    .doutb  (adc_a_rd),
+    .addra  (adc_a_waddr[WRITE_DELAY]),
+    .dina   (adc_a_wdata[WRITE_DELAY]),
+    .wea    (adc_a_we[WRITE_DELAY]),
     .ena    (1'b1),
-    .wea    ({adc_we && adc_dv}),
+    .addrb  (adc_a_raddr),
+    .doutb  (adc_a_rd),
     .rstb   (1'b0),
     .regceb (1'b1),
     .enb    (1'b1)
@@ -317,25 +352,48 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (RSZ),
     .ADDR_WIDTH_B           (RSZ),
     .CLOCKING_MODE          ("common_clock"),
-    .READ_LATENCY_B         (READ_DELAY-1),
+    .READ_LATENCY_B         (READ_DELAY-2),
     // .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (ASZ),
     .WRITE_DATA_WIDTH_A     (ASZ),
     .BYTE_WRITE_WIDTH_A     (ASZ)
 ) adc_b_buf (
-    .addra  (adc_wp),
-    .addrb  (adc_b_raddr),
     .clka   (adc_clk_i),
-    .dina   (adc_b_dat),
-    .doutb  (adc_b_rd),
+    .addra  (adc_b_waddr[WRITE_DELAY]),
+    .dina   (adc_b_wdata[WRITE_DELAY]),
+    .wea    (adc_b_we[WRITE_DELAY]),
     .ena    (1'b1),
-    .wea    ({adc_we && adc_dv}),
+    .addrb  (adc_b_raddr),
+    .doutb  (adc_b_rd),
     .rstb   (1'b0),
     .regceb (1'b1),
     .enb    (1'b1)
 );
 
-// Write
+always @(posedge adc_clk_i) begin
+    adc_a_we[0] <= adc_we && adc_dv;
+    adc_b_we[0] <= adc_we && adc_dv;
+    adc_a_waddr[0] <= adc_wp;
+    adc_b_waddr[0] <= adc_wp;
+    adc_a_wdata[0] <= adc_a_dat;
+    adc_b_wdata[0] <= adc_b_dat;
+    for (i=0; i<WRITE_DELAY; i+=1) begin
+        adc_a_we[i+1] <= adc_a_we[i];
+        adc_b_we[i+1] <= adc_b_we[i];
+        adc_a_waddr[i+1] <= adc_a_waddr[i];
+        adc_b_waddr[i+1] <= adc_b_waddr[i];
+        adc_a_wdata[i+1] <= adc_a_wdata[i];
+        adc_b_wdata[i+1] <= adc_b_wdata[i];
+    end
+end
+
+always @(posedge adc_clk_i) begin
+   adc_a_raddr <= sys_addr[RSZ-1+2:2]; // address synchronous to clock
+   adc_b_raddr <= sys_addr[RSZ-1+2:2];
+end
+
+`endif
+
 always @(posedge adc_clk_i) begin
    if (adc_rstn_i == 1'b0) begin
       adc_wp      <= {RSZ{1'b0}};
@@ -406,19 +464,17 @@ end
 
 assign trig_scope_o = triggered;
 
-// Read
 always @(posedge adc_clk_i) begin
-   if (adc_rstn_i == 1'b0)
-      adc_rval <= 4'h0 ;
-   else
+    if (adc_rstn_i == 1'b0) begin
+      adc_rval <= 0;
+      fft_rval <= 0;
+    end else begin
       adc_rval <= {adc_rval[READ_DELAY-1:0], (sys_ren || sys_wen)};
+      fft_rval <= {fft_rval[FFT_RDELAY-1:0], (sys_ren || sys_wen)};
+    end
 end
 assign adc_rd_dv = adc_rval[READ_DELAY];
-
-always @(posedge adc_clk_i) begin
-   adc_a_raddr <= sys_addr[RSZ-1+2:2]; // address synchronous to clock
-   adc_b_raddr <= sys_addr[RSZ-1+2:2];
-end
+assign fft_rd_dv = fft_rval[FFT_RDELAY];
 
 
 //////////////// FFT /////////////////////
@@ -436,11 +492,11 @@ typedef enum {
 
 fft_state_t         fft_state;
 
-logic [ RSZ-1: 0]   fft_wait1_cnt;
-logic [ RSZ-1: 0]   fft_wait2_cnt;
-logic [ RSZ-1: 0]   fft_acq1_cnt;
-logic [ RSZ-1: 0]   fft_acq2_cnt;
-logic [ RSZ-1: 0]   fft_state_cnt;
+logic [ FSZ-1: 0]   fft_wait1_cnt;
+logic [ FSZ-1: 0]   fft_wait2_cnt;
+logic [ FSZ-1: 0]   fft_acq1_cnt, fft_a_acq1_cnt, fft_b_acq1_cnt;
+logic [ FSZ-1: 0]   fft_acq2_cnt, fft_a_acq2_cnt, fft_b_acq2_cnt;
+logic [ FSZ-1: 0]   fft_state_cnt;
 
 localparam IDX_PIPELINE = 3-1;
 logic [ HSZ-1: 0]   fft_hist_index[0:IDX_PIPELINE];
@@ -464,9 +520,9 @@ logic [ DSZ-1: 0]   fft_rdata_down_b, fft_rdata_down_b_;
 logic [ QSZ-1:0]    fft_q_wp_a;
 logic [ QSZ-1:0]    fft_q_rp_a;
 logic [ 32-1: 0]    fft_overflow_cnt;
-logic [ 16-1: 0]    fft_threshold_k;
-logic [ FSZ-1:0]    fft_peak_start;
-logic [ DSZ-1: 0]   fft_peak_minimum;
+logic [ 16-1: 0]    fft_threshold_k, fft_a_threshold_k, fft_b_threshold_k;
+logic [ FSZ-1:0]    fft_peak_start, fft_a_peak_start, fft_b_peak_start;
+logic [ DSZ-1: 0]   fft_peak_minimum, fft_a_peak_minimum, fft_b_peak_minimum;
 
 logic [ 6-1 :  0]   fft_status[0:1];
 logic [ 2-1 :  0]   fft_done;
@@ -608,31 +664,40 @@ end
 `endif
 
 logic [ 5-1: 0] fft_nfft = FSZ;
-logic           fft_single;
+logic           fft_parallel;
 logic           fft_fwd_inv = 1;
 logic [16-1: 0] fft_conf_data = {{7-1{1'b0}}, fft_fwd_inv, {3-1{1'b0}}, fft_nfft};
 
 assign fft_wp_last_a = (1<<fft_nfft)-1;
 assign fft_wp_last_b = (1<<fft_nfft)-1;
 
-logic fft_input_clk = adc_clk_i;
+logic fft_input_clk = fft_clk_i;
 
 always @(posedge adc_clk_i) begin
-    fft_single <= fft_nfft<RSZ-1;
-
     fft_rdata_up_a <= fft_rdata_up_a_;
     fft_rdata_up_b <= fft_rdata_up_b_;
     fft_rdata_down_b <= fft_rdata_down_b_;
     fft_hist_rdata_up_a <= fft_hist_rdata_up_a_;
     fft_hist_rdata_up_b <= fft_hist_rdata_up_b_;
     fft_hist_rdata_down_b <= fft_hist_rdata_down_b_;
-    if (fft_single) begin
+    if (!fft_parallel) begin
         fft_rdata_down_a <= fft_rdata_down_a_;
         fft_hist_rdata_down_a <= fft_hist_rdata_down_a_;
     end else begin
         fft_rdata_down_a <= fft_rdata_up_b_;
         fft_hist_rdata_down_a <= fft_hist_rdata_up_b_;
     end
+
+    fft_a_acq1_cnt <= fft_acq1_cnt;
+    fft_b_acq1_cnt <= fft_acq1_cnt;
+    fft_a_acq2_cnt <= fft_acq2_cnt;
+    fft_b_acq2_cnt <= fft_acq2_cnt;
+    fft_a_peak_start <= fft_peak_start;
+    fft_b_peak_start <= fft_peak_start;
+    fft_a_peak_minimum <= fft_peak_minimum;
+    fft_b_peak_minimum <= fft_peak_minimum;
+    fft_a_threshold_k <= fft_threshold_k;
+    fft_b_threshold_k <= fft_threshold_k;
 end
 
 fft_proc #(.ASZ(ASZ),
@@ -641,7 +706,7 @@ fft_proc #(.ASZ(ASZ),
            .FSZ(FSZ),
            .RSZ(RSZ),
            .HSZ(HSZ),
-           .READ_DELAY(READ_DELAY-2)) 
+           .READ_DELAY(FFT_RDELAY-2)) 
 fft_a (
    .adc_clk_i (adc_clk_i),
    .adc_rstn_in (fft_rstn_i),
@@ -649,16 +714,18 @@ fft_a (
    .clk_i (fft_input_clk),
 
    .data_in (adc_a_dat),
-   .enable_in (fft_up || (fft_down && fft_single)),
+   .enable_in (fft_up || (fft_down && !fft_parallel)),
    .dvalid_in (fft_dvalid),
    .trig_in (fft_trig_i),
 
-   .fft_threshold_k_in (fft_threshold_k),
-   .fft_peak_start_in (fft_peak_start),
-   .fft_peak_minimum_in (fft_peak_minimum),
+   .fft_parallel_in (fft_parallel),
 
-   .fft_acq_up_in (fft_acq1_cnt),
-   .fft_acq_down_in (fft_acq2_cnt),
+   .fft_threshold_k_in (fft_a_threshold_k),
+   .fft_peak_start_in (fft_a_peak_start),
+   .fft_peak_minimum_in (fft_a_peak_minimum),
+
+   .fft_acq_up_in (fft_a_acq1_cnt),
+   .fft_acq_down_in (fft_a_acq2_cnt),
 
    .sys_addr_in (sys_addr),
 
@@ -697,24 +764,26 @@ fft_proc #(.ASZ(ASZ),
            .FSZ(FSZ),
            .RSZ(RSZ),
            .HSZ(HSZ),
-           .READ_DELAY(READ_DELAY-2)
+           .READ_DELAY(FFT_RDELAY-2)
 ) fft_b (
    .adc_clk_i (adc_clk_i),
    .adc_rstn_in (fft_rstn_i),
 
    .clk_i (fft_input_clk),
 
-   .data_in (fft_single ? adc_b_dat : adc_a_dat),
-   .enable_in ((fft_single && fft_up) || fft_down),
+   .data_in (fft_parallel ? adc_a_dat : adc_b_dat),
+   .enable_in ((!fft_parallel && fft_up) || fft_down),
    .dvalid_in (fft_dvalid),
    .trig_in (fft_trig_i),
 
-   .fft_threshold_k_in (fft_threshold_k),
-   .fft_peak_start_in (fft_peak_start),
-   .fft_peak_minimum_in (fft_peak_minimum),
+   .fft_parallel_in (fft_parallel),
 
-   .fft_acq_up_in (fft_single ? fft_acq1_cnt : fft_acq2_cnt),
-   .fft_acq_down_in (fft_acq2_cnt),
+   .fft_threshold_k_in (fft_b_threshold_k),
+   .fft_peak_start_in (fft_b_peak_start),
+   .fft_peak_minimum_in (fft_b_peak_minimum),
+
+   .fft_acq_up_in (fft_parallel ? fft_b_acq2_cnt : fft_b_acq1_cnt),
+   .fft_acq_down_in (fft_b_acq2_cnt),
 
    .sys_addr_in (sys_addr),
 
@@ -757,8 +826,11 @@ if (adc_rstn_i == 1'b0) begin
     fft_trig_sync <= 0;
 
 end else if (sys_wen) begin
-    if (sys_addr[19:0]==20'h0)  fft_enable <= sys_wdata[5];
-    if (sys_addr[19:0]==20'h0)  fft_trig_sync <= sys_wdata[6];
+    if (sys_addr[19:0]==20'h0)  begin
+        fft_parallel <= sys_wdata[4];
+        fft_enable <= sys_wdata[5];
+        fft_trig_sync <= sys_wdata[6];
+    end
     if (sys_addr[19:0]==20'h38) fft_peak_start <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h3C) fft_threshold_k <= sys_wdata[16-1:0];
     if (sys_addr[19:0]==20'h40) fft_peak_minimum <= sys_wdata[DSZ-1:0];
@@ -828,6 +900,11 @@ end else begin
         end else if (fft_dvalid) begin
             fft_active_o <= 1;
             fft_state_cnt <= fft_state_cnt + 1;
+        end
+    default: begin
+            fft_state <= S_IDLE;
+            fft_state_cnt <= 0;
+            fft_active_o <= 0;
         end
     endcase
 end
@@ -1412,7 +1489,7 @@ end else begin
                                                                  , fft_done[2-1:0]
                                                                  , fft_trig_sync
                                                                  , fft_enable
-                                                                 , 1'b0
+                                                                 , fft_parallel
                                                                  , adc_we_keep               // do not disarm on 
                                                                  , adc_dly_do                // trigger status
                                                                  , 1'b0                      // reset
@@ -1443,9 +1520,9 @@ end else begin
      20'h00038 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_start                      ; end
      20'h0003C : begin sys_ack <= sys_en;          sys_rdata <= fft_threshold_k                     ; end
      20'h00040 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_minimum                    ; end
-     20'h00044 : begin sys_ack <= sys_en;          sys_rdata <= {fft_single?fft_peak_index_down_a:fft_peak_index_up_b, fft_peak_index_up_a}; end
+     20'h00044 : begin sys_ack <= sys_en;          sys_rdata <= {fft_parallel?fft_peak_index_up_b:fft_peak_index_down_a, fft_peak_index_up_a}; end
      20'h00048 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_up_a                       ; end
-     20'h0004C : begin sys_ack <= sys_en;          sys_rdata <= fft_single?fft_peak_down_a:fft_peak_up_b ; end
+     20'h0004C : begin sys_ack <= sys_en;          sys_rdata <= fft_parallel?fft_peak_up_b:fft_peak_down_a ; end
      20'h00050 : begin sys_ack <= sys_en;          sys_rdata <= fft_sum_a                           ; end
      20'h00054 : begin sys_ack <= sys_en;          sys_rdata <= fft_count_a                         ; end
      20'h00058 : begin sys_ack <= sys_en;          sys_rdata <= fft_wait1_cnt                       ; end
@@ -1523,14 +1600,14 @@ end else begin
      20'h1???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_a_rd}              ; end
      20'h2???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_b_rd}              ; end
 
-     // 20'h3???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= sys_addr[2] ? (fft_single ? fft_rdata_up_b : fft_rdata_down_a) : fft_rdata_up_a; end
-     20'h3???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= sys_addr[2] ? fft_rdata_down_a : fft_rdata_up_a; end
-     20'h4???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= sys_addr[2] ? fft_rdata_down_b : fft_rdata_up_b; end
+     // 20'h3???? : begin sys_ack <= fft_rd_dv;       sys_rdata <= sys_addr[2] ? (fft_parallel ? fft_rdata_up_b : fft_rdata_down_a) : fft_rdata_up_a; end
+     20'h3???? : begin sys_ack <= fft_rd_dv;       sys_rdata <= sys_addr[2] ? fft_rdata_down_a : fft_rdata_up_a; end
+     20'h4???? : begin sys_ack <= fft_rd_dv;       sys_rdata <= sys_addr[2] ? fft_rdata_down_b : fft_rdata_up_b; end
 
-     // 20'h5???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, (fft_single ? fft_hist_rdata_up_b : fft_hist_rdata_down_a),
+     // 20'h5???? : begin sys_ack <= fft_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, (fft_parallel ? fft_hist_rdata_up_b : fft_hist_rdata_down_a),
      //                                                             {16-FSZ{1'b0}}, fft_hist_rdata_up_a} ; end
-     20'h5???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, fft_hist_rdata_down_a, {16-FSZ{1'b0}}, fft_hist_rdata_up_a} ; end
-     20'h6???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, fft_hist_rdata_down_b, {16-FSZ{1'b0}}, fft_hist_rdata_up_b} ; end
+     20'h5???? : begin sys_ack <= fft_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, fft_hist_rdata_down_a, {16-FSZ{1'b0}}, fft_hist_rdata_up_a} ; end
+     20'h6???? : begin sys_ack <= fft_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, fft_hist_rdata_down_b, {16-FSZ{1'b0}}, fft_hist_rdata_up_b} ; end
 
        default : begin sys_ack <= sys_en;          sys_rdata <=  32'h0                              ; end
    endcase
