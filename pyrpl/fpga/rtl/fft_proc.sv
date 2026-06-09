@@ -100,23 +100,37 @@ logic [ FSZ-1: 0]   fft_wp_reversed = {<<{fft_wp_plus_one}};
 logic [ FSZ-1: 0]   fft_wp_index;
 
 // sign extend the data for padding according to xfft requirement
-assign fft_data_ext = {16-ASZ{fft_data_i[ASZ-1]}};
+assign              fft_data_ext = {16-ASZ{fft_data_i[ASZ-1]}};
 
-logic             adc_rstn_i;
+logic               adc_rstn_i;
 
-logic [ 16-1:0] fft_conf_data, fft_conf_data_, conf_data_i;
-logic [  5-1:0] fft_nfft, fft_nfft_, fft_shift, fft_shift_;
-logic [ 32-1:0] fft_length, fft_length2, fft_length_plus_two;
-logic [ 32-1:0] fft_length_, fft_length2_, fft_length_plus_two_;
-logic           conf_send;
-logic           up_out, up_toggle, up_toggle_;
-logic [FSZ-1:0] acq_up, acq_up_, acq_down, acq_down_;
+logic [ 16-1:0]     fft_conf_data, fft_conf_data_, conf_data_i;
+logic [  5-1:0]     fft_nfft, fft_nfft_, fft_shift, fft_shift_;
+logic [ 32-1:0]     fft_length, fft_length2, fft_length_plus_two;
+logic [ 32-1:0]     fft_length_, fft_length2_, fft_length_plus_two_;
+logic               conf_send;
+logic               up_out, up_toggle, up_toggle_;
+logic [FSZ-1:0]     acq_up, acq_up_, acq_down, acq_down_;
 
-localparam ADDR_A_DELAY = 2;
-localparam ADDR_B_DELAY = 2;
-localparam READ_A_DELAY = READ_DELAY - ADDR_A_DELAY-2;
-localparam READ_B_DELAY = READ_DELAY - ADDR_B_DELAY-2;
-localparam WRITE_DELAY = 3-1;
+logic [ 2-1: 0]     fft_peak_ready;
+logic               peak_up, peak_ready;
+logic               peak_ready_trig = {fft_peak_ready[0], peak_ready} == 2'b01;
+
+logic [ FSZ : 0]    fft_count, fft_count_;
+logic [FSZ+DSZ-1:0] fft_sum, fft_sum_;
+logic [ FSZ-1:0]    fft_peak_index_up, fft_peak_index_up_;
+logic [ FSZ-1:0]    fft_peak_index_down, fft_peak_index_down_;
+logic [ DSZ-1:0]    fft_peak_value_up, fft_peak_value_up_;
+logic [ DSZ-1:0]    fft_peak_value_down, fft_peak_value_down_;
+logic               out_send, out_send_;
+
+
+localparam ADDR_A_DELAY = 4;
+localparam ADDR_B_DELAY = 4;
+localparam READ_A_DELAY = READ_DELAY - ADDR_A_DELAY;
+localparam READ_B_DELAY = READ_DELAY - ADDR_B_DELAY;
+localparam WRITE_DELAY = 5;
+localparam PEAK_INPUT_DELAY = 5;
 
 logic [ FSZ-1: 0]   buf_a_waddr;
 logic [ FSZ-1: 0]   buf_b_waddr;
@@ -126,25 +140,98 @@ logic               buf_a_we   ;
 logic               buf_b_we   ;
 
 Register_Pipeline_Simple #(
-    .WORD_WIDTH     (FSZ + DSZ + 1),
-    .PIPE_DEPTH     (WRITE_DELAY+1)
-) buf_a_wr (
+    .WORD_WIDTH     (FSZ+1),
+    .PIPE_DEPTH     (WRITE_DELAY)
+) pipe_a_waddr (
     .clock          (clk_i),
     .clock_enable   (1),
     .clear          (0),
-    .pipe_in        ({fft_wp_index, fft_maxi_data[DSZ-1:0], up_out & fft_maxi_valid & fft_maxi_rdy}),
-    .pipe_out       ({buf_a_waddr, buf_a_wdata, buf_a_we})
+    .pipe_in        ({fft_wp_index, up_out & fft_maxi_valid & fft_maxi_rdy}),
+    .pipe_out       ({buf_a_waddr, buf_a_we})
 );
 
 Register_Pipeline_Simple #(
-    .WORD_WIDTH     (FSZ + DSZ + 1),
-    .PIPE_DEPTH     (WRITE_DELAY+1)
-) buf_b_wr (
+    .WORD_WIDTH     (DSZ),
+    .PIPE_DEPTH     (WRITE_DELAY)
+) pipe_a_wdata (
     .clock          (clk_i),
     .clock_enable   (1),
     .clear          (0),
-    .pipe_in        ({fft_wp_index, fft_maxi_data[DSZ-1:0], ~up_out & fft_maxi_valid & fft_maxi_rdy}),
-    .pipe_out       ({buf_b_waddr, buf_b_wdata, buf_b_we})
+    .pipe_in        (fft_maxi_data[DSZ-1:0]),
+    .pipe_out       (buf_a_wdata)
+);
+
+Register_Pipeline_Simple #(
+    .WORD_WIDTH     (FSZ + 1),
+    .PIPE_DEPTH     (WRITE_DELAY)
+) pipe_b_waddr (
+    .clock          (clk_i),
+    .clock_enable   (1),
+    .clear          (0),
+    .pipe_in        ({fft_wp_index,  ~up_out & fft_maxi_valid & fft_maxi_rdy}),
+    .pipe_out       ({buf_b_waddr, buf_b_we})
+);
+
+Register_Pipeline_Simple #(
+    .WORD_WIDTH     (DSZ),
+    .PIPE_DEPTH     (WRITE_DELAY)
+) pipe_b_wdata (
+    .clock          (clk_i),
+    .clock_enable   (1),
+    .clear          (0),
+    .pipe_in        (fft_maxi_data[DSZ-1:0]),
+    .pipe_out       (buf_b_wdata)
+);
+
+logic [ HSZ-1: 0]   hist_a_waddr;
+logic [ HSZ-1: 0]   hist_b_waddr;
+logic [ FSZ-1: 0]   hist_a_wdata;
+logic [ FSZ-1: 0]   hist_b_wdata;
+logic               hist_a_we   ;
+logic               hist_b_we   ;
+
+Register_Pipeline_Simple #(
+    .WORD_WIDTH     (HSZ),
+    .PIPE_DEPTH     (WRITE_DELAY)
+) pipe_hist_a_waddr (
+    .clock          (clk_i),
+    .clock_enable   (1),
+    .clear          (0),
+    .pipe_in        (fft_hist_index),
+    .pipe_out       (hist_a_waddr)
+);
+
+Register_Pipeline_Simple #(
+    .WORD_WIDTH     (FSZ + 1),
+    .PIPE_DEPTH     (WRITE_DELAY)
+) pipe_hist_a_wdata (
+    .clock          (clk_i),
+    .clock_enable   (1),
+    .clear          (0),
+    .pipe_in        ({fft_peak_index_up, peak_up & fft_peak_ready == 2'b01}),
+    .pipe_out       ({hist_a_wdata, hist_a_we})
+);
+
+Register_Pipeline_Simple #(
+    .WORD_WIDTH     (HSZ + FSZ + 1),
+    .PIPE_DEPTH     (WRITE_DELAY)
+) pipe_hist_b_waddr (
+    .clock          (clk_i),
+    .clock_enable   (1),
+    .clear          (0),
+    .pipe_in        (fft_hist_index),
+    .pipe_out       (hist_b_waddr)
+);
+
+Register_Pipeline_Simple #(
+    .WORD_WIDTH     (FSZ + 1),
+    .PIPE_DEPTH     (WRITE_DELAY)
+) pipe_hist_b_wdata (
+    .clock          (clk_i),
+    .clock_enable   (1),
+    .clear          (0),
+    .pipe_in        ({fft_peak_index_down, ~peak_up & fft_peak_ready == 2'b01}),
+    .pipe_out       ({hist_b_wdata, hist_b_we})
 );
 
 logic [ FSZ-1: 0]   buf_a_raddr;
@@ -152,7 +239,7 @@ logic [ FSZ-1: 0]   buf_b_raddr;
 
 Register_Pipeline_Simple #(
     .WORD_WIDTH     (FSZ),
-    .PIPE_DEPTH     (ADDR_A_DELAY+1)
+    .PIPE_DEPTH     (ADDR_A_DELAY)
 ) buf_a_rd (
     .clock          (adc_clk_i),
     .clock_enable   (1),
@@ -163,7 +250,7 @@ Register_Pipeline_Simple #(
 
 Register_Pipeline_Simple #(
     .WORD_WIDTH     (FSZ),
-    .PIPE_DEPTH     (ADDR_B_DELAY+1)
+    .PIPE_DEPTH     (ADDR_B_DELAY)
 ) buf_b_rd (
     .clock          (adc_clk_i),
     .clock_enable   (1),
@@ -172,14 +259,31 @@ Register_Pipeline_Simple #(
     .pipe_out       (buf_b_raddr)
 );
 
-logic [ FSZ-1: 0]   hist_a_waddr [0 : WRITE_DELAY];
-logic [ FSZ-1: 0]   hist_b_waddr [0 : WRITE_DELAY];
-logic [ DSZ-1: 0]   hist_a_wdata [0 : WRITE_DELAY];
-logic [ DSZ-1: 0]   hist_b_wdata [0 : WRITE_DELAY];
-logic               hist_a_we    [0 : WRITE_DELAY];
-logic               hist_b_we    [0 : WRITE_DELAY];
-logic [ FSZ-1: 0]   hist_a_raddr [0 :ADDR_A_DELAY];
-logic [ FSZ-1: 0]   hist_b_raddr [0 :ADDR_B_DELAY];
+logic [ HSZ-1: 0]   hist_a_raddr;
+logic [ HSZ-1: 0]   hist_b_raddr;
+
+Register_Pipeline_Simple #(
+    .WORD_WIDTH     (HSZ),
+    .PIPE_DEPTH     (ADDR_A_DELAY)
+) hist_a_rd (
+    .clock          (adc_clk_i),
+    .clock_enable   (1),
+    .clear          (0),
+    .pipe_in        (sys_addr_in[HSZ-1+2:2]),
+    .pipe_out       (hist_a_raddr)
+);
+
+Register_Pipeline_Simple #(
+    .WORD_WIDTH     (HSZ),
+    .PIPE_DEPTH     (ADDR_B_DELAY)
+) hist_b_rd (
+    .clock          (adc_clk_i),
+    .clock_enable   (1),
+    .clear          (0),
+    .pipe_in        (sys_addr_in[HSZ-1+2:2]),
+    .pipe_out       (hist_b_raddr)
+);
+
 
 logic  [ ASZ-1:0] data_i;
 logic             enable_i;
@@ -202,19 +306,6 @@ logic             fft_index_valid_i;
 logic  [ HSZ-1:0] fft_hist_index_i;
 
 logic  [  16-1:0] fft_conf_data_i;
-
-integer i;
-
-always @(posedge adc_clk_i) begin
-    hist_a_raddr[0] <= sys_addr_in[HSZ-1+2:2];
-    hist_b_raddr[0] <= sys_addr_in[HSZ-1+2:2];
-    for (i=0; i<ADDR_A_DELAY; i+=1) begin
-        hist_a_raddr[i+1] <= hist_a_raddr[i];
-    end
-    for (i=0; i<ADDR_B_DELAY; i+=1) begin
-        hist_b_raddr[i+1] <= hist_b_raddr[i];
-    end
-end
 
 always @(posedge adc_clk_i) begin
     adc_rstn_i <= adc_rstn_in;
@@ -266,10 +357,6 @@ xpm_cdc_single #(
     .dest_out  (fft_done_o)
 );
 
-logic [  2-1: 0] fft_peak_ready;
-logic            peak_up, peak_ready;
-logic            peak_ready_trig = {fft_peak_ready[0], peak_ready} == 2'b01;
-
 xpm_cdc_single #(
     .DEST_SYNC_FF (SYNC_FF)
 ) peak_ready_sync (
@@ -278,14 +365,6 @@ xpm_cdc_single #(
     .dest_clk  (adc_clk_i),
     .dest_out  (fft_peak_ready_o)
 );
-
-logic [ FSZ : 0]        fft_count, fft_count_;
-logic [ FSZ+DSZ-1: 0]   fft_sum, fft_sum_;
-logic [ FSZ-1:0]        fft_peak_index_up, fft_peak_index_up_;
-logic [ FSZ-1:0]        fft_peak_index_down, fft_peak_index_down_;
-logic [ DSZ-1:0]        fft_peak_value_up, fft_peak_value_up_;
-logic [ DSZ-1:0]        fft_peak_value_down, fft_peak_value_down_;
-logic                   out_send, out_send_;
 
 xpm_cdc_handshake #(
     .WIDTH          (FSZ+1 + FSZ+DSZ + FSZ + FSZ + DSZ + DSZ),
@@ -377,12 +456,12 @@ xpm_memory_sdpram #(
     .BYTE_WRITE_WIDTH_A     (FSZ)
 ) fft_hist_up (
     .clka   (clk_i),
-    .addra  (hist_a_waddr[WRITE_DELAY]),
-    .dina   (hist_a_wdata[WRITE_DELAY]),
-    .wea    (hist_a_we[WRITE_DELAY]),
+    .addra  (hist_a_waddr),
+    .dina   (hist_a_wdata),
+    .wea    (hist_a_we),
     .ena    (1'b1),
     .clkb   (adc_clk_i),
-    .addrb  (hist_a_raddr[ADDR_A_DELAY]),
+    .addrb  (hist_a_raddr),
     .doutb  (fft_hist_rdata_up_o),
     .rstb   (1'b0),
     .regceb (1'b1),
@@ -402,12 +481,12 @@ xpm_memory_sdpram #(
     .BYTE_WRITE_WIDTH_A     (FSZ)
 ) fft_hist_down (
     .clka   (clk_i),
-    .addra  (hist_b_waddr[WRITE_DELAY]),
-    .dina   (hist_b_wdata[WRITE_DELAY]),
-    .wea    (hist_b_we[WRITE_DELAY]),
+    .addra  (hist_b_waddr),
+    .dina   (hist_b_wdata),
+    .wea    (hist_b_we),
     .ena    (1'b1),
     .clkb   (adc_clk_i),
-    .addrb  (hist_b_raddr[ADDR_B_DELAY]),
+    .addrb  (hist_b_raddr),
     .doutb  (fft_hist_rdata_down_o),
     .rstb   (1'b0),
     .regceb (1'b1),
@@ -657,25 +736,6 @@ end else begin
     end
 end
 
-always @(posedge clk_i) begin
-    hist_a_waddr[0] <= fft_hist_index;
-    hist_b_waddr[0] <= fft_hist_index;
-    hist_a_wdata[0] <= fft_peak_index_up;
-    hist_b_wdata[0] <= fft_peak_index_down;
-    hist_a_we[0] <= peak_up && fft_peak_ready == 2'b01;
-    hist_b_we[0] <= !peak_up && fft_peak_ready == 2'b01;
-    for (i=0; i<WRITE_DELAY; i+=1) begin
-        hist_a_waddr[i+1] <= hist_a_waddr[i];
-        hist_b_waddr[i+1] <= hist_b_waddr[i];
-        hist_a_wdata[i+1] <= hist_a_wdata[i];
-        hist_b_wdata[i+1] <= hist_b_wdata[i];
-        hist_a_waddr[i+1] <= hist_a_waddr[i];
-        hist_b_waddr[i+1] <= hist_b_waddr[i];
-        hist_a_we[i+1] <= hist_a_we[i];
-        hist_b_we[i+1] <= hist_b_we[i];
-    end
-end
-
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
     fft_wp <= 0;
@@ -736,23 +796,42 @@ end
 logic [DSZ-1: 0] peak_in_data;
 logic [FSZ-1: 0] peak_data_index;
 logic            peak_data_valid;
-logic            peak_in_valid;
+logic            peak_in_addr_valid, peak_in_data_valid;
+logic            peak_in_valid = peak_in_addr_valid & peak_in_data_valid;
 logic            peak_in_ready;
 logic            peak_in_last;
 
+logic            fft_maxi_data_rdy, fft_maxi_addr_rdy;
+assign           fft_maxi_rdy = fft_maxi_data_rdy & fft_maxi_addr_rdy;
+
 Skid_Buffer_Pipeline #(
-    .WORD_WIDTH (DSZ + FSZ + 2),
-    .PIPE_DEPTH (16)
-) peak_in_buf (
+    .WORD_WIDTH (DSZ),
+    .PIPE_DEPTH (PEAK_INPUT_DELAY)
+) pipe_peak_data (
     .clock          (clk_i),
     .clear          (~rstn_i),
     .input_valid    (fft_maxi_valid),
-    .input_ready    (fft_maxi_rdy),
-    .input_data     ({fft_data_abs, fft_data_valid, fft_wp_index, fft_maxi_last}),
+    .input_ready    (fft_maxi_data_rdy),
+    .input_data     (fft_data_abs),
 
-    .output_valid   (peak_in_valid),
+    .output_valid   (peak_in_data_valid),
     .output_ready   (peak_in_ready),
-    .output_data    ({peak_in_data, peak_data_valid, peak_data_index, peak_in_last})
+    .output_data    (peak_in_data)
+);
+
+Skid_Buffer_Pipeline #(
+    .WORD_WIDTH (FSZ + 2),
+    .PIPE_DEPTH (PEAK_INPUT_DELAY)
+) pipe_peak_addr (
+    .clock          (clk_i),
+    .clear          (~rstn_i),
+    .input_valid    (fft_maxi_valid),
+    .input_ready    (fft_maxi_addr_rdy),
+    .input_data     ({fft_data_valid, fft_wp_index, fft_maxi_last}),
+
+    .output_valid   (peak_in_addr_valid),
+    .output_ready   (peak_in_ready),
+    .output_data    ({peak_data_valid, peak_data_index, peak_in_last})
 );
 
 peak_detector #(.SSZ(FSZ), .DSZ(DSZ)) peak_detector_i (
@@ -761,9 +840,9 @@ peak_detector #(.SSZ(FSZ), .DSZ(DSZ)) peak_detector_i (
     .data_valid     (peak_data_valid),
     .data_in        (peak_in_data),
     .data_index     (peak_data_index),
-    .maxi_rdy       (peak_in_ready),
-    .maxi_valid     (peak_in_valid),
-    .maxi_last      (peak_in_last),
+    .saxi_rdy       (peak_in_ready),
+    .saxi_valid     (peak_in_valid),
+    .saxi_last      (peak_in_last),
     .threshold_k_sq (fft_threshold_k_arg),
     .peak_idx       (fft_peak_idx),
     .peak           (fft_peak),
