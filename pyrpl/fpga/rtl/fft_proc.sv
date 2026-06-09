@@ -513,7 +513,7 @@ xpm_fifo_async #(
     .din             (data_i),
 
     .rd_clk          (clk_i),
-    .rd_en           (padding_done & fft_saxi_rdy & fft_saxi_valid),
+    .rd_en           (padding_done & fft_saxi_rdy & fin_rd),
     .dout            (fin_dout),
     .data_valid      (fin_dvalid),
 
@@ -544,9 +544,9 @@ xpm_fifo_async #(
 
 logic  fft_we_one;
 logic  fft_we_length_plus_one;
-// assign fft_saxi_last = fft_we_one || fft_we_length_plus_one;
-// assign fft_saxi_valid = (!padding_done || fin_dvalid) && fin_rd;
-// assign fft_data_i = fin_dout;
+assign fft_saxi_last = fft_we_one || fft_we_length_plus_one;
+assign fft_saxi_valid = (!padding_done || fin_dvalid) && fin_rd;
+assign fft_data_i = fin_dout;
 
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
@@ -558,8 +558,8 @@ if (rstn_i == 1'b0) begin
     up_in <= 1;
     padding_cnt <= 0;
     padding_done <= 0;
-    fft_saxi_last <= 0;
-    fft_saxi_valid <= 0;
+    // fft_saxi_last <= 0;
+    // fft_saxi_valid <= 0;
 
 end else begin
 
@@ -573,7 +573,7 @@ end else begin
         // overflow_cnt <= overflow_cnt + 1;
     end
 
-    fft_data_i <= fin_dout;
+    // fft_data_i <= fin_dout;
 
     if (fft_trig && fft_done && up_in) begin
         fft_we_cnt <= fft_length2;
@@ -582,8 +582,9 @@ end else begin
         fin_rd <= 1;
         padding_cnt <= padding_up;
         padding_done <= 0;
-        fft_saxi_valid <= 1;
-        fft_saxi_last <= 0;
+        fft_done <= 0;
+        // fft_saxi_valid <= 1;
+        // fft_saxi_last <= 0;
     end else begin
         if (!fft_done && fft_saxi_valid && fft_saxi_rdy) begin
             frame_cnt <= frame_cnt + 1;
@@ -599,13 +600,13 @@ end else begin
                 padding_done <= padding_cnt == 1;
             end
             fft_we_cnt <= fft_we_cnt - 1;
+            fft_done <= fft_we_one;
+            fft_we_one <= fft_we_cnt == 2;
+            fft_we_length_plus_one <= fft_we_cnt == fft_length_plus_two;
         end
-        fft_done <= fft_we_cnt==0;
-        fft_we_one <= fft_we_cnt == 2;
-        fft_we_length_plus_one <= fft_we_cnt == fft_length_plus_two;
-
-        fft_saxi_last <= fft_we_one || fft_we_length_plus_one;
-        fft_saxi_valid <= (!padding_done || fin_dvalid) && fin_rd;
+        //
+        // fft_saxi_last <= fft_we_one || fft_we_length_plus_one;
+        // fft_saxi_valid <= (!padding_done || fin_dvalid) && fin_rd;
     end
 end
 
