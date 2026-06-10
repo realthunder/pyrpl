@@ -121,11 +121,11 @@ logic [ DSZ-1:0]    fft_peak_value_down, fft_peak_value_down_;
 logic               out_send, out_send_;
 
 
-localparam ADDR_A_DELAY = 3;
-localparam ADDR_B_DELAY = 3;
-localparam READ_A_DELAY = READ_DELAY - ADDR_A_DELAY-2;
-localparam READ_B_DELAY = READ_DELAY - ADDR_B_DELAY-2;
-localparam WRITE_DELAY = 5-1;
+localparam ADDR_A_DELAY = 2;
+localparam ADDR_B_DELAY = 2;
+localparam READ_A_DELAY = READ_DELAY - ADDR_A_DELAY-4;
+localparam READ_B_DELAY = READ_DELAY - ADDR_B_DELAY-4;
+localparam WRITE_DELAY = 3-1;
 localparam PEAK_INPUT_DELAY = 5;
 
 (* DONT_TOUCH = "true" *) logic [ FSZ-1: 0]   buf_a_waddr;
@@ -292,14 +292,14 @@ Register_Pipeline_Simple #(
 (* DONT_TOUCH = "true" *) logic [ FSZ-1: 0]   _buf_a_raddr  [0 :ADDR_A_DELAY];
 (* DONT_TOUCH = "true" *) logic [ FSZ-1: 0]   _buf_b_raddr  [0 :ADDR_B_DELAY];
 
-assign buf_a_waddr = _buf_a_waddr[WRITE_DELAY];
-assign buf_b_waddr = _buf_b_waddr[WRITE_DELAY];
-assign buf_a_wdata = _buf_a_wdata[WRITE_DELAY];
-assign buf_b_wdata = _buf_b_wdata[WRITE_DELAY];
-assign buf_a_we    = _buf_a_we[WRITE_DELAY];
-assign buf_b_we    = _buf_b_we[WRITE_DELAY];
-assign buf_a_raddr = _buf_a_raddr[ADDR_A_DELAY];
-assign buf_b_raddr = _buf_b_raddr[ADDR_A_DELAY];
+// assign buf_a_waddr = _buf_a_waddr[WRITE_DELAY];
+// assign buf_b_waddr = _buf_b_waddr[WRITE_DELAY];
+// assign buf_a_wdata = _buf_a_wdata[WRITE_DELAY];
+// assign buf_b_wdata = _buf_b_wdata[WRITE_DELAY];
+// assign buf_a_we    = _buf_a_we[WRITE_DELAY];
+// assign buf_b_we    = _buf_b_we[WRITE_DELAY];
+// assign buf_a_raddr = _buf_a_raddr[ADDR_A_DELAY];
+// assign buf_b_raddr = _buf_b_raddr[ADDR_A_DELAY];
 
 logic [ FSZ-1: 0]   _hist_a_waddr [0 : WRITE_DELAY];
 logic [ FSZ-1: 0]   _hist_b_waddr [0 : WRITE_DELAY];
@@ -334,6 +334,8 @@ always @(posedge adc_clk_i) begin
         _buf_b_raddr[i+1] <= _buf_b_raddr[i];
         _hist_b_raddr[i+1] <= _hist_b_raddr[i];
     end
+    buf_a_raddr <= _buf_a_raddr[ADDR_A_DELAY];
+    buf_b_raddr <= _buf_b_raddr[ADDR_A_DELAY];
 end
 
 always @(posedge clk_i) begin
@@ -352,12 +354,12 @@ always @(posedge clk_i) begin
         _buf_b_we[i+1] <= _buf_b_we[i];
     end
 
-    // buf_a_waddr <= _buf_a_waddr[WRITE_DELAY];
-    // buf_b_waddr <= _buf_b_waddr[WRITE_DELAY];
-    // buf_a_wdata <= _buf_a_wdata[WRITE_DELAY];
-    // buf_b_wdata <= _buf_b_wdata[WRITE_DELAY];
-    // buf_a_we <= _buf_a_we[WRITE_DELAY];
-    // buf_b_we <= _buf_b_we[WRITE_DELAY];
+    buf_a_waddr <= _buf_a_waddr[WRITE_DELAY];
+    buf_b_waddr <= _buf_b_waddr[WRITE_DELAY];
+    buf_a_wdata <= _buf_a_wdata[WRITE_DELAY];
+    buf_b_wdata <= _buf_b_wdata[WRITE_DELAY];
+    buf_a_we <= _buf_a_we[WRITE_DELAY];
+    buf_b_we <= _buf_b_we[WRITE_DELAY];
 end
 
 always @(posedge clk_i) begin
