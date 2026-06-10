@@ -129,8 +129,8 @@ localparam ADDR_A_DELAY = 4;
 localparam ADDR_B_DELAY = 4;
 localparam READ_A_DELAY = READ_DELAY - ADDR_A_DELAY;
 localparam READ_B_DELAY = READ_DELAY - ADDR_B_DELAY;
-localparam WRITE_DELAY = 5;
-localparam PEAK_INPUT_DELAY = 5;
+localparam WRITE_DELAY = 10;
+localparam PEAK_INPUT_DELAY = 10;
 
 logic [ FSZ-1: 0]   buf_a_waddr;
 logic [ FSZ-1: 0]   buf_b_waddr;
@@ -213,7 +213,7 @@ Register_Pipeline_Simple #(
 );
 
 Register_Pipeline_Simple #(
-    .WORD_WIDTH     (HSZ + FSZ + 1),
+    .WORD_WIDTH     (HSZ),
     .PIPE_DEPTH     (WRITE_DELAY)
 ) pipe_hist_b_waddr (
     .clock          (clk_i),

@@ -117,7 +117,7 @@ read_verilog                      $path_rtl/red_pitaya_iq_block.v
 read_verilog                      $path_rtl/red_pitaya_trigger_block.v
 read_verilog                      $path_rtl/red_pitaya_prng.v
 
-read_verilog                      $path_rtl/../elements/*.v
+read_verilog                      [glob $path_rtl/../elements/*.v]
 
 #constraints
 read_xdc                          $path_sdc/red_pitaya.xdc
