@@ -68,7 +68,7 @@
 
 module red_pitaya_scope #(
   parameter ASZ = 14,  // ADC input sample data width
-  parameter QSZ = 12,  // FFT buffer queue size 2^QSZ
+  parameter QSZ = 11,  // FFT buffer queue size 2^QSZ
   parameter DSZ = 28,  // FFT_output width
   parameter FSZ = 13,  // FFT transform length 2^FSZ
   parameter RSZ = 14,  // RAM size 2^RSZ
@@ -851,9 +851,10 @@ always @(posedge adc_clk_i)
 if (fft_rstn_i == 0) begin
     fft_state <= S_IDLE;
 end else begin
-    if (sys_wen && (sys_addr[19:0]==20'h0) && sys_wdata[9])
+    if (sys_wen && (sys_addr[19:0]==20'h0) && sys_wdata[9]) begin
+        fft_debug_cnt3 <= fft_debug_cnt3 + 1;
         fft_peak_ready[0] <= 0;
-    else if (fft_peak_ready_a) begin
+    end else if (fft_peak_ready_a) begin
         fft_peak_ready[0] <= 1;
         fft_debug_cnt2 <= fft_debug_cnt2 + 1;
     end
@@ -861,6 +862,7 @@ end else begin
         fft_peak_ready[1] <= 0;
     else if (fft_peak_ready_b) begin
         fft_peak_ready[1] <= 1;
+        fft_debug_cnt <= fft_debug_cnt + 1;
     end
 
     case (fft_state)
@@ -868,7 +870,6 @@ end else begin
         if (fft_trig_i && &fft_done) begin
             fft_state_cnt <= 0;
             fft_state <= S_WAIT1;
-            fft_debug_cnt3 <= fft_debug_cnt3 + 1;
         end else
             fft_active_o <= 0;
     S_WAIT1:

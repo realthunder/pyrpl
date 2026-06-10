@@ -194,7 +194,8 @@ report_power             -file    $path_out/post_synth_power.rpt
 opt_design -directive NoBramPowerOpt
 # power_opt_design
 place_design
-phys_opt_design
+# phys_opt_design
+phys_opt_design -directive AggressiveExplore
 write_checkpoint         -force   $path_out/post_place
 report_timing_summary    -file    $path_out/post_place_timing_summary.rpt
 #write_hwdef              -file    $path_sdk/red_pitaya.hwdef
