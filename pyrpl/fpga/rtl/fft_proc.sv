@@ -123,9 +123,9 @@ logic               out_send, out_send_;
 
 localparam ADDR_A_DELAY = 2;
 localparam ADDR_B_DELAY = 2;
-localparam READ_A_DELAY = READ_DELAY - ADDR_A_DELAY-4;
-localparam READ_B_DELAY = READ_DELAY - ADDR_B_DELAY-4;
-localparam WRITE_DELAY = 3-1;
+localparam READ_A_DELAY = READ_DELAY - ADDR_A_DELAY-5;
+localparam READ_B_DELAY = READ_DELAY - ADDR_B_DELAY-5;
+localparam WRITE_DELAY = 10;
 localparam PEAK_INPUT_DELAY = 5;
 
 (* DONT_TOUCH = "true" *) logic [ FSZ-1: 0]   buf_a_waddr;

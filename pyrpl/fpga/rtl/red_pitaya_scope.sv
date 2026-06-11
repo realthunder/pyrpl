@@ -670,7 +670,21 @@ logic [16-1: 0] fft_conf_data = {{7-1{1'b0}}, fft_fwd_inv, {3-1{1'b0}}, fft_nfft
 assign fft_wp_last_a = (1<<fft_nfft)-1;
 assign fft_wp_last_b = (1<<fft_nfft)-1;
 
-logic fft_input_clk = fft_clk_i;
+logic           fft_clk_sel_i, fft_clk_sel;
+
+always @(posedge adc_clk_i)
+if (adc_rstn_i == 1'b0) begin
+    fft_clk_sel_i <= 0;
+end else begin
+    fft_clk_sel_i <= fft_clk_sel;
+end
+
+BUFGMUX clk_sel (
+    .O  (fft_input_clk),
+    .I0 (adc_clk_i),
+    .I1 (fft_clk_i),
+    .S  (fft_clk_sel_i)
+);
 
 always @(posedge adc_clk_i) begin
     fft_rdata_up_a <= fft_rdata_up_a_;
@@ -823,12 +837,13 @@ if (adc_rstn_i == 1'b0) begin
     fft_acq1_cnt <= 2**(FSZ-1) - 200;
     fft_acq2_cnt <= 2**(FSZ-1) - 200;
     fft_trig_sync <= 0;
-
+    fft_clk_sel <= 0;
 end else if (sys_wen) begin
     if (sys_addr[19:0]==20'h0)  begin
         fft_parallel <= sys_wdata[4];
         fft_enable <= sys_wdata[5];
         fft_trig_sync <= sys_wdata[6];
+        fft_clk_sel <= sys_wdata[11];
     end
     if (sys_addr[19:0]==20'h38) fft_peak_start <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h3C) fft_threshold_k <= sys_wdata[16-1:0];
@@ -1484,7 +1499,8 @@ end else begin
                                                                  , {8-6{1'b0}}
                                                                  , fft_status[0]
 
-                                                                 , {16-11{1'b0}}
+                                                                 , {16-12{1'b0}}
+                                                                 , fft_clk_sel
                                                                  , fft_peak_ready[2-1:0]
                                                                  , fft_done[2-1:0]
                                                                  , fft_trig_sync

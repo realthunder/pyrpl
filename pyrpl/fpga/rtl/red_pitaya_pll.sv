@@ -49,7 +49,7 @@ PLLE2_ADV #(
    .CLKOUT3_DIVIDE       ( 4         ),
    .CLKOUT3_PHASE        (-45.000    ),
    .CLKOUT3_DUTY_CYCLE   ( 0.5       ),
-   .CLKOUT4_DIVIDE       ( 4         ),  // 4->250MHz, 2->500MHz
+   .CLKOUT4_DIVIDE       ( 5         ),  // 5->200MHz, 4->250MHz, 2->500MHz
    .CLKOUT4_PHASE        ( 0.000     ),
    .CLKOUT4_DUTY_CYCLE   ( 0.5       ),
    .CLKOUT5_DIVIDE       ( 4         ),
