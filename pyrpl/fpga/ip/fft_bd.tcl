@@ -260,8 +260,8 @@ proc create_root_design { parentCell } {
    CONFIG.rounding_modes {convergent_rounding} \
    CONFIG.run_time_configurable_transform_length {true} \
    CONFIG.scaling_options {unscaled} \
-   CONFIG.target_clock_frequency {125} \
-   CONFIG.target_data_throughput {125} \
+   CONFIG.target_clock_frequency {250} \
+   CONFIG.target_data_throughput {250} \
    CONFIG.throttle_scheme {nonrealtime} \
    CONFIG.transform_length [expr {1<<$fft_nfft}] \
  ] $xfft_0
