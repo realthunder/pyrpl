@@ -1,0 +1,153 @@
+#include "peak_detector.h"
+
+// Reverse the bottom FSZ bits of x, then right-shift to keep only `bits` bits.
+// Avoids dynamic bit indexing: full FSZ-bit reversal is static; the barrel
+// shift handles the runtime nfft.
+static count_t bit_rev(count_t x, ap_uint<4> bits) {
+#pragma HLS INLINE
+    count_t full_rev = 0;
+    for (int i = 0; i < FSZ; i++) {
+#pragma HLS UNROLL
+        full_rev[FSZ - 1 - i] = x[i];
+    }
+    return full_rev >> (FSZ - bits);
+}
+
+void peak_detector(
+    hls::stream<axis_in_pkt>  &s_axis,
+    hls::stream<axis_out_pkt> &m_axis,
+    ap_uint<16> threshold_k_sq,
+    count_t     start_index,
+    count_t     end_index,
+    data_t      data_min,
+    ap_uint<4>  nfft
+) {
+#pragma HLS INTERFACE axis         port=s_axis
+#pragma HLS INTERFACE axis         port=m_axis
+#pragma HLS INTERFACE ap_ctrl_hs   port=return
+#pragma HLS INTERFACE ap_none      port=threshold_k_sq
+#pragma HLS INTERFACE ap_none      port=start_index
+#pragma HLS INTERFACE ap_none      port=end_index
+#pragma HLS INTERFACE ap_none      port=data_min
+#pragma HLS INTERFACE ap_none      port=nfft
+
+    // Frame accumulators (in clip(s << SQ_LSHIFT) units)
+    sum_t    sum    = 0;
+    sum_sq_t sum_sq = 0;
+    count_t  count  = 0;
+
+    // Peak state: peak_val is unscaled (raw DSZ bits) for the output register
+    data_t  peak_val   = 0;
+    count_t peak_bin   = 0;
+    bool    peak_valid = false;
+
+    count_t beat_idx = 0;
+
+    // --- STREAM loop: one iteration per AXI-S beat, II=1 ---
+    bool last = false;
+    STREAM: while (!last) {
+#pragma HLS LOOP_TRIPCOUNT min=16 max=4096 avg=128
+#pragma HLS PIPELINE II=1
+
+        axis_in_pkt pkt = s_axis.read();
+        last = (bool)pkt.last;
+
+        // Beat-local delta accumulators (reduced from FSSR channels before
+        // merging into frame totals; HLS builds adder trees after UNROLL)
+        sum_t      delta_sum    = 0;
+        sum_sq_t   delta_sum_sq = 0;
+        count_t    delta_count  = 0;
+        data_t  beat_peak  = peak_val;
+        count_t beat_bin   = peak_bin;
+        bool    beat_valid = peak_valid;
+
+        // --- BEAT loop: unrolled to FSSR parallel datapaths ---
+        BEAT: for (int ch = 0; ch < FSSR; ch++) {
+#pragma HLS UNROLL
+
+            data_t s = pkt.data.range(ch*DSZ + DSZ - 1, ch*DSZ);
+
+            // flat_idx = beat_idx*FSSR + ch; FSSR is constant so this is a shift+or
+            count_t flat_idx   = (count_t)((ap_uint<FSZ+4>)beat_idx * FSSR + ch);
+            count_t actual_bin = bit_rev(flat_idx, nfft);
+
+            bool sample_valid = (actual_bin >= start_index) &&
+                                (actual_bin <= end_index)   &&
+                                (s > data_min);
+
+            if (sample_valid) {
+                // Left-shift to amplify small signals, clip to SQ_BITS.
+                // Any bit above SQ_BITS in s_wide means saturation.
+                ap_uint<DSZ + SQ_LSHIFT> s_wide = (ap_uint<DSZ + SQ_LSHIFT>)s << SQ_LSHIFT;
+                sq_data_t s_sc = (s_wide >> SQ_BITS) ? sq_data_t(-1) : sq_data_t(s_wide);
+
+                delta_sum    += (sum_t)s_sc;
+                delta_sum_sq += (sum_sq_t)s_sc * s_sc;
+                delta_count  += 1;
+
+                if (s > beat_peak) {
+                    beat_peak  = s;
+                    beat_bin   = actual_bin;
+                    beat_valid = true;
+                }
+            }
+        }
+
+        // Merge beat results into frame accumulators
+        sum       += delta_sum;
+        sum_sq    += delta_sum_sq;
+        count     += delta_count;
+        peak_val   = beat_peak;
+        peak_bin   = beat_bin;
+        peak_valid = beat_valid;
+        beat_idx++;
+    }
+
+    // --- Output stage: division/sqrt-free threshold check ---
+    // Condition: (peak - mean) > k*stdev
+    // Equiv:     (peak_sc*N - sum)^2  >  k^2 * (N*sum_sq - sum^2)
+    // peak_sc = clip(peak_val << SQ_LSHIFT) — same units as accumulated sum/sum_sq
+
+    ap_uint<DSZ + SQ_LSHIFT> peak_wide = (ap_uint<DSZ + SQ_LSHIFT>)peak_val << SQ_LSHIFT;
+    sq_data_t peak_sc = (peak_wide >> SQ_BITS) ? sq_data_t(-1) : sq_data_t(peak_wide);
+
+    wide_t scaled_peak;
+#pragma HLS BIND_OP variable=scaled_peak op=mul impl=dsp
+    scaled_peak = (wide_t)peak_sc * count;
+
+    sdiff_t scaled_diff = (sdiff_t)scaled_peak - (sdiff_t)sum;
+
+    wide_t S_sq;
+#pragma HLS BIND_OP variable=S_sq op=mul impl=dsp
+    S_sq = (wide_t)sum * sum;
+
+    wide_t N_S2;
+#pragma HLS BIND_OP variable=N_S2 op=mul impl=dsp
+    N_S2 = (wide_t)count * sum_sq;
+
+    // Underflow guard: variance is non-negative by definition
+    wide_t V_scaled = (N_S2 >= S_sq) ? (N_S2 - S_sq) : (wide_t)0;
+
+    wide_t diff_sq;
+#pragma HLS BIND_OP variable=diff_sq op=mul impl=dsp
+    diff_sq = (wide_t)(scaled_diff * scaled_diff);
+
+    thresh_t threshold;
+#pragma HLS BIND_OP variable=threshold op=mul impl=dsp
+    threshold = (thresh_t)threshold_k_sq * V_scaled;
+
+    bool passes = peak_valid && ((thresh_t)diff_sq > threshold);
+
+    // Pack output: [DSZ-1:0]=value, [DSZ]=valid, [DSZ+FSZ:DSZ+1]=peak_bin
+    ap_uint<OUT_WIDTH> out_data = 0;
+    out_data.range(DSZ - 1, 0)          = peak_val;
+    out_data[DSZ]                       = (ap_uint<1>)(passes ? 1 : 0);
+    out_data.range(DSZ + FSZ, DSZ + 1)  = peak_bin;
+
+    axis_out_pkt out_pkt;
+    out_pkt.data = out_data;
+    out_pkt.last = 1;
+    out_pkt.keep = -1;
+    out_pkt.strb = -1;
+    m_axis.write(out_pkt);
+}

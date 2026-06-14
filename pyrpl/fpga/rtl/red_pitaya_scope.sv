@@ -527,10 +527,6 @@ logic [ DSZ-1: 0]   fft_peak_minimum, fft_a_peak_minimum, fft_b_peak_minimum;
 logic [ 6-1 :  0]   fft_status[0:1];
 logic [ 2-1 :  0]   fft_done;
 // (* mark_debug = "true" *)
-logic [ FSZ: 0]     fft_count_a;
-logic [ FSZ: 0]     fft_count_b;
-logic [FSZ+DSZ-1:0] fft_sum_a;
-logic [FSZ+DSZ-1:0] fft_sum_b;
 logic [ 16-1: 0]    fft_peak_index_up_a;
 logic [ 16-1: 0]    fft_peak_index_down_a;
 logic [ 16-1: 0]    fft_peak_index_up_b;
@@ -755,8 +751,6 @@ fft_a (
    .status_o (fft_status[0]),
    .fft_done_o (fft_done[0]),
    .fft_peak_ready_o (fft_peak_ready_a),
-   .fft_count_o (fft_count_a),
-   .fft_sum_o (fft_sum_a),
    .fft_peak_index_up_o (fft_peak_index_up_a[FSZ-1:0]),
    .fft_peak_index_down_o (fft_peak_index_down_a[FSZ-1:0]),
    .fft_peak_value_up_o (fft_peak_up_a),
@@ -813,8 +807,6 @@ fft_proc #(.ASZ(ASZ),
    .status_o (fft_status[1]),
    .fft_done_o (fft_done[1]),
    .fft_peak_ready_o (fft_peak_ready_b),
-   .fft_count_o (fft_count_b),
-   .fft_sum_o (fft_sum_b),
    .fft_peak_index_up_o (fft_peak_index_up_b[FSZ-1:0]),
    .fft_peak_index_down_o (fft_peak_index_down_b[FSZ-1:0]),
    .fft_peak_value_up_o (fft_peak_up_b),
@@ -1539,8 +1531,8 @@ end else begin
      20'h00044 : begin sys_ack <= sys_en;          sys_rdata <= {fft_parallel?fft_peak_index_up_b:fft_peak_index_down_a, fft_peak_index_up_a}; end
      20'h00048 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_up_a                       ; end
      20'h0004C : begin sys_ack <= sys_en;          sys_rdata <= fft_parallel?fft_peak_up_b:fft_peak_down_a ; end
-     20'h00050 : begin sys_ack <= sys_en;          sys_rdata <= fft_sum_a                           ; end
-     20'h00054 : begin sys_ack <= sys_en;          sys_rdata <= fft_count_a                         ; end
+     // 20'h00050 : begin sys_ack <= sys_en;          sys_rdata <= fft_sum_a                           ; end
+     // 20'h00054 : begin sys_ack <= sys_en;          sys_rdata <= fft_count_a                         ; end
      20'h00058 : begin sys_ack <= sys_en;          sys_rdata <= fft_wait1_cnt                       ; end
      20'h0005C : begin sys_ack <= sys_en;          sys_rdata <= fft_wait2_cnt                       ; end
      20'h00060 : begin sys_ack <= sys_en;          sys_rdata <= fft_acq1_cnt                        ; end

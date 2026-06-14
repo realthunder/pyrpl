@@ -79,6 +79,9 @@ write_hwdef              -file    $path_sdk/red_pitaya.hwdef
 source                            $path_ip/fft_ssr_bd.tcl
 generate_target all [get_files    fft_ssr.bd]
 
+source                            $path_ip/peak_detector_bd.tcl
+generate_target all [get_files    peak_detector.bd]
+
 ################################################################################
 # read files:
 # 1. RTL design sources
@@ -92,12 +95,12 @@ generate_target all [get_files    fft_ssr.bd]
 read_verilog                      .srcs/sources_1/bd/system/hdl/system_wrapper.v
 # read_verilog                      .srcs/sources_1/bd/fft/hdl/fft_wrapper.v
 read_verilog                      .srcs/sources_1/bd/fft_ssr/hdl/fft_ssr_wrapper.v
+read_verilog                      .srcs/sources_1/bd/peak_detector/hdl/peak_detector_wrapper.v
 
 read_verilog                      $path_rtl/axi_master.v
 read_verilog                      $path_rtl/axi_slave.v
 read_verilog                      $path_rtl/axi_wr_fifo.v
 
-read_verilog                      $path_rtl/peak_detector.sv
 read_verilog                      $path_rtl/fft_proc.sv
 
 read_verilog                      $path_rtl/red_pitaya_ams.v
@@ -203,6 +206,12 @@ report_power             -file    $path_out/post_synth_power.rpt
 # set_multicycle_path -setup 2 -from $multicyle_path
 # set_multicycle_path -hold 1 -to $multicyle_path
 # set_multicycle_path -setup 2 -to $multicyle_path
+set_false_path -from [get_cells -hier -filter {NAME =~ *fft_threshold_k_arg*}] \
+				-to   [get_cells -hier -filter {NAME =~ *pd_i*}]
+set_false_path -from [get_cells -hier -filter {NAME =~ *fft_peak_start_arg*}] \
+				-to   [get_cells -hier -filter {NAME =~ *pd_i*}]
+set_false_path -from [get_cells -hier -filter {NAME =~ *fft_peak_minimum_arg*}] \
+				-to   [get_cells -hier -filter {NAME =~ *pd_i*}]
 
 # opt_design
 opt_design -directive NoBramPowerOpt
