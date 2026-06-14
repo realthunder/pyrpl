@@ -44,7 +44,6 @@ module peak_detector #(
 typedef enum {
     S_IDLE,
     S_STREAM,
-    S_COMPUTE
 } peak_state_t;
 
 (* fsm_encoding = "one_hot" *) peak_state_t current_state;
@@ -90,8 +89,6 @@ logic [(SSZ+DSZ)*2-1:0] scaled_diff_sq[0:PL2]; // scaled_diff ^ 2
 logic [16-1:0] k_sq = threshold_k_sq;
 logic [(SSZ+DSZ)*2-1:0] threshold[0:PL2];
 
-assign ready = current_state==S_IDLE;
-
 assign state = current_state;
 
 // logic [1:0] rstn_reg;
@@ -107,20 +104,30 @@ logic rstn = resetn;
 
 integer i;
 
-logic [8-1:0] step_cnt;
+localparam    PL3 = 4*PL2+3;
+logic [PL3:0] ready_cnt;
+assign        ready[PL3];
+
 
 always @(posedge clk)
 if (!rstn) begin
     current_state <= S_IDLE;
     saxi_rdy <= 0;
+    ready_cnt <= 0;
 
 end else begin
+
+    if (data_last[PL1]) begin
+        current_state <= S_IDLE;
+        ready_cnt <= 1;
+    end else
+        ready_cnt = {read_cnt[PL3-1,0], 1'b0};
 
     data_sq[0] <= data_r[0] * data_r[0];
     data_r[0] <= data_in;
     data_valid_r[0] <= data_valid & saxi_valid;
     data_index_r[0] <= data_index;
-    data_last[0] <= saxi_last;
+    data_last[0] <= saxi_last & saxi_valid;
 
     for (i=0; i<PL2; i+=1) begin
         count[i+1] <= count[i];
@@ -158,7 +165,7 @@ end else begin
 
     // PL2 cycles for results
     //
-    // So total = 4*PL2 + 3
+    // So total pipeline delay = 4*PL2 + 3
 
     case (current_state)
     S_IDLE:
@@ -197,20 +204,8 @@ end else begin
 
         if (saxi_last)
             saxi_rdy <= 0;
-
-        if (data_last[PL1]) begin
-            current_state <= S_COMPUTE;
-            step_cnt <= 0;
-        end
-
-    end S_COMPUTE:
-        if (step_cnt != 4*PL2+3) 
-            step_cnt <= step_cnt + 1;
-        else begin
-            if (scaled_diff_sq[PL2] < threshold[PL2])
-                peak_idx <= 0;
-            current_state <= S_IDLE;
-        end
+    default:
+        current_state <= S_IDLE;
     endcase
 end
 

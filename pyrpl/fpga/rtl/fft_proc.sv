@@ -40,8 +40,6 @@ module fft_proc #(
   output logic            fft_done_o,
   output logic            fft_peak_ready_o,
 
-  output logic [ FSZ : 0] fft_count_o,
-  output logic [ FSZ+DSZ-1: 0]fft_sum_o,
   output logic [ FSZ-1:0] fft_peak_index_up_o,
   output logic [ FSZ-1:0] fft_peak_index_down_o,
   output logic [ DSZ-1:0] fft_peak_value_up_o,
@@ -79,13 +77,7 @@ logic [ 32-1: 0] scan_frame_cnt;
 logic [ HSZ-1:0] fft_hist_index;
 logic [ HSZ-1:0] prev_hist_index;
 
-logic [DSZ-1    : 0]    fft_data[0 : FSSR-1];
 logic [ASZ*FSSR-1: 0]   fft_data_i;
-logic [FSSR-1    : 0]   fft_data_valid;
-
-logic [16-ASZ-1:0]      fft_data_ext;
-// sign extend the data for padding according to xfft requirement
-assign                  fft_data_ext = {16-ASZ{fft_data_i[0][ASZ-1]}};
 
 logic                   fft_saxi_last;
 logic                   fft_saxi_rdy;
@@ -93,10 +85,6 @@ logic                   fft_saxi_valid;
 
 logic [ FSZ-1: 0]       fft_peak_idx;
 logic [ DSZ-1: 0]       fft_peak;
-logic [ FSZ-1: 0]       fft_peak2_idx;
-logic [ DSZ-1: 0]       fft_peak2;
-logic [ FSZ+DSZ-1:0]    _fft_sum;
-logic [ FSZ: 0]         _fft_count;
 
 logic [ 32-DSZ-1:0]     fft_maxi_unused;
 logic [ DSZ*FSSR-1:0]   fft_maxi_data;
@@ -104,19 +92,15 @@ logic                   fft_maxi_valid;
 logic                   fft_maxi_rdy;
 logic                   fft_maxi_last;
 logic [ FSZ-1: 0]       fft_wp;
-// bit reverse fft_wp, because we are using FFT ip core bit reversed option to
-// save memory resource
-logic [ FSZ-1: 0]       fft_wp_plus_one = fft_wp+1;
-logic [ FSZ-1: 0]       fft_wp_reversed = {<<{fft_wp_plus_one}};
-logic [ FSZ-1: 0]       fft_wp_index;
 
 logic               adc_rstn_i;
 
 logic [ 16-1:0]     fft_conf_data, fft_conf_data_, conf_data_i;
+logic               fft_conf_rdy;
 logic [  5-1:0]     fft_nfft, fft_nfft_, fft_shift, fft_shift_;
 logic [ 32-1:0]     fft_length, fft_length2, fft_length_plus_two;
 logic [ 32-1:0]     fft_length_, fft_length2_, fft_length_plus_two_;
-logic               conf_send;
+logic               conf_send, conf_recv, conf_req;
 logic               up_out, up_toggle, up_toggle_;
 logic [FSZ-1:0]     acq_up, acq_up_, acq_down, acq_down_;
 
@@ -125,13 +109,11 @@ logic               peak_up, peak_ready;
 logic               peak_ready_pretrig = {fft_peak_ready[0], peak_ready} == 2'b01;
 logic               peak_ready_trig = fft_peak_ready == 2'b01;
 
-logic [ FSZ : 0]    fft_count, fft_count_;
-logic [FSZ+DSZ-1:0] fft_sum, fft_sum_;
 logic [ FSZ-1:0]    fft_peak_index_up, fft_peak_index_up_;
 logic [ FSZ-1:0]    fft_peak_index_down, fft_peak_index_down_;
 logic [ DSZ-1:0]    fft_peak_value_up, fft_peak_value_up_;
 logic [ DSZ-1:0]    fft_peak_value_down, fft_peak_value_down_;
-logic               out_send, out_send_;
+logic               out_recv, out_send, out_send_;
 
 (* DONT_TOUCH = "true" *) logic [ FSZ-1: 0]   buf_a_waddr;
 (* DONT_TOUCH = "true" *) logic [ FSZ-1: 0]   buf_b_waddr;
@@ -153,8 +135,8 @@ logic [ HSZ-1: 0]   hist_b_raddr;
 
 (* DONT_TOUCH = "true" *) logic [ FSZ-1: 0]   _buf_a_waddr  [0 : WRITE_DELAY];
 (* DONT_TOUCH = "true" *) logic [ FSZ-1: 0]   _buf_b_waddr  [0 : WRITE_DELAY];
-(* DONT_TOUCH = "true" *) logic [ DSZ-1: 0]   _buf_a_wdata  [0 : WRITE_DELAY];
-(* DONT_TOUCH = "true" *) logic [ DSZ-1: 0]   _buf_b_wdata  [0 : WRITE_DELAY];
+(* DONT_TOUCH = "true" *) logic [ DSZ-1: 0]   _buf_a_wdata  [0 : WRITE_DELAY] [0 : FSSR-1];
+(* DONT_TOUCH = "true" *) logic [ DSZ-1: 0]   _buf_b_wdata  [0 : WRITE_DELAY] [0 : FSSR-1];
 (* DONT_TOUCH = "true" *) logic               _buf_a_we     [0 : WRITE_DELAY];
 (* DONT_TOUCH = "true" *) logic               _buf_b_we     [0 : WRITE_DELAY];
 (* DONT_TOUCH = "true" *) logic [ FSZ-1: 0]   _buf_a_raddr  [0 :ADDR_A_DELAY];
@@ -188,7 +170,7 @@ assign hist_a_raddr = _hist_a_raddr[ADDR_A_DELAY];
 assign hist_b_raddr = _hist_b_raddr[ADDR_A_DELAY];
 
 genvar s;
-integer i;
+integer i, j;
 
 always @(posedge adc_clk_i) begin
     _hist_a_raddr[0] <= sys_addr_in[HSZ-1+2:2];
@@ -210,23 +192,26 @@ end
 always @(posedge clk_i) begin
     _buf_a_waddr[0] <= fft_wp;
     _buf_b_waddr[0] <= fft_wp;
-    _buf_a_wdata[0] <= fft_maxi_data;
-    _buf_b_wdata[0] <= fft_maxi_data;
     _buf_a_we[0] <= up_out && fft_maxi_valid && fft_maxi_rdy;
     _buf_b_we[0] <= !up_out && fft_maxi_valid && fft_maxi_rdy;
+    for (j=0; j<FSSR; j+=1) begin
+        _buf_a_wdata[0][j] <= fft_maxi_data[j*DSZ+DSZ-1 : j*DSZ];
+        _buf_b_wdata[0][j] <= fft_maxi_data[j*DSZ+DSZ-1 : j*DSZ];
+        buf_a_wdata[j] <= _buf_a_wdata[WRITE_DELAY][j];
+        buf_b_wdata[j] <= _buf_b_wdata[WRITE_DELAY][j];
+    end
     for (i=0; i<WRITE_DELAY; i+=1) begin
-        _buf_a_waddr[i+1] <= _buf_a_waddr[i];
-        _buf_b_waddr[i+1] <= _buf_b_waddr[i];
-        _buf_a_wdata[i+1] <= _buf_a_wdata[i];
-        _buf_b_wdata[i+1] <= _buf_b_wdata[i];
         _buf_a_we[i+1] <= _buf_a_we[i];
         _buf_b_we[i+1] <= _buf_b_we[i];
+        _buf_a_waddr[i+1] <= _buf_a_waddr[i];
+        _buf_b_waddr[i+1] <= _buf_b_waddr[i];
+        for (j=0; j<FSSR; j+=1) begin
+            _buf_a_wdata[i+1][j] <= _buf_a_wdata[i][j];
+            _buf_b_wdata[i+1][j] <= _buf_b_wdata[i][j];
+        end
     end
-
     buf_a_waddr <= _buf_a_waddr[WRITE_DELAY];
     buf_b_waddr <= _buf_b_waddr[WRITE_DELAY];
-    buf_a_wdata <= _buf_a_wdata[WRITE_DELAY];
-    buf_b_wdata <= _buf_b_wdata[WRITE_DELAY];
     buf_a_we <= _buf_a_we[WRITE_DELAY];
     buf_b_we <= _buf_b_we[WRITE_DELAY];
 end
@@ -243,8 +228,6 @@ always @(posedge clk_i) begin
         _hist_b_waddr[i+1] <= _hist_b_waddr[i];
         _hist_a_wdata[i+1] <= _hist_a_wdata[i];
         _hist_b_wdata[i+1] <= _hist_b_wdata[i];
-        _hist_a_waddr[i+1] <= _hist_a_waddr[i];
-        _hist_b_waddr[i+1] <= _hist_b_waddr[i];
         _hist_a_we[i+1] <= _hist_a_we[i];
         _hist_b_we[i+1] <= _hist_b_we[i];
     end
@@ -292,6 +275,7 @@ always @(posedge adc_clk_i) begin
 end
 
 localparam SYNC_FF = 2;
+logic      rstn;
 
 xpm_cdc_sync_rst #(
     .DEST_SYNC_FF (SYNC_FF)
@@ -300,6 +284,8 @@ xpm_cdc_sync_rst #(
     .dest_clk   (clk_i),
     .dest_rst   (rstn)
 );
+
+logic     fft_trig;
 
 xpm_cdc_array_single #(
     .WIDTH        (2),
@@ -336,15 +322,13 @@ xpm_cdc_pulse #(
 );
 
 xpm_cdc_handshake #(
-    .WIDTH          (FSZ+1 + FSZ+DSZ + FSZ + FSZ + DSZ + DSZ),
+    .WIDTH          (FSZ + FSZ + DSZ + DSZ),
     .DEST_EXT_HSK   (0),
     .SRC_SYNC_FF    (SYNC_FF),
     .DEST_SYNC_FF   (SYNC_FF)
 ) out_sync (
     .src_clk        (clk_i),
-    .src_in         ({fft_count,
-                      fft_sum,
-                      fft_peak_index_up,
+    .src_in         ({fft_peak_index_up,
                       fft_peak_index_down,
                       fft_peak_value_up,
                       fft_peak_value_down
@@ -352,9 +336,7 @@ xpm_cdc_handshake #(
     .src_rcv        (out_recv),
     .src_send       (out_send),
     .dest_clk       (adc_clk_i),
-    .dest_out       ({fft_count_,
-                      fft_sum_,
-                      fft_peak_index_up_,
+    .dest_out       ({fft_peak_index_up_,
                       fft_peak_index_down_,
                       fft_peak_value_up_,
                       fft_peak_value_down_
@@ -364,27 +346,27 @@ xpm_cdc_handshake #(
 
 logic [DSZ-1:0]             fft_rdata_up    [0:FSSR-1];
 logic [DSZ-1:0]             fft_rdata_down  [0:FSSR-1];
-logic [FSZ-FSSR_BITS-1: 0]   buf_a_raddr_reversed;
-logic [FSZ-FSSR_BITS-1: 0]   buf_b_raddr_reversed;
+logic [FSZ-SSR_BITS-1: 0]  buf_a_raddr_reversed;
+logic [FSZ-SSR_BITS-1: 0]  buf_b_raddr_reversed;
 
 `if (FSSR == 1)
-assign fft_rdata_up_o       = fft_rdata_up  [0];
-assign fft_rdata_down_o     = fft_rdata_down[0];
-assign buf_a_raddr_reversed = {<<{buf_a_raddr}} >> fft_shift;
-assign buf_b_raddr_reversed = {<<{buf_b_raddr}} >> fft_shift;
+    assign fft_rdata_up_o       = fft_rdata_up  [0];
+    assign fft_rdata_down_o     = fft_rdata_down[0];
+    assign buf_a_raddr_reversed = {<<{buf_a_raddr}} >> fft_shift;
+    assign buf_b_raddr_reversed = {<<{buf_b_raddr}} >> fft_shift;
 `else
-assign fft_rdata_up_o       = fft_rdata_up  [buf_a_raddr[FSSR_BITS-1:0]];
-assign fft_rdata_down_o     = fft_rdata_down[buf_b_raddr[FSSR_BITS-1:0]];
-assign buf_a_raddr_reversed = {<<{buf_a_raddr[FSZ-1:FSSR_BITS]}};
-assign buf_b_raddr_reversed = {<<{buf_b_raddr[FSZ-1:FSSR_BITS]}};
+    assign fft_rdata_up_o       = fft_rdata_up  [{<<{buf_a_raddr}}[SSR_BITS-1:0]];
+    assign fft_rdata_down_o     = fft_rdata_down[{<<{buf_b_raddr}}[SSR_BITS-1:0]];
+    assign buf_a_raddr_reversed = {<<{buf_a_raddr}}[FSZ-1:SSR_BITS];
+    assign buf_b_raddr_reversed = {<<{buf_b_raddr}}[FSZ-1:SSR_BITS];
 `endif
 
 generate
-for(i=0; i<FSSR; i+=1) begin
+for(s=0; s<FSSR; s+=1) begin
     xpm_memory_sdpram #(
         .MEMORY_SIZE            ((1<<(FSZ-SSR_BITS))*DSZ),
-        .ADDR_WIDTH_A           (FSZ-FSSR_BITS),
-        .ADDR_WIDTH_B           (FSZ-FSSR_BITS),
+        .ADDR_WIDTH_A           (FSZ-SSR_BITS),
+        .ADDR_WIDTH_B           (FSZ-SSR_BITS),
         .CLOCKING_MODE          ("independent_clock"),
         .READ_LATENCY_B         (READ_A_DELAY),
         .WRITE_MODE_B           ("read_first"),
@@ -407,8 +389,8 @@ for(i=0; i<FSSR; i+=1) begin
 
     xpm_memory_sdpram #(
         .MEMORY_SIZE            ((1<<(FSZ-SSR_BITS))*DSZ),
-        .ADDR_WIDTH_A           (FSZ-FSSR_BITS),
-        .ADDR_WIDTH_B           (FSZ-FSSR_BITS),
+        .ADDR_WIDTH_A           (FSZ-SSR_BITS),
+        .ADDR_WIDTH_B           (FSZ-SSR_BITS),
         .CLOCKING_MODE          ("independent_clock"),
         .READ_LATENCY_B         (READ_B_DELAY),
         .WRITE_MODE_B           ("read_first"),
@@ -423,17 +405,11 @@ for(i=0; i<FSSR; i+=1) begin
         .ena    (1'b1),
         .clkb   (adc_clk_i),
         .addrb  (buf_b_raddr_reversed),
-        .doutb  (fft_rdata_down_o),
+        .doutb  (fft_rdata_down[s]),
         .rstb   (1'b0),
         .regceb (1'b1),
         .enb    (1'b1)
     );
-
-    assign fft_data[s] = fft_maxi_data[s*DSZ+DSZ-1:s*DSZ];
-    assign fft_data_valid[s] = 
-        fft_wp_index>=fft_peak_start_arg && 
-        fft_wp_index<fft_length[FSZ:1] && 
-        fft_data[s]>fft_peak_minimum_arg;
 end
 endgenerate
 
@@ -494,8 +470,6 @@ xpm_memory_sdpram #(
 
 always @(posedge adc_clk_i)
 if (out_req) begin
-    fft_count_o <= fft_count_;
-    fft_sum_o <= fft_sum_;
     fft_peak_index_up_o <= fft_peak_index_up_;
     fft_peak_index_down_o <= fft_peak_index_down_;
     fft_peak_value_up_o <= fft_peak_value_up_;
@@ -573,9 +547,9 @@ logic [ FSZ-1:0] padding_up_, padding_down_;
 // Only allow one-time re-configuration after reset to avoid synchronization issue
 always @(posedge clk_i) begin
     if (conf_req) begin
-        fft_nfft_ <= conf_data[5-1:0];
-        acq_up_ <= conf_data[16+FSZ+FSZ-1:16+FSZ] << SSR_BITS;
-        acq_down_ <= conf_data[16+FSZ-1:16] << SSR_BITS;
+        fft_nfft_ <= conf_data[5-1:0] - SSR_BITS;
+        acq_up_ <= conf_data[16+FSZ+FSZ-1:16+FSZ];
+        acq_down_ <= conf_data[16+FSZ-1:16];
         fft_conf_data_ <= conf_data[16-1:0];
     end
 
@@ -618,11 +592,11 @@ always @(posedge clk_i) begin
     end
 end
 
-logic [ FSSR*ASZ-1:0] fin_dout;
-logic                fin_rd, fin_empty;
-logic                padding_done;
-logic [ FSZ-1:0]     padding_cnt;
-logic                fin_rst = !adc_rstn_i || (trig_i && fft_done_o);
+logic [ FSSR*ASZ-1:0]   fin_dout;
+logic                   fin_rd, fin_dvalid;
+logic                   padding_done;
+logic [ FSZ-1:0]        padding_cnt;
+logic                   fin_rst = !adc_rstn_i || (trig_i && fft_done_o);
 
 xpm_fifo_async #(
     .FIFO_WRITE_DEPTH(1<<QSZ),
@@ -671,6 +645,7 @@ logic  fft_we_one;
 logic  fft_we_length_plus_one;
 assign fft_saxi_last = fft_we_one || fft_we_length_plus_one;
 assign fft_saxi_valid = (!padding_done || fin_dvalid) && fin_rd;
+assign fft_data_i = fin_dout;
 
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
@@ -720,18 +695,15 @@ end
 
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
-    fft_wp <= 0;
-    fft_wp_index <= 0;
-    up_out <= 1;
+    fft_wp  <= 0;
+    up_out  <= 1;
 end else if (fft_maxi_valid && fft_maxi_rdy) begin
     if (fft_maxi_last) begin
         frame_cnt <= frame_cnt + 1;
-        fft_wp <= 0;
-        fft_wp_index <= 0;
-        up_out <= up_out + up_toggle;
+        fft_wp    <= 0;
+        up_out    <= up_out + up_toggle;
     end else begin
         fft_wp <= fft_wp + 1;
-        fft_wp_index <= fft_wp_reversed >> fft_shift;
     end
 end
 
@@ -763,8 +735,6 @@ end else begin
             fft_peak_index_down <= fft_peak_idx;
             fft_peak_value_down <= fft_peak;
         end
-        fft_sum <= _fft_sum;
-        fft_count <= _fft_count;
         out_send_ <= 1;
     end else
         out_send_ <= 0;
@@ -774,59 +744,73 @@ end else begin
         overflow_cnt <= overflow_cnt + 1;
 end
 
-logic [DSZ-1: 0] peak_in_data;
-logic [FSZ-1: 0] peak_data_index;
-logic            peak_data_valid;
-logic            peak_in_ready;
-logic            peak_in_last;
+// FSSR*DSZ-wide FIFO between FFT output and HLS peak detector.
+// FSSR*DSZ must be a multiple of 8; satisfied for even FSSR when DSZ=28.
+localparam PEAK_IN_WIDTH = FSSR * DSZ;
+
+logic [PEAK_IN_WIDTH-1:0] peak_in_data;
+logic                     peak_in_valid;
+logic                     peak_in_ready;
+logic                     peak_in_last;
 
 xpm_fifo_axis #(
-    .TDATA_WIDTH        (32),
-    .TUSER_WIDTH        (FSZ+1),
-    .FIFO_DEPTH         (32),
-    .USE_ADV_FEATURES   (16'h0000)   // Standard mode
+    .TDATA_WIDTH      (PEAK_IN_WIDTH),
+    .FIFO_DEPTH       (32),
+    .USE_ADV_FEATURES (16'h0000)
 ) fifo_peak_in (
-    .s_aclk         (clk_i),
-    .s_aresetn      (rstn_i),
-    
-    // Slave side (From fft_i)
-    .s_axis_tdata   ({{32-DSZ{1'b0}}, fft_data_abs}),
-    .s_axis_tuser   ({fft_data_valid, fft_wp_index}),
-    .s_axis_tvalid  (fft_maxi_valid),
-    .s_axis_tready  (fft_maxi_rdy),
-    .s_axis_tlast   (fft_maxi_last),
+    .s_aclk          (clk_i),
+    .s_aresetn       (rstn_i),
 
-    // Master side (To Peak Detector)
-    .m_axis_tdata   (peak_in_data),
-    .m_axis_tuser   ({peak_data_valid, peak_data_index}),
-    .m_axis_tvalid  (peak_in_valid),
-    .m_axis_tready  (peak_in_ready),
-    .m_axis_tlast   (peak_in_last)
+    .s_axis_tdata    (fft_maxi_data),
+    .s_axis_tvalid   (fft_maxi_valid),
+    .s_axis_tready   (fft_maxi_rdy),
+    .s_axis_tlast    (fft_maxi_last),
+
+    .m_axis_tdata    (peak_in_data),
+    .m_axis_tvalid   (peak_in_valid),
+    .m_axis_tready   (peak_in_ready),
+    .m_axis_tlast    (peak_in_last)
 );
 
-peak_detector #(.SSZ(FSZ), .DSZ(DSZ)) peak_detector_i (
-    .clk            (clk_i),
-    .resetn         (rstn_i),
-    .data_valid     (peak_data_valid),
-    .data_in        (peak_in_data),
-    .data_index     (peak_data_index),
-    .saxi_rdy       (peak_in_ready),
-    .saxi_valid     (peak_in_valid),
-    .saxi_last      (peak_in_last),
-    .threshold_k_sq (fft_threshold_k_arg),
-    .peak_idx       (fft_peak_idx),
-    .peak           (fft_peak),
-    .peak2_idx      (fft_peak2_idx),
-    .peak2          (fft_peak2),
-    .sum_o          (_fft_sum),
-    .count_o        (_fft_count),
-    .ready          (peak_ready)
+logic [63:0] peak_out_data;
+logic        peak_out_valid;
+
+peak_detector_wrapper pd_i (
+    .aclk            (clk_i),
+    .aresetn         (rstn_i),
+
+    .s_axis_tdata    (peak_in_data),
+    .s_axis_tvalid   (peak_in_valid),
+    .s_axis_tready   (peak_in_ready),
+    .s_axis_tlast    (peak_in_last),
+
+    .m_axis_tdata    (peak_out_data),
+    .m_axis_tvalid   (peak_out_valid),
+    .m_axis_tready   (1'b1),
+    .m_axis_tlast    (),
+    .ap_done         (),
+
+    .threshold_k_sq  (fft_threshold_k_arg),
+    .start_index     (fft_peak_start_arg),
+    .end_index       ((fft_length<<SSR_BITS)[FSZ:1]),
+    .data_min        (fft_peak_minimum_arg),
+    .nfft            (fft_nfft+SSR_BITS)
 );
+
+logic  fft_peak_valid = peak_out_data[DSZ];
+assign fft_peak_idx   = fft_peak_valid ? peak_out_data[DSZ + FSZ : DSZ + 1] : 0;
+assign fft_peak       = peak_out_data[DSZ-1 : 0];
+assign peak_ready     = peak_out_valid;
 
 `if (FSSR == 1)
 
+logic [64-DSZ-1:0]      fft_maxi_unused;
+logic [16-ASZ-1:0]      fft_data_ext;
+// sign extend the data for padding according to xfft requirement
+assign                  fft_data_ext = {16-ASZ{fft_data_i[ASZ-1]}};
+
 fft_wrapper fft_i (
-   .M_AXIS_DOUT_0_tdata         ({fft_maxi_phase, fft_maxi_data}),
+   .M_AXIS_DOUT_0_tdata         ({fft_maxi_unused, fft_maxi_data}),
    .M_AXIS_DOUT_0_tlast         (fft_maxi_last    ),
    .M_AXIS_DOUT_0_tvalid        (fft_maxi_valid   ),
    .M_AXIS_DOUT_0_tready        (fft_maxi_rdy     ),
