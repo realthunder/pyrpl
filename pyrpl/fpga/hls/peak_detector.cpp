@@ -57,9 +57,12 @@ void peak_detector(
         sum_t      delta_sum    = 0;
         sum_sq_t   delta_sum_sq = 0;
         count_t    delta_count  = 0;
-        data_t  beat_peak  = peak_val;
-        count_t beat_bin   = peak_bin;
-        bool    beat_valid = peak_valid;
+        // Intra-beat peak: initialised to 0 (constant), NOT to peak_val.
+        // This breaks the FSSR-deep carried comparison chain down to a single
+        // merge comparison after the BEAT loop, allowing II=1.
+        data_t  beat_peak  = 0;
+        count_t beat_bin   = 0;
+        bool    beat_valid = false;
 
         // --- BEAT loop: unrolled to FSSR parallel datapaths ---
         BEAT: for (int ch = 0; ch < FSSR; ch++) {
@@ -94,13 +97,18 @@ void peak_detector(
         }
 
         // Merge beat results into frame accumulators
-        sum       += delta_sum;
-        sum_sq    += delta_sum_sq;
-        count     += delta_count;
-        peak_val   = beat_peak;
-        peak_bin   = beat_bin;
-        peak_valid = beat_valid;
+        sum    += delta_sum;
+        sum_sq += delta_sum_sq;
+        count  += delta_count;
         beat_idx++;
+        // Single comparison on the carried path: one icmp (~2.5 ns) fits in II=1.
+        // beat_peak > peak_val is always true for the first valid sample because
+        // valid samples satisfy s > data_min >= 0, so beat_peak >= 1 > peak_val(0).
+        if (beat_valid && beat_peak > peak_val) {
+            peak_val   = beat_peak;
+            peak_bin   = beat_bin;
+            peak_valid = true;
+        }
     }
 
     // --- Output stage: division/sqrt-free threshold check ---
@@ -126,7 +134,7 @@ void peak_detector(
     N_S2 = (wide_t)count * sum_sq;
 
     // Underflow guard: variance is non-negative by definition
-    wide_t V_scaled = (N_S2 >= S_sq) ? (N_S2 - S_sq) : (wide_t)0;
+    wide_t V_scaled = (N_S2 >= S_sq) ? (wide_t)(N_S2 - S_sq) : (wide_t)0;
 
     wide_t diff_sq;
 #pragma HLS BIND_OP variable=diff_sq op=mul impl=dsp

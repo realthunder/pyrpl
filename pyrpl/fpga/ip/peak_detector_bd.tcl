@@ -1,4 +1,4 @@
-create_bd_design "peak_detector"
+create_bd_design "peak_detector_bd"
 
 set_property ip_repo_paths "./.hls/peak_detector/solution1/impl/ip" [current_project]
 update_ip_catalog
@@ -13,8 +13,13 @@ create_bd_port -dir I -type rst aresetn
 connect_bd_net [get_bd_ports aclk]    [get_bd_pins peak_detector_0/ap_clk]
 connect_bd_net [get_bd_ports aresetn] [get_bd_pins peak_detector_0/ap_rst_n]
 
-# AXI-Stream ports
+# AXI-Stream ports — widths derived from build parameters
+# s_axis: fft_ssr lanes × fft_width bits (consumes fft_ssr m_axis output)
+# m_axis: fixed 64-bit result packet
+set s_bytes [expr {$fft_ssr * $fft_width / 8}]
+set m_bytes 8
 create_bd_intf_port -mode Slave  -vlnv xilinx.com:interface:axis_rtl:1.0 s_axis
+set_property CONFIG.TDATA_NUM_BYTES $s_bytes [get_bd_intf_ports s_axis]
 create_bd_intf_port -mode Master -vlnv xilinx.com:interface:axis_rtl:1.0 m_axis
 
 connect_bd_intf_net [get_bd_intf_ports s_axis] [get_bd_intf_pins peak_detector_0/s_axis]
