@@ -1,0 +1,285 @@
+// fft_ip_ssr.cpp — FFT_IMPL==3 pre/post HLS functions.
+//
+// Build params (passed as -D by TCL):
+//   FFT_SSR     super-sample rate (2 or 4; default 2)
+//   FFT_NFFT    log2(full FFT size)   (default 12)
+//   ASZ         ADC input bit width   (default 14)
+//   INT_W       complex word width    (default 16)
+//   TWID_W      twiddle factor width  (default 18)
+//   DSZ         magnitude output bits (default 28)
+//   SUB_NFFT    FFT_NFFT - log2(FFT_SSR)  (set by TCL)
+//   CFG_W       xfft config word width in bits (set by TCL)
+//   CFG_WORD    config word value FWD|(SCALE_SCH<<1) (set by TCL)
+//
+// Twiddle ROM included from generated header (fft_ip_ssr_twiddle.hpp).
+
+#ifndef FFT_SSR
+#define FFT_SSR 2
+#endif
+#ifndef FFT_NFFT
+#define FFT_NFFT 12
+#endif
+#ifndef ASZ
+#define ASZ 14
+#endif
+#ifndef INT_W
+#define INT_W 16
+#endif
+#ifndef TWID_W
+#define TWID_W 18
+#endif
+#ifndef DSZ
+#define DSZ 28
+#endif
+#ifndef SUB_NFFT
+#define SUB_NFFT (FFT_NFFT - 1)   // default assumes SSR=2
+#endif
+#ifndef CFG_W
+#define CFG_W 16
+#endif
+#ifndef CFG_WORD
+// Scale sched for N=2048 (SUB_NFFT=11): 0x6AB; config = (sched<<1)|1 = 0xD57
+#define CFG_WORD 0xD57
+#endif
+
+#define FFT_SIZE  (1 << FFT_NFFT)
+#define SUB_SIZE  (1 << SUB_NFFT)
+
+#include <hls_stream.h>
+#include <ap_axi_sdata.h>
+#include <ap_int.h>
+#include <ap_fixed.h>
+#include <complex>
+
+#include "fft_ip_ssr_twiddle.hpp"
+
+// -------------------------------------------------------------------------
+// Types
+// -------------------------------------------------------------------------
+
+// Internal complex: values in [-1, 1) as signed fixed-point, 1 int bit
+typedef ap_fixed<INT_W, 1>           intern_t;
+typedef std::complex<intern_t>       cmpx_t;
+
+// Twiddle factor: range [-2, 2)
+typedef ap_fixed<TWID_W, 2>          twid_t;
+
+// Scalar multiply result (bug fix: NOT complex — avoids accumulator overflow)
+typedef ap_fixed<INT_W + TWID_W + 1, 4> mul_t;
+
+// AXIS types
+#define IN_W    (((FFT_SSR * ASZ + 7) / 8) * 8)      // byte-rounded ADC input
+#define CMPX_W  (2 * INT_W)                           // complex sample to/from xfft
+#define OUT_W   (((FFT_SSR * DSZ + 7) / 8) * 8)      // byte-rounded magnitude output
+
+typedef ap_axiu<IN_W,   0, 0, 0>  axis_in_t;
+typedef ap_axiu<CMPX_W, 0, 0, 0>  axis_cmpx_t;
+typedef ap_axiu<CFG_W,  0, 0, 0>  axis_cfg_t;
+typedef ap_axiu<OUT_W,  0, 0, 0>  axis_out_t;
+
+// -------------------------------------------------------------------------
+// Helpers
+// -------------------------------------------------------------------------
+
+// Complex multiply: (a + jb)(c + jd) = (ac-bd) + j(ad+bc)
+// Returns scalar result components, NOT a cmpx_t, to avoid HLS complex
+// accumulator issues (bug fix from HANDOFF).
+static void cmul(intern_t a_re, intern_t a_im,
+                 twid_t   w_re, twid_t   w_im,
+                 intern_t &r_re, intern_t &r_im)
+{
+#pragma HLS INLINE
+    mul_t m_re = (mul_t)a_re * w_re - (mul_t)a_im * w_im;
+    mul_t m_im = (mul_t)a_re * w_im + (mul_t)a_im * w_re;
+    r_re = (intern_t)m_re;
+    r_im = (intern_t)m_im;
+}
+
+// Alpha-max-beta-min magnitude approximation (mag ≈ max + 0.375*min).
+// Input: raw signed 16-bit from xfft output.
+// Output: DSZ-bit unsigned magnitude, scaled to fill the output range.
+static ap_uint<DSZ> magnitude(ap_int<INT_W> re, ap_int<INT_W> im)
+{
+#pragma HLS INLINE
+    ap_uint<INT_W> abs_re = re < 0 ? (ap_uint<INT_W>)(-re) : (ap_uint<INT_W>)(re);
+    ap_uint<INT_W> abs_im = im < 0 ? (ap_uint<INT_W>)(-im) : (ap_uint<INT_W>)(im);
+    ap_uint<INT_W> max_v  = abs_re > abs_im ? abs_re : abs_im;
+    ap_uint<INT_W> min_v  = abs_re > abs_im ? abs_im : abs_re;
+    // mag = max + (min>>2) + (min>>3) — two shifts, no multiply
+    ap_uint<INT_W + 2> mag = (ap_uint<INT_W+2>)max_v
+                           + (ap_uint<INT_W+2>)(min_v >> 2)
+                           + (ap_uint<INT_W+2>)(min_v >> 3);
+    // Left-shift to fill the DSZ output range
+    return (ap_uint<DSZ>)mag << (DSZ - INT_W - 2);
+}
+
+// -------------------------------------------------------------------------
+// fft_ip_ssr_pre
+//
+// Reads FFT_SIZE/FFT_SSR packed ADC beats, applies the first DIF butterfly
+// + twiddle stage, then outputs one complex stream per sub-FFT channel
+// plus one config beat per channel per frame.
+// -------------------------------------------------------------------------
+void fft_ip_ssr_pre(
+    hls::stream<axis_in_t>   &s_axis,
+    hls::stream<axis_cmpx_t> &m_axis_data0,
+    hls::stream<axis_cmpx_t> &m_axis_data1,
+    hls::stream<axis_cfg_t>  &m_axis_cfg0,
+    hls::stream<axis_cfg_t>  &m_axis_cfg1,
+    bool                     &event_frame_started
+) {
+#pragma HLS INTERFACE axis         port=s_axis
+#pragma HLS INTERFACE axis         port=m_axis_data0
+#pragma HLS INTERFACE axis         port=m_axis_data1
+#pragma HLS INTERFACE axis         port=m_axis_cfg0
+#pragma HLS INTERFACE axis         port=m_axis_cfg1
+#pragma HLS INTERFACE ap_none      port=event_frame_started
+#pragma HLS INTERFACE ap_ctrl_none port=return
+
+    event_frame_started = false;    // default; FILL loop drives it high on b==0
+
+    // --- Send config (once per frame, before data) --------------------
+    {
+        axis_cfg_t cfg;
+        cfg.data = CFG_WORD;
+        cfg.last = 1;
+        m_axis_cfg0.write(cfg);
+        m_axis_cfg1.write(cfg);
+    }
+
+    // --- Buffer first half: x[0 .. FFT_SIZE/2-1] ----------------------
+    // Arrives as FFT_SIZE/2 / FFT_SSR beats × FFT_SSR samples/beat.
+    cmpx_t buf_first[SUB_SIZE];
+#if FFT_SSR >= 4
+#pragma HLS ARRAY_PARTITION variable=buf_first cyclic factor=4 dim=1
+#else
+#pragma HLS ARRAY_PARTITION variable=buf_first cyclic factor=2 dim=1
+#endif
+
+    FILL:
+    for (int b = 0; b < SUB_SIZE / FFT_SSR; b++) {
+#pragma HLS PIPELINE II=1
+        event_frame_started = (b == 0);   // pulse on first beat
+        axis_in_t pkt = s_axis.read();
+        for (int ch = 0; ch < FFT_SSR; ch++) {
+#pragma HLS UNROLL
+            ap_int<ASZ> samp = pkt.data.range((ch+1)*ASZ - 1, ch*ASZ);
+            intern_t val;
+            // Sign-extend into the high INT_W bits, zero-pad the rest.
+            val.range(INT_W-1, INT_W-ASZ)   = samp;
+            if (INT_W > ASZ)
+                val.range(INT_W-ASZ-1, 0) = 0;
+            buf_first[b*FFT_SSR + ch] = cmpx_t(val, intern_t(0));
+        }
+    }
+
+    // --- Butterfly + twiddle: produce A[k], B[k]*W^k ------------------
+    // Reads the second half x[FFT_SIZE/2 .. FFT_SIZE-1].
+    cmpx_t out_buf0[SUB_SIZE];   // → sub-FFT 0
+    cmpx_t out_buf1[SUB_SIZE];   // → sub-FFT 1
+#if FFT_SSR >= 4
+#pragma HLS ARRAY_PARTITION variable=out_buf0  cyclic factor=4 dim=1
+#pragma HLS ARRAY_PARTITION variable=out_buf1  cyclic factor=4 dim=1
+#pragma HLS ARRAY_PARTITION variable=twid_re_1 cyclic factor=4 dim=1
+#pragma HLS ARRAY_PARTITION variable=twid_im_1 cyclic factor=4 dim=1
+#else
+#pragma HLS ARRAY_PARTITION variable=out_buf0  cyclic factor=2 dim=1
+#pragma HLS ARRAY_PARTITION variable=out_buf1  cyclic factor=2 dim=1
+#pragma HLS ARRAY_PARTITION variable=twid_re_1 cyclic factor=2 dim=1
+#pragma HLS ARRAY_PARTITION variable=twid_im_1 cyclic factor=2 dim=1
+#endif
+
+    BUTTERFLY:
+    for (int b = 0; b < SUB_SIZE / FFT_SSR; b++) {
+#pragma HLS PIPELINE II=1
+        axis_in_t pkt = s_axis.read();
+        for (int ch = 0; ch < FFT_SSR; ch++) {
+#pragma HLS UNROLL
+            int k = b*FFT_SSR + ch;
+
+            // Fetch first-half sample
+            intern_t x1_re = buf_first[k].real();
+            intern_t x1_im = buf_first[k].imag();  // = 0 for real ADC input
+
+            // Second-half sample (sign-extended)
+            ap_int<ASZ> samp2 = pkt.data.range((ch+1)*ASZ - 1, ch*ASZ);
+            intern_t x2_re;
+            x2_re.range(INT_W-1, INT_W-ASZ) = samp2;
+            if (INT_W > ASZ) x2_re.range(INT_W-ASZ-1, 0) = 0;
+            intern_t x2_im(0);
+
+            // DIF butterfly (>>1 prevents overflow; matches avnet radix2p)
+            intern_t a_re = (x1_re + x2_re) >> 1;
+            intern_t a_im = (x1_im + x2_im) >> 1;
+            intern_t d_re = (x1_re - x2_re) >> 1;
+            intern_t d_im = (x1_im - x2_im) >> 1;
+
+            // Twiddle: B[k] = diff * W_{FFT_SIZE}^k
+            twid_t wr = twid_re_1[k];
+            twid_t wi = twid_im_1[k];
+            intern_t b_re, b_im;
+            cmul(d_re, d_im, wr, wi, b_re, b_im);
+
+            out_buf0[k] = cmpx_t(a_re, a_im);
+            out_buf1[k] = cmpx_t(b_re, b_im);
+        }
+    }
+
+    // --- Stream to sub-FFTs -------------------------------------------
+    OUTPUT:
+    for (int k = 0; k < SUB_SIZE; k++) {
+#pragma HLS PIPELINE II=1
+        bool last = (k == SUB_SIZE - 1);
+
+        axis_cmpx_t p0, p1;
+        p0.data.range(INT_W-1, 0)       = out_buf0[k].real().range(INT_W-1, 0);
+        p0.data.range(CMPX_W-1, INT_W)  = out_buf0[k].imag().range(INT_W-1, 0);
+        p0.last = last;
+        m_axis_data0.write(p0);
+
+        p1.data.range(INT_W-1, 0)       = out_buf1[k].real().range(INT_W-1, 0);
+        p1.data.range(CMPX_W-1, INT_W)  = out_buf1[k].imag().range(INT_W-1, 0);
+        p1.last = last;
+        m_axis_data1.write(p1);
+    }
+}
+
+// -------------------------------------------------------------------------
+// fft_ip_ssr_post
+//
+// Reads FFT_SSR complex streams from the LogiCORE sub-FFTs, computes
+// alpha-max-beta-min magnitude per sample, and packs FFT_SSR magnitudes
+// per output beat.
+// -------------------------------------------------------------------------
+void fft_ip_ssr_post(
+    hls::stream<axis_cmpx_t> &s_axis_data0,
+    hls::stream<axis_cmpx_t> &s_axis_data1,
+    hls::stream<axis_out_t>  &m_axis
+) {
+#pragma HLS INTERFACE axis         port=s_axis_data0
+#pragma HLS INTERFACE axis         port=s_axis_data1
+#pragma HLS INTERFACE axis         port=m_axis
+#pragma HLS INTERFACE ap_ctrl_none port=return
+
+    POST:
+    for (int k = 0; k < SUB_SIZE; k++) {
+#pragma HLS PIPELINE II=1
+        axis_cmpx_t p0 = s_axis_data0.read();
+        axis_cmpx_t p1 = s_axis_data1.read();
+
+        // Extract signed components from raw bits
+        ap_int<INT_W> re0 = p0.data.range(INT_W-1,   0);
+        ap_int<INT_W> im0 = p0.data.range(CMPX_W-1,  INT_W);
+        ap_int<INT_W> re1 = p1.data.range(INT_W-1,   0);
+        ap_int<INT_W> im1 = p1.data.range(CMPX_W-1,  INT_W);
+
+        ap_uint<DSZ> mag0 = magnitude(re0, im0);
+        ap_uint<DSZ> mag1 = magnitude(re1, im1);
+
+        axis_out_t out;
+        out.data.range(DSZ-1,     0)   = mag0;
+        out.data.range(2*DSZ-1,   DSZ) = mag1;
+        out.last = (k == SUB_SIZE - 1);
+        m_axis.write(out);
+    }
+}
