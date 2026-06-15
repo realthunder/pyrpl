@@ -6,10 +6,10 @@ set vitis_include "../Vitis_Libraries/dsp/L1/include/hw/vitis_fft/fixed"
 set proj_name fft_ssr
 set top_func fft_ssr
 
-global part
-global fft_ssr
-global fft_clk_period
-global fft_nfft
+set part           [expr {[info exists env(FPGA_PART)]      ? $env(FPGA_PART)      : "xc7z020clg400-1"}]
+set fft_ssr        [expr {[info exists env(FFT_SSR)]        ? $env(FFT_SSR)        : 2}]
+set fft_nfft       [expr {[info exists env(FFT_NFFT)]       ? $env(FFT_NFFT)       : 12}]
+set fft_clk_period [expr {[info exists env(FFT_CLK_PERIOD)] ? $env(FFT_CLK_PERIOD) : 4.0}]
 
 # -------- START HLS --------
 file mkdir $path_out

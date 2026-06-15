@@ -25,18 +25,15 @@ file mkdir $path_sdk
 # setup an in memory project
 ################################################################################
 
-# set part xc7z010clg400-1
-set part xc7z020clg400-1
-# set part xc7z100ffg900-1
-
-set clk_diff 1
-set clk_mult 8
-set clk_adc_div 8
-set adc_sz 14
-set fft_width 28
-set fft_nfft 12
-set fft_ssr 4
-set fft_clk_period 4.0  ;# ns (250 MHz)
+set part           [expr {[info exists env(FPGA_PART)]      ? $env(FPGA_PART)      : "xc7z020clg400-1"}]
+set clk_diff       [expr {[info exists env(CLK_DIFF)]       ? $env(CLK_DIFF)       : 1}]
+set clk_mult       [expr {[info exists env(CLK_MULT)]       ? $env(CLK_MULT)       : 8}]
+set clk_adc_div    [expr {[info exists env(CLK_ADC_DIV)]    ? $env(CLK_ADC_DIV)    : 8}]
+set adc_sz         [expr {[info exists env(ADC_SZ)]         ? $env(ADC_SZ)         : 14}]
+set fft_width      [expr {[info exists env(FFT_WIDTH)]      ? $env(FFT_WIDTH)      : 28}]
+set fft_nfft       [expr {[info exists env(FFT_NFFT)]       ? $env(FFT_NFFT)       : 12}]
+set fft_ssr        [expr {[info exists env(FFT_SSR)]        ? $env(FFT_SSR)        : 2}]
+set fft_clk_period [expr {[info exists env(FFT_CLK_PERIOD)] ? $env(FFT_CLK_PERIOD) : 4.0}]
 
 if {[llength $argv] > 1 && [lindex $argv 0] == "alinx"} {
     set clk_diff 0
@@ -77,10 +74,10 @@ write_hwdef              -file    $path_sdk/red_pitaya.hwdef
 # generate_target all [get_files    fft.bd]
 
 source                            $path_ip/fft_ssr_bd.tcl
-generate_target all [get_files    fft_ssr.bd]
+generate_target all [get_files    fft_ssr_bd.bd]
 
 source                            $path_ip/peak_detector_bd.tcl
-generate_target all [get_files    peak_detector.bd]
+generate_target all [get_files    peak_detector_bd.bd]
 
 ################################################################################
 # read files:
@@ -94,8 +91,8 @@ generate_target all [get_files    peak_detector.bd]
 
 read_verilog                      .srcs/sources_1/bd/system/hdl/system_wrapper.v
 # read_verilog                      .srcs/sources_1/bd/fft/hdl/fft_wrapper.v
-read_verilog                      .srcs/sources_1/bd/fft_ssr/hdl/fft_ssr_wrapper.v
-read_verilog                      .srcs/sources_1/bd/peak_detector/hdl/peak_detector_wrapper.v
+read_verilog                      .srcs/sources_1/bd/fft_ssr_bd/hdl/fft_ssr_bd_wrapper.v
+read_verilog                      .srcs/sources_1/bd/peak_detector_bd/hdl/peak_detector_bd_wrapper.v
 
 read_verilog                      $path_rtl/axi_master.v
 read_verilog                      $path_rtl/axi_slave.v
@@ -217,8 +214,11 @@ set_false_path -from [get_cells -hier -filter {NAME =~ *fft_peak_minimum_arg*}] 
 opt_design -directive NoBramPowerOpt
 # power_opt_design
 place_design
+
 # phys_opt_design
-phys_opt_design -directive AggressiveExplore
+# phys_opt_design -directive AggressiveExplore
+phys_opt_design -directive AggressivePhysOptimization
+
 write_checkpoint         -force   $path_out/post_place
 report_timing_summary    -file    $path_out/post_place_timing_summary.rpt
 #write_hwdef              -file    $path_sdk/red_pitaya.hwdef

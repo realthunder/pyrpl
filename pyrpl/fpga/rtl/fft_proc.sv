@@ -6,7 +6,7 @@ module fft_proc #(
   parameter RSZ,        // RAM size 2^RSZ
   parameter HSZ,        // fft history buffer size 2^HSZ (Note: consider word size of 32bit, better not exceed 64KBytes in total)
   parameter QSZ,        // FFT queue size 2^QSZ
-  parameter READ_DELAY, // memory output read delay
+  parameter READ_DELAY  // memory output read delay
 )(
   input logic             adc_clk_i,
   input logic             clk_i,
@@ -86,7 +86,6 @@ logic                   fft_saxi_valid;
 logic [ FSZ-1: 0]       fft_peak_idx;
 logic [ DSZ-1: 0]       fft_peak;
 
-logic [ 32-DSZ-1:0]     fft_maxi_unused;
 logic [ DSZ*FSSR-1:0]   fft_maxi_data;
 logic                   fft_maxi_valid;
 logic                   fft_maxi_rdy;
@@ -115,14 +114,14 @@ logic [ DSZ-1:0]    fft_peak_value_up, fft_peak_value_up_;
 logic [ DSZ-1:0]    fft_peak_value_down, fft_peak_value_down_;
 logic               out_recv, out_send, out_send_;
 
-(* DONT_TOUCH = "true" *) logic [ FSZ-1: 0]   buf_a_waddr;
-(* DONT_TOUCH = "true" *) logic [ FSZ-1: 0]   buf_b_waddr;
-(* DONT_TOUCH = "true" *) logic [ DSZ-1: 0]   buf_a_wdata;
-(* DONT_TOUCH = "true" *) logic [ DSZ-1: 0]   buf_b_wdata;
-(* DONT_TOUCH = "true" *) logic               buf_a_we   ;
-(* DONT_TOUCH = "true" *) logic               buf_b_we   ;
-(* DONT_TOUCH = "true" *) logic [ FSZ-1: 0]   buf_a_raddr;
-(* DONT_TOUCH = "true" *) logic [ FSZ-1: 0]   buf_b_raddr;
+logic [ FSZ-1: 0]   buf_a_waddr;
+logic [ FSZ-1: 0]   buf_b_waddr;
+logic [ DSZ-1: 0]   buf_a_wdata;
+logic [ DSZ-1: 0]   buf_b_wdata;
+logic               buf_a_we   ;
+logic               buf_b_we   ;
+logic [ FSZ-1: 0]   buf_a_raddr;
+logic [ FSZ-1: 0]   buf_b_raddr;
 
 logic [ HSZ-1: 0]   hist_a_waddr;
 logic [ HSZ-1: 0]   hist_b_waddr;
@@ -133,14 +132,14 @@ logic               hist_b_we   ;
 logic [ HSZ-1: 0]   hist_a_raddr;
 logic [ HSZ-1: 0]   hist_b_raddr;
 
-(* DONT_TOUCH = "true" *) logic [ FSZ-1: 0]   _buf_a_waddr  [0 : WRITE_DELAY];
-(* DONT_TOUCH = "true" *) logic [ FSZ-1: 0]   _buf_b_waddr  [0 : WRITE_DELAY];
-(* DONT_TOUCH = "true" *) logic [ DSZ-1: 0]   _buf_a_wdata  [0 : WRITE_DELAY] [0 : FSSR-1];
-(* DONT_TOUCH = "true" *) logic [ DSZ-1: 0]   _buf_b_wdata  [0 : WRITE_DELAY] [0 : FSSR-1];
-(* DONT_TOUCH = "true" *) logic               _buf_a_we     [0 : WRITE_DELAY];
-(* DONT_TOUCH = "true" *) logic               _buf_b_we     [0 : WRITE_DELAY];
-(* DONT_TOUCH = "true" *) logic [ FSZ-1: 0]   _buf_a_raddr  [0 :ADDR_A_DELAY];
-(* DONT_TOUCH = "true" *) logic [ FSZ-1: 0]   _buf_b_raddr  [0 :ADDR_B_DELAY];
+(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _buf_a_waddr  [0 : WRITE_DELAY];
+(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _buf_b_waddr  [0 : WRITE_DELAY];
+(* SHREG_EXTRACT = "no" *) logic [ DSZ-1: 0]   _buf_a_wdata  [0 : WRITE_DELAY] [0 : FSSR-1];
+(* SHREG_EXTRACT = "no" *) logic [ DSZ-1: 0]   _buf_b_wdata  [0 : WRITE_DELAY] [0 : FSSR-1];
+(* SHREG_EXTRACT = "no" *) logic               _buf_a_we     [0 : WRITE_DELAY];
+(* SHREG_EXTRACT = "no" *) logic               _buf_b_we     [0 : WRITE_DELAY];
+(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _buf_a_raddr  [0 :ADDR_A_DELAY];
+(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _buf_b_raddr  [0 :ADDR_B_DELAY];
 
 // assign buf_a_waddr = _buf_a_waddr[WRITE_DELAY];
 // assign buf_b_waddr = _buf_b_waddr[WRITE_DELAY];
@@ -151,14 +150,14 @@ logic [ HSZ-1: 0]   hist_b_raddr;
 // assign buf_a_raddr = _buf_a_raddr[ADDR_A_DELAY];
 // assign buf_b_raddr = _buf_b_raddr[ADDR_A_DELAY];
 
-logic [ FSZ-1: 0]   _hist_a_waddr [0 : WRITE_DELAY];
-logic [ FSZ-1: 0]   _hist_b_waddr [0 : WRITE_DELAY];
-logic [ DSZ-1: 0]   _hist_a_wdata [0 : WRITE_DELAY];
-logic [ DSZ-1: 0]   _hist_b_wdata [0 : WRITE_DELAY];
-logic               _hist_a_we    [0 : WRITE_DELAY];
-logic               _hist_b_we    [0 : WRITE_DELAY];
-logic [ FSZ-1: 0]   _hist_a_raddr [0 :ADDR_A_DELAY];
-logic [ FSZ-1: 0]   _hist_b_raddr [0 :ADDR_B_DELAY];
+(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _hist_a_waddr [0 : WRITE_DELAY];
+(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _hist_b_waddr [0 : WRITE_DELAY];
+(* SHREG_EXTRACT = "no" *) logic [ DSZ-1: 0]   _hist_a_wdata [0 : WRITE_DELAY];
+(* SHREG_EXTRACT = "no" *) logic [ DSZ-1: 0]   _hist_b_wdata [0 : WRITE_DELAY];
+(* SHREG_EXTRACT = "no" *) logic               _hist_a_we    [0 : WRITE_DELAY];
+(* SHREG_EXTRACT = "no" *) logic               _hist_b_we    [0 : WRITE_DELAY];
+(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _hist_a_raddr [0 :ADDR_A_DELAY];
+(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _hist_b_raddr [0 :ADDR_B_DELAY];
 
 assign hist_a_waddr = _hist_a_waddr[WRITE_DELAY];
 assign hist_b_waddr = _hist_b_waddr[WRITE_DELAY];
@@ -169,8 +168,23 @@ assign hist_b_we    = _hist_b_we[WRITE_DELAY];
 assign hist_a_raddr = _hist_a_raddr[ADDR_A_DELAY];
 assign hist_b_raddr = _hist_b_raddr[ADDR_A_DELAY];
 
-genvar s;
+genvar s, k;
 integer i, j;
+
+// Bit-reversed read addresses: Vivado can't part-select the result of a
+// streaming operator ({<<{}}[...]), so we materialise the reversal explicitly.
+logic [FSZ-1:0] buf_a_raddr_bitrev;
+logic [FSZ-1:0] buf_b_raddr_bitrev;
+generate
+for (k = 0; k < FSZ; k++) begin : gen_raddr_bitrev
+    assign buf_a_raddr_bitrev[k] = buf_a_raddr[FSZ-1-k];
+    assign buf_b_raddr_bitrev[k] = buf_b_raddr[FSZ-1-k];
+end
+endgenerate
+
+// Vivado doesn't allow part-selects on shift expressions; use a wire.
+logic [32-1:0] fft_end_idx;
+assign fft_end_idx = fft_length << SSR_BITS;
 
 always @(posedge adc_clk_i) begin
     _hist_a_raddr[0] <= sys_addr_in[HSZ-1+2:2];
@@ -195,8 +209,8 @@ always @(posedge clk_i) begin
     _buf_a_we[0] <= up_out && fft_maxi_valid && fft_maxi_rdy;
     _buf_b_we[0] <= !up_out && fft_maxi_valid && fft_maxi_rdy;
     for (j=0; j<FSSR; j+=1) begin
-        _buf_a_wdata[0][j] <= fft_maxi_data[j*DSZ+DSZ-1 : j*DSZ];
-        _buf_b_wdata[0][j] <= fft_maxi_data[j*DSZ+DSZ-1 : j*DSZ];
+        _buf_a_wdata[0][j] <= fft_maxi_data[j*DSZ +: DSZ];
+        _buf_b_wdata[0][j] <= fft_maxi_data[j*DSZ +: DSZ];
         buf_a_wdata[j] <= _buf_a_wdata[WRITE_DELAY][j];
         buf_b_wdata[j] <= _buf_b_wdata[WRITE_DELAY][j];
     end
@@ -349,17 +363,19 @@ logic [DSZ-1:0]             fft_rdata_down  [0:FSSR-1];
 logic [FSZ-SSR_BITS-1: 0]  buf_a_raddr_reversed;
 logic [FSZ-SSR_BITS-1: 0]  buf_b_raddr_reversed;
 
-`if (FSSR == 1)
+generate
+if (FSSR == 1) begin
     assign fft_rdata_up_o       = fft_rdata_up  [0];
     assign fft_rdata_down_o     = fft_rdata_down[0];
-    assign buf_a_raddr_reversed = {<<{buf_a_raddr}} >> fft_shift;
-    assign buf_b_raddr_reversed = {<<{buf_b_raddr}} >> fft_shift;
-`else
-    assign fft_rdata_up_o       = fft_rdata_up  [{<<{buf_a_raddr}}[SSR_BITS-1:0]];
-    assign fft_rdata_down_o     = fft_rdata_down[{<<{buf_b_raddr}}[SSR_BITS-1:0]];
-    assign buf_a_raddr_reversed = {<<{buf_a_raddr}}[FSZ-1:SSR_BITS];
-    assign buf_b_raddr_reversed = {<<{buf_b_raddr}}[FSZ-1:SSR_BITS];
-`endif
+    assign buf_a_raddr_reversed = buf_a_raddr_bitrev >> fft_shift;
+    assign buf_b_raddr_reversed = buf_b_raddr_bitrev >> fft_shift;
+end else begin
+    assign fft_rdata_up_o       = fft_rdata_up  [buf_a_raddr_bitrev[SSR_BITS-1:0]];
+    assign fft_rdata_down_o     = fft_rdata_down[buf_b_raddr_bitrev[SSR_BITS-1:0]];
+    assign buf_a_raddr_reversed = buf_a_raddr_bitrev[FSZ-1:SSR_BITS];
+    assign buf_b_raddr_reversed = buf_b_raddr_bitrev[FSZ-1:SSR_BITS];
+end
+endgenerate
 
 generate
 for(s=0; s<FSSR; s+=1) begin
@@ -775,7 +791,7 @@ xpm_fifo_axis #(
 logic [63:0] peak_out_data;
 logic        peak_out_valid;
 
-peak_detector_wrapper pd_i (
+peak_detector_bd_wrapper pd_i (
     .aclk            (clk_i),
     .aresetn         (rstn_i),
 
@@ -792,7 +808,7 @@ peak_detector_wrapper pd_i (
 
     .threshold_k_sq  (fft_threshold_k_arg),
     .start_index     (fft_peak_start_arg),
-    .end_index       ((fft_length<<SSR_BITS)[FSZ:1]),
+    .end_index       (fft_end_idx[FSZ:1]),
     .data_min        (fft_peak_minimum_arg),
     .nfft            (fft_nfft+SSR_BITS)
 );
@@ -802,55 +818,57 @@ assign fft_peak_idx   = fft_peak_valid ? peak_out_data[DSZ + FSZ : DSZ + 1] : 0;
 assign fft_peak       = peak_out_data[DSZ-1 : 0];
 assign peak_ready     = peak_out_valid;
 
-`if (FSSR == 1)
+generate
+if (FSSR == 1) begin : gen_fft_single
 
-logic [64-DSZ-1:0]      fft_maxi_unused;
-logic [16-ASZ-1:0]      fft_data_ext;
-// sign extend the data for padding according to xfft requirement
-assign                  fft_data_ext = {16-ASZ{fft_data_i[ASZ-1]}};
+    logic [64-DSZ-1:0] fft_maxi_unused;
+    logic [16-ASZ-1:0] fft_data_ext;
+    // sign extend the data for padding according to xfft requirement
+    assign             fft_data_ext = {16-ASZ{fft_data_i[ASZ-1]}};
 
-fft_wrapper fft_i (
-   .M_AXIS_DOUT_0_tdata         ({fft_maxi_unused, fft_maxi_data}),
-   .M_AXIS_DOUT_0_tlast         (fft_maxi_last    ),
-   .M_AXIS_DOUT_0_tvalid        (fft_maxi_valid   ),
-   .M_AXIS_DOUT_0_tready        (fft_maxi_rdy     ),
-   .S_AXIS_CONFIG_0_tdata       (fft_conf_data    ),
-   .S_AXIS_CONFIG_0_tready      (fft_conf_rdy     ),
-   .S_AXIS_CONFIG_0_tvalid      (fft_conf_dvalid  ),
-   .S_AXIS_DATA_0_tdata         ({16'b0, fft_data_ext, fft_data_i}),
-   .S_AXIS_DATA_0_tlast         (fft_saxi_last    ),
-   .S_AXIS_DATA_0_tready        (fft_saxi_rdy     ),
-   .S_AXIS_DATA_0_tvalid        (fft_saxi_valid   ),
-   .aclk_0                      (clk_i            ),
-   .aresetn_0                   (fft_rstn_i       ),
-   .event_data_in_channel_halt_0(fft_in_halt      ),
-   .event_data_out_channel_halt_0(fft_out_halt    ),
-   .event_status_channel_halt_0 (fft_status_halt  ),
-   .event_frame_started_0       (fft_frame_start  ),
-   .event_tlast_missing_0       (fft_tlast_missing),
-   .event_tlast_unexpected_0    (fft_tlast_unexp  )
-);
+    fft_wrapper fft_i (
+       .M_AXIS_DOUT_0_tdata         ({fft_maxi_unused, fft_maxi_data}),
+       .M_AXIS_DOUT_0_tlast         (fft_maxi_last    ),
+       .M_AXIS_DOUT_0_tvalid        (fft_maxi_valid   ),
+       .M_AXIS_DOUT_0_tready        (fft_maxi_rdy     ),
+       .S_AXIS_CONFIG_0_tdata       (fft_conf_data    ),
+       .S_AXIS_CONFIG_0_tready      (fft_conf_rdy     ),
+       .S_AXIS_CONFIG_0_tvalid      (fft_conf_dvalid  ),
+       .S_AXIS_DATA_0_tdata         ({16'b0, fft_data_ext, fft_data_i}),
+       .S_AXIS_DATA_0_tlast         (fft_saxi_last    ),
+       .S_AXIS_DATA_0_tready        (fft_saxi_rdy     ),
+       .S_AXIS_DATA_0_tvalid        (fft_saxi_valid   ),
+       .aclk_0                      (clk_i            ),
+       .aresetn_0                   (fft_rstn_i       ),
+       .event_data_in_channel_halt_0(fft_in_halt      ),
+       .event_data_out_channel_halt_0(fft_out_halt    ),
+       .event_status_channel_halt_0 (fft_status_halt  ),
+       .event_frame_started_0       (fft_frame_start  ),
+       .event_tlast_missing_0       (fft_tlast_missing),
+       .event_tlast_unexpected_0    (fft_tlast_unexp  )
+    );
 
-`else
+end else begin : gen_fft_ssr
 
-fft_ssr_wrapper fft_i (
-    .aclk                   (clk_i),
-    .aresetn                (fft_rstn_i),
+    fft_ssr_bd_wrapper fft_i (
+        .aclk                   (clk_i),
+        .aresetn                (fft_rstn_i),
 
-    .s_axis_tdata           (fft_data_i),
-    .s_axis_tvalid          (fft_saxi_valid),
-    .s_axis_tready          (fft_saxi_rdy),
-    .s_axis_tlast           (fft_saxi_last),
+        .s_axis_tdata           (fft_data_i),
+        .s_axis_tvalid          (fft_saxi_valid),
+        .s_axis_tready          (fft_saxi_rdy),
+        .s_axis_tlast           (fft_saxi_last),
 
-    .m_axis_tdata           (fft_maxi_data),
-    .m_axis_tvalid          (fft_maxi_valid),
-    .m_axis_tready          (fft_maxi_rdy),
-    .m_axis_tlast           (fft_maxi_last),
+        .m_axis_tdata           (fft_maxi_data),
+        .m_axis_tvalid          (fft_maxi_valid),
+        .m_axis_tready          (fft_maxi_rdy),
+        .m_axis_tlast           (fft_maxi_last),
 
-    .event_frame_started    (fft_frame_start ),
-);
+        .event_frame_started    (fft_frame_start)
+    );
 
-`endif
+end
+endgenerate
 
 //---------------------------------------------------------------------------------
 //  System bus connection
