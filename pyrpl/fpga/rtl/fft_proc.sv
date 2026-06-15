@@ -3,6 +3,7 @@ module fft_proc #(
   parameter DSZ,        // FFT_output width
   parameter FSZ,        // FFT transform length 2^FSZ
   parameter FSSR,       // FFT super sample size
+  parameter FFT_IMPL = 3, // 1=LogiCORE, 2=HLS SSR (DIT), 3=IP SSR (DIF)
   parameter RSZ,        // RAM size 2^RSZ
   parameter HSZ,        // fft history buffer size 2^HSZ (Note: consider word size of 32bit, better not exceed 64KBytes in total)
   parameter QSZ,        // FFT queue size 2^QSZ
@@ -363,13 +364,32 @@ logic [DSZ-1:0]             fft_rdata_down  [0:FSSR-1];
 logic [FSZ-SSR_BITS-1: 0]  buf_a_raddr_reversed;
 logic [FSZ-SSR_BITS-1: 0]  buf_b_raddr_reversed;
 
+// BRAM channel/address split from bin index k.
+// buf_a_raddr_bitrev[j] = buf_a_raddr[FSZ-1-j], so:
+//   bitrev[0]     = k[FSZ-1]  (MSB of k)
+//   bitrev[FSZ-1] = k[0]      (LSB of k)
+//
+// FFT_IMPL==2 (HLS SSR, DIT): lanes hold lower/upper spectrum halves.
+//   channel = k[FSZ-1]              → buf_a_raddr_bitrev[SSR_BITS-1:0]
+//   address = bit_rev(k>>SSR_BITS)  → buf_a_raddr_bitrev[FSZ-1:SSR_BITS]
+//
+// FFT_IMPL==3 (IP SSR, DIF): lanes hold bins grouped by k mod FSSR.
+//   channel = k[SSR_BITS-1:0]       → buf_a_raddr[SSR_BITS-1:0]  (no bit-reversal)
+//   address = bit_rev(k>>SSR_BITS)  → buf_a_raddr_bitrev[FSZ-SSR_BITS-1:0]
 generate
 if (FSSR == 1) begin
     assign fft_rdata_up_o       = fft_rdata_up  [0];
     assign fft_rdata_down_o     = fft_rdata_down[0];
     assign buf_a_raddr_reversed = buf_a_raddr_bitrev >> fft_shift;
     assign buf_b_raddr_reversed = buf_b_raddr_bitrev >> fft_shift;
+end else if (FFT_IMPL == 3) begin
+    // DIF: channel = k mod FSSR — low SSR_BITS of the bin index, no reversal needed.
+    assign fft_rdata_up_o       = fft_rdata_up  [buf_a_raddr[SSR_BITS-1:0]];
+    assign fft_rdata_down_o     = fft_rdata_down[buf_b_raddr[SSR_BITS-1:0]];
+    assign buf_a_raddr_reversed = buf_a_raddr_bitrev[FSZ-SSR_BITS-1:0];
+    assign buf_b_raddr_reversed = buf_b_raddr_bitrev[FSZ-SSR_BITS-1:0];
 end else begin
+    // DIT: channel = upper SSR_BITS of k, accessed via its bit-reversed position.
     assign fft_rdata_up_o       = fft_rdata_up  [buf_a_raddr_bitrev[SSR_BITS-1:0]];
     assign fft_rdata_down_o     = fft_rdata_down[buf_b_raddr_bitrev[SSR_BITS-1:0]];
     assign buf_a_raddr_reversed = buf_a_raddr_bitrev[FSZ-1:SSR_BITS];
@@ -819,7 +839,8 @@ assign fft_peak       = peak_out_data[DSZ-1 : 0];
 assign peak_ready     = peak_out_valid;
 
 generate
-if (FSSR == 1) begin : gen_fft_single
+if (FFT_IMPL == 1) begin : gen_fft_single
+    // Plain LogiCORE FFT IP via AXI-Stream config+data ports.
 
     logic [64-DSZ-1:0] fft_maxi_unused;
     logic [16-ASZ-1:0] fft_data_ext;
@@ -848,7 +869,29 @@ if (FSSR == 1) begin : gen_fft_single
        .event_tlast_unexpected_0    (fft_tlast_unexp  )
     );
 
+end else if (FFT_IMPL == 3) begin : gen_fft_ip_ssr
+    // DIF SSR FFT: HLS top-level wrapping LogiCORE sub-FFTs.
+    // Lane 0 = even bins, lane 1 = odd bins, both in bit-reversed beat order.
+
+    fft_ip_ssr_bd_wrapper fft_i (
+        .aclk                   (clk_i),
+        .aresetn                (fft_rstn_i),
+
+        .s_axis_tdata           (fft_data_i),
+        .s_axis_tvalid          (fft_saxi_valid),
+        .s_axis_tready          (fft_saxi_rdy),
+        .s_axis_tlast           (fft_saxi_last),
+
+        .m_axis_tdata           (fft_maxi_data),
+        .m_axis_tvalid          (fft_maxi_valid),
+        .m_axis_tready          (fft_maxi_rdy),
+        .m_axis_tlast           (fft_maxi_last),
+
+        .event_frame_started    (fft_frame_start)
+    );
+
 end else begin : gen_fft_ssr
+    // DIT SSR FFT (Vitis xf::dsp::fft): lane 0 = lower-half bins, lane 1 = upper-half.
 
     fft_ssr_bd_wrapper fft_i (
         .aclk                   (clk_i),

@@ -44,6 +44,12 @@ ROOT=$(cd "$(dirname "$0")" && pwd)
 # FFT_CLK_PERIOD: HLS synthesis target clock period in ns (4.0 = 250 MHz).
 #export FFT_CLK_PERIOD=4.0
 
+# FFT_IMPL: FFT implementation selector.
+#   1 = plain LogiCORE IP (no HLS FFT build needed)
+#   2 = Vitis HLS SSR FFT, Decimation-In-Time (DIT) — fft_ssr
+#   3 = HLS DIF SSR FFT using LogiCORE sub-FFTs — fft_ip_ssr (default)
+#export FFT_IMPL=3
+
 mkdir -p "$ROOT/.hls"
 
 # Vivado HLS csim uses a bundled ld (binutils 2.26) that only searches /usr/lib.
@@ -55,7 +61,7 @@ export LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/lib32:${LIBRARY_PATH:-}
 # Stored alongside each stamp so that changing FFT_SSR (or any other param)
 # invalidates the cached output even when source files haven't changed.
 hls_fingerprint() {
-    echo "FPGA_PART=${FPGA_PART:-} FFT_SSR=${FFT_SSR:-} FFT_NFFT=${FFT_NFFT:-} FFT_WIDTH=${FFT_WIDTH:-} FFT_CLK_PERIOD=${FFT_CLK_PERIOD:-}"
+    echo "FPGA_PART=${FPGA_PART:-} FFT_IMPL=${FFT_IMPL:-} FFT_SSR=${FFT_SSR:-} FFT_NFFT=${FFT_NFFT:-} FFT_WIDTH=${FFT_WIDTH:-} FFT_CLK_PERIOD=${FFT_CLK_PERIOD:-}"
 }
 
 needs_rebuild() {
@@ -99,8 +105,16 @@ run_hls() {
 }
 
 check_hls() {
-    run_hls fft_ssr hls/fft_ssr.tcl \
-        hls/fft_ssr.cpp hls/fft_ssr.tcl
+    local impl=${FFT_IMPL:-3}
+
+    if [[ "$impl" == "2" ]]; then
+        run_hls fft_ssr hls/fft_ssr.tcl \
+            hls/fft_ssr.cpp hls/fft_ssr.tcl
+    elif [[ "$impl" == "3" ]]; then
+        run_hls fft_ip_ssr hls/fft_ip_ssr.tcl \
+            hls/fft_ip_ssr.cpp hls/fft_ip_ssr.tcl
+    fi
+    # FFT_IMPL==1 (plain LogiCORE) needs no HLS FFT build.
 
     run_hls peak_detector hls/peak_detector.tcl \
         hls/peak_detector.cpp hls/peak_detector.h \
