@@ -73,7 +73,8 @@ module red_pitaya_scope #(
   parameter FSZ  = 13,  // FFT transform length 2^FSZ
   parameter RSZ  = 14,  // RAM size 2^RSZ
   parameter HSZ  = 14,  // fft history buffer size 2^HSZ
-  parameter FSSR = 1    // FFT super sample rate (parallel channels)
+  parameter FSSR     = 1, // FFT super sample rate (parallel channels)
+  parameter FFT_IMPL = 3  // 1=LogiCORE, 2=HLS SSR (DIT), 3=IP SSR (DIF)
 )(
 
    // ADC
@@ -717,6 +718,7 @@ fft_proc #(.ASZ(ASZ),
            .RSZ(RSZ),
            .HSZ(HSZ),
            .FSSR(FSSR),
+           .FFT_IMPL(FFT_IMPL),
            .READ_DELAY(FFT_RDELAY-2))
 fft_a (
    .adc_clk_i (adc_clk_i),
@@ -774,6 +776,7 @@ fft_proc #(.ASZ(ASZ),
            .RSZ(RSZ),
            .HSZ(HSZ),
            .FSSR(FSSR),
+           .FFT_IMPL(FFT_IMPL),
            .READ_DELAY(FFT_RDELAY-2)
 ) fft_b (
    .adc_clk_i (adc_clk_i),

@@ -88,7 +88,8 @@ module red_pitaya_top #(
     ADC_SZ = 14,
     FFT_NFFT = 13,
     FFT_SSR  = 1,
-    FFT_WIDTH = 28
+    FFT_WIDTH = 28,
+    FFT_IMPL = 3
 )(
    // PS connections
    inout  [54-1: 0] FIXED_IO_mio       ,
@@ -465,7 +466,7 @@ wire    [14-1: 0] to_scope_a;
 wire    [14-1: 0] to_scope_b;
 wire dsp_trigger;
 
-red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .FSSR(FFT_SSR), .DSZ(FFT_WIDTH)) i_scope (
+red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .FSSR(FFT_SSR), .DSZ(FFT_WIDTH), .FFT_IMPL(FFT_IMPL)) i_scope (
   // ADC
   .adc_a_i         (  to_scope_a[14-1:14-ADC_SZ] ),  // CH 1
   .adc_b_i         (  to_scope_b[14-1:14-ADC_SZ] ),  // CH 2

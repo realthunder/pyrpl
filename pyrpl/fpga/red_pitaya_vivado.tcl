@@ -34,6 +34,8 @@ set fft_width      [expr {[info exists env(FFT_WIDTH)]      ? $env(FFT_WIDTH)   
 set fft_nfft       [expr {[info exists env(FFT_NFFT)]       ? $env(FFT_NFFT)       : 12}]
 set fft_ssr        [expr {[info exists env(FFT_SSR)]        ? $env(FFT_SSR)        : 2}]
 set fft_clk_period [expr {[info exists env(FFT_CLK_PERIOD)] ? $env(FFT_CLK_PERIOD) : 4.0}]
+# FFT_IMPL: 1=plain LogiCORE, 2=HLS SSR (Vitis library), 3=IP SSR (LogiCORE sub-FFTs, natural order)
+set fft_impl       [expr {[info exists env(FFT_IMPL)]       ? $env(FFT_IMPL)       : 3}]
 
 if {[llength $argv] > 1 && [lindex $argv 0] == "alinx"} {
     set clk_diff 0
@@ -70,11 +72,16 @@ generate_target all [get_files    system.bd]
 write_hwdef              -file    $path_sdk/red_pitaya.hwdef
 
 
-# source                            $path_ip/fft_bd.tcl
-# generate_target all [get_files    fft.bd]
-
-source                            $path_ip/fft_ssr_bd.tcl
-generate_target all [get_files    fft_ssr_bd.bd]
+if {$fft_impl == 1} {
+    source                        $path_ip/fft_bd.tcl
+    generate_target all [get_files fft.bd]
+} elseif {$fft_impl == 2} {
+    source                        $path_ip/fft_ssr_bd.tcl
+    generate_target all [get_files fft_ssr_bd.bd]
+} else {
+    source                        $path_ip/fft_ip_ssr_bd.tcl
+    generate_target all [get_files fft_ip_ssr_bd.bd]
+}
 
 source                            $path_ip/peak_detector_bd.tcl
 generate_target all [get_files    peak_detector_bd.bd]
@@ -90,8 +97,15 @@ generate_target all [get_files    peak_detector_bd.bd]
 #read_verilog                      $path_rtl/...
 
 read_verilog                      .srcs/sources_1/bd/system/hdl/system_wrapper.v
-# read_verilog                      .srcs/sources_1/bd/fft/hdl/fft_wrapper.v
-read_verilog                      .srcs/sources_1/bd/fft_ssr_bd/hdl/fft_ssr_bd_wrapper.v
+
+if {$fft_impl == 1} {
+    read_verilog                  .srcs/sources_1/bd/fft/hdl/fft_wrapper.v
+} elseif {$fft_impl == 2} {
+    read_verilog                  .srcs/sources_1/bd/fft_ssr_bd/hdl/fft_ssr_bd_wrapper.v
+} else {
+    read_verilog                  .srcs/sources_1/bd/fft_ip_ssr_bd/hdl/fft_ip_ssr_bd_wrapper.v
+}
+
 read_verilog                      .srcs/sources_1/bd/peak_detector_bd/hdl/peak_detector_bd_wrapper.v
 
 read_verilog                      $path_rtl/axi_master.v
@@ -150,6 +164,7 @@ synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivale
     -generic FFT_NFFT=$fft_nfft \
     -generic FFT_SSR=$fft_ssr \
     -generic FFT_WIDTH=$fft_width \
+    -generic FFT_IMPL=$fft_impl \
 
 # set debug_nets {asg_trig_n asg_trig2_p fft_dvalid fft_a_enable fft_b_enable}
 # set debug_nets {}
