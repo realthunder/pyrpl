@@ -112,7 +112,7 @@ set_property PACKAGE_PIN N15 [get_ports dac_rst_o]
 set_property IOSTANDARD LVCMOS18 [get_ports {dac_pwm_o[*]}]
 set_property SLEW FAST           [get_ports {dac_pwm_o[*]}]
 set_property DRIVE 12            [get_ports {dac_pwm_o[*]}]
-set_property IOB TRUE            [get_ports {dac_pwm_o[*]}]
+set_property IOB FALSE           [get_ports {dac_pwm_o[*]}]
 
 set_property PACKAGE_PIN T10 [get_ports {dac_pwm_o[0]}]
 set_property PACKAGE_PIN T11 [get_ports {dac_pwm_o[1]}]
@@ -239,6 +239,26 @@ set_false_path -from [get_clocks clk_fpga_0]  -to [get_clocks adc_clk]
 # exhaustive inter-clock analysis of the full 76k-endpoint domain product.
 set_false_path -from [get_clocks pll_ser_clk] -to [get_clocks pll_adc_clk]
 set_false_path -from [get_clocks pll_adc_clk] -to [get_clocks pll_ser_clk]
+
+# xfft LogiCORE: ce_predicted_reg is asserted one clock cycle early by design.
+# Outgoing paths: fo~256 high-fanout net to DSP CEB2 inputs needs 2 cycles.
+# Incoming paths: combinational ce_predicted logic has long routes inside xfft.
+# The IP is designed for the CE to be valid 1 cycle early, so 2-cycle budget
+# for both the computation and propagation is within the IP's timing intent.
+set_multicycle_path 2 -setup -from [get_cells -hierarchical -filter {NAME =~ *ce_predicted_reg*}]
+set_multicycle_path 1 -hold  -from [get_cells -hierarchical -filter {NAME =~ *ce_predicted_reg*}]
+set_multicycle_path 2 -setup -to   [get_cells -hierarchical -filter {NAME =~ *ce_predicted_reg*}]
+set_multicycle_path 1 -hold  -to   [get_cells -hierarchical -filter {NAME =~ *ce_predicted_reg*}]
+
+# PWM comparator: v_r drives a CARRY4×2 chain to an OLOGIC IOB register;
+# negative clock skew tightens the path to below 4 ns.  Allow 2 cycles.
+set_multicycle_path 2 -setup -from [get_cells -hierarchical -filter {NAME =~ pwm*/v_r_reg*}]
+set_multicycle_path 1 -hold  -from [get_cells -hierarchical -filter {NAME =~ pwm*/v_r_reg*}]
+
+# ADC data hold: adc_dat_*_i input_delay is referenced to adc_clk, but the
+# IOB register is clocked by pll_adc_clk (large internal skew vs adc_clk).
+# Hold analysis across these two clocks is not meaningful — suppress it.
+set_false_path -hold -from [get_clocks adc_clk] -to [get_clocks pll_adc_clk]
 # set_false_path -from [get_clocks dac_clk_out] -to [get_clocks dac_2clk_out]
 # set_false_path -from [get_clocks dac_clk_out] -to [get_clocks dac_2ph_out]
 

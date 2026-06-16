@@ -269,6 +269,9 @@ write_debug_probes -force $path_out/debug_probes.ltx
 ################################################################################
 
 route_design
+# Post-route physical optimization: re-runs fanout replication, retiming and
+# critical-path rerouting now that actual routing delays are known.
+phys_opt_design -directive AggressiveExplore
 write_checkpoint         -force   $path_out/post_route
 report_timing_summary    -file    $path_out/post_route_timing_summary.rpt
 report_timing            -file    $path_out/post_route_timing.rpt -sort_by group -max_paths 1000 -path_type summary

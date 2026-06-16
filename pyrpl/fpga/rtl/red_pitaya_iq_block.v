@@ -269,6 +269,23 @@ red_pitaya_filter_block #(
    .dat_o  ( {quadrature1,quadrature2}  )
   );
 
+// Pipeline registers between iqfilter and modulator.
+// The iqfilter output is combinational through up to 4 bypass-mode LUT stages;
+// the modulator's firstproduct DSP48 has a large A-input setup (~3.7 ns) that
+// can't be met from inside the filter chain alone.  One extra cycle of latency
+// before modulation is acceptable.
+reg signed [LPFBITS-1:0] quadrature1_r;
+reg signed [LPFBITS-1:0] quadrature2_r;
+always @(posedge clk_i) begin
+    if (rstn_i == 1'b0) begin
+        quadrature1_r <= {LPFBITS{1'b0}};
+        quadrature2_r <= {LPFBITS{1'b0}};
+    end else begin
+        quadrature1_r <= quadrature1;
+        quadrature2_r <= quadrature2;
+    end
+end
+
 //modulation, summing and direct output
 red_pitaya_iq_modulator_block #(
         .INBITS   (LPFBITS),
@@ -286,8 +303,8 @@ red_pitaya_iq_modulator_block #(
         .g2      (g2) ,
         .g3      (g3) ,
         .g4      (g4) ,
-        .signal1_i (quadrature1),
-        .signal2_i (quadrature2),
+        .signal1_i (quadrature1_r),
+        .signal2_i (quadrature2_r),
         .dat_o     (dat_o),
         .signal_q1_o  (quadrature1_o),
         .signal_q2_o  (quadrature2_o)

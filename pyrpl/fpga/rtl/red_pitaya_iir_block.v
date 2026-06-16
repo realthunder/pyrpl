@@ -269,8 +269,14 @@ wire signed [IIRSIGNALBITS-1:0] p_ay1_full;
 wire signed [IIRSIGNALBITS-1:0] p_ay2_full;
 
 
-red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS))
+// PIPELINE=2: the module registers the raw DSP product (stage 1) then the
+// saturated result (stage 2), breaking the DSP→CARRY4 critical path.
+// Outputs p_ay1_full / p_ay2_full / p_bx0_full / p_bx1_full are now
+// registered inside the modules and are valid 2 cycles after their inputs
+// are loaded — aligned with the stage2 block below.
+red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS), .PIPELINE(2))
  p_ay1_module (
+  .clk_i    (clk_i),
   .factor1_i(y1a),
   .factor2_i(a1),
   .product_o(p_ay1_full),
@@ -279,39 +285,40 @@ red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(I
 
 //assign p_ay1_full = {p_ay1_over_2, 1'b0};
 
-red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS))
+red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS), .PIPELINE(2))
    p_ay2_module (
+    .clk_i    (clk_i),
     .factor1_i(y2a),
     .factor2_i(a2),
     .product_o(p_ay2_full),
     .overflow (overflow_i[1])
     );
-reg signed [IIRSIGNALBITS-1:0] p_ay1;
-reg signed [IIRSIGNALBITS-1:0] p_ay2;
 
 
 wire signed [IIRSIGNALBITS-1:0] p_bx0_full;
 wire signed [IIRSIGNALBITS-1:0] p_bx1_full;
-red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS))
+red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS), .PIPELINE(2))
  p_bx0_module (
+  .clk_i    (clk_i),
   .factor1_i(x0b),
   .factor2_i(b0),
   .product_o(p_bx0_full),
   .overflow (overflow_i[3])
    );
-red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS))
+red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS), .PIPELINE(2))
    p_bx1_module (
+    .clk_i    (clk_i),
     .factor1_i(x1b),
     .factor2_i(b1),
     .product_o(p_bx1_full),
     .overflow (overflow_i[4])
      );
-reg signed [IIRSIGNALBITS-1:0] p_bx0;
-reg signed [IIRSIGNALBITS-1:0] p_bx1;
 
 
 wire signed [IIRSIGNALBITS+2-1:0] y_sum;
-assign y_sum = p_ay1 + p_ay2 + p_bx0 + p_bx1;
+// p_*_full are now registered inside product_sat (2-cycle pipeline);
+// they are valid at stage2, exactly when y_sum is consumed below.
+assign y_sum = p_ay1_full + p_ay2_full + p_bx0_full + p_bx1_full;
 wire signed [IIRSIGNALBITS-1:0] y_full;
 red_pitaya_saturate #( .BITS_IN (IIRSIGNALBITS+2), .SHIFT(0), .BITS_OUT(IIRSIGNALBITS))
    s_y0_module (
@@ -390,10 +397,6 @@ always @(posedge clk_i) begin
         b0 <= {IIRBITS{1'b0}};
         b1 <= {IIRBITS{1'b0}};
 
-        p_ay1 <= {IIRSIGNALBITS{1'b0}};
-        p_ay2 <= {IIRSIGNALBITS{1'b0}};
-        p_bx0 <= {IIRSIGNALBITS{1'b0}};
-        p_bx1 <= {IIRSIGNALBITS{1'b0}};
         signal_o <= {SIGNALBITS{1'b0}};
         //x0 <= {IIRSIGNALBITS{1'b0}};
         end
@@ -415,16 +418,7 @@ always @(posedge clk_i) begin
 
             x0_i[stage0]<=x0;
         end
-        //cycle n+1
-        if (stage1<IIRSTAGES) begin
-            p_ay1 <= p_ay1_full;
-            p_ay2 <= p_ay2_full;
-
-            p_bx0 <= p_bx0_full;
-            p_bx1 <= p_bx1_full;
-        end
-
-        //cycle n+2
+        //cycle n+2  (p_*_full arrive from 2-stage product_sat pipeline)
         if (stage2<IIRSTAGES) begin
             //y0 <= y0_full;//no saturation here, because y0 is two bits longer than other signals
             y1_i[stage2] <= y_full; //update y1 memory

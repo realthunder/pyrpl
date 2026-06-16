@@ -172,6 +172,18 @@ end
 
 
 //-----------------------------
+// Pipeline register on dat_i before the filter chain.
+// The mux tree selecting dat_i from DAC/ADC output signals is 7 LUT levels
+// deep; without this register the path sum2_reg → mux → 4×LPF bypass → CARRY4
+// exceeds 8 ns (125 MHz budget).  One extra cycle of PID input latency is
+// acceptable.
+reg signed [14-1:0] dat_i_r;
+always @(posedge clk_i) begin
+   if (rstn_i == 1'b0) dat_i_r <= 14'b0;
+   else                dat_i_r <= dat_i;
+end
+
+//-----------------------------
 // cascaded set of FILTERSTAGES low- or high-pass filters
 wire signed [14-1:0] dat_i_filtered;
 red_pitaya_filter_block #(
@@ -185,7 +197,7 @@ red_pitaya_filter_block #(
   .clk_i(clk_i),
   .rstn_i(rstn_i),
   .set_filter(set_filter),
-  .dat_i(dat_i),
+  .dat_i(dat_i_r),
   .dat_o(dat_i_filtered)
   );
 
