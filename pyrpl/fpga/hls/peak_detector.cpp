@@ -84,8 +84,15 @@ void peak_detector(
                 ap_uint<DSZ + SQ_LSHIFT> s_wide = (ap_uint<DSZ + SQ_LSHIFT>)s << SQ_LSHIFT;
                 sq_data_t s_sc = (s_wide >> SQ_BITS) ? sq_data_t(-1) : sq_data_t(s_wide);
 
+                // Separate multiply from accumulate so HLS generates a shallow DSP
+                // multiply (latency 1-2) + independent accumulate rather than a fused
+                // 4-cycle MAC. This keeps iter-enable registers close to the accumulator.
+                sq_data_t s_sq;
+#pragma HLS BIND_OP variable=s_sq op=mul impl=dsp
+                s_sq = s_sc * s_sc;
+
                 delta_sum    += (sum_t)s_sc;
-                delta_sum_sq += (sum_sq_t)s_sc * s_sc;
+                delta_sum_sq += (sum_sq_t)s_sq;
                 delta_count  += 1;
 
                 if (s > beat_peak) {
