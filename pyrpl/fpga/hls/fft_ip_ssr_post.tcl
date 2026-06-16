@@ -34,7 +34,7 @@ set cfg_w    [expr {(($sch_w + 1 + 7) / 8) * 8}]
 
 # Ensure twiddle header exists (pre TCL generates it; post just needs the
 # header to be present for compilation even though post doesn't use LUT).
-set hls_dir [file dirname [info script]]
+set hls_dir [file normalize [file dirname [info script]]]
 set lut_hdr [file join $hls_dir fft_ip_ssr_twiddle.hpp]
 if {![file exists $lut_hdr]} {
     error "fft_ip_ssr_twiddle.hpp missing — run fft_ip_ssr_pre.tcl first"

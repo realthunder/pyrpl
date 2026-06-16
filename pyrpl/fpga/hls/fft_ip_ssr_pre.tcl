@@ -37,7 +37,7 @@ set sch_w    [expr {(($sub_nfft + 1) / 2) * 2}]
 set cfg_w    [expr {(($sch_w + 1 + 7) / 8) * 8}]
 
 # ---- Generate twiddle LUT if not present --------------------------------
-set hls_dir  [file dirname [info script]]
+set hls_dir  [file normalize [file dirname [info script]]]
 set lut_hdr  [file join $hls_dir fft_ip_ssr_twiddle.hpp]
 set gen_src  [file join $hls_dir gen_twiddle_lut.cpp]
 set gen_exe  [file join $hls_dir gen_twiddle_lut_exe]
