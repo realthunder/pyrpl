@@ -99,10 +99,10 @@ VIVADO_HLS=${XILINX_VITIS}/bin/vitis_hls
 
 mkdir -p "$ROOT/.hls"
 
-# Vivado HLS csim uses a bundled ld (binutils 2.26) that only searches /usr/lib.
-# Ubuntu 24.04 puts libraries under /usr/lib/x86_64-linux-gnu (multiarch layout),
-# so we expose them explicitly via LIBRARY_PATH so GCC passes the -L flags to ld.
+# Vivado HLS csim uses a bundled GCC 6.2.0 that doesn't know Ubuntu 24.04's
+# multiarch layout. Expose both libraries and headers explicitly so GCC finds them.
 export LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/lib32:${LIBRARY_PATH:-}
+export CPATH=/usr/include/x86_64-linux-gnu:${CPATH:-}
 
 # Fingerprint of HLS-relevant build parameters.
 # Stored alongside each stamp so that changing FFT_SSR (or any other param)

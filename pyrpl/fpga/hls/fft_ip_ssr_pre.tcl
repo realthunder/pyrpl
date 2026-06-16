@@ -95,23 +95,6 @@ create_clock -period $fft_clk_period
 
 csynth_design
 
-# export_design may fail with "bad lexical cast" on core_revision when the
-# current timestamp exceeds INT_MAX (Vivado 2020.1 bug). Catch and re-run
-# IP packaging after patching the revision to a safe value.
-if {[catch {export_design -format ip_catalog -rtl verilog} err]} {
-    puts "WARNING: export_design failed ($err) — patching core_revision ..."
-    set ippack [glob -nocomplain [pwd]/fft_ip_ssr_pre/solution1/impl/ip/run_ippack.tcl]
-    if {$ippack ne ""} {
-        set fd [open $ippack r]; set src [read $fd]; close $fd
-        # Replace any oversized revision number with a safe constant
-        regsub {set Revision\s+"[0-9]+"} $src {set Revision "1"} src
-        set fd [open $ippack w]; puts -nonewline $fd $src; close $fd
-        exec /tools/Xilinx/Vivado/2020.1/bin/vivado \
-            -notrace -mode batch -source $ippack
-        puts "INFO: IP packaging completed after revision patch."
-    } else {
-        error "run_ippack.tcl not found after export_design failure"
-    }
-}
+export_design -format ip_catalog -rtl verilog
 
 exit

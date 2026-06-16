@@ -28,7 +28,9 @@ set_part $part
 create_clock -period $fft_clk_period
 
 # -------- RUN FLOW --------
-csim_design
+# -ldflags "-B/usr/bin": use system ld (binutils 2.42) instead of Vivado's
+# bundled binutils-2.26, which can't resolve libm GROUP paths on Ubuntu 24.04.
+csim_design -ldflags "-B/usr/bin"
 csynth_design
 
 # Export RTL as Verilog IP
