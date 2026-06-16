@@ -111,8 +111,12 @@ check_hls() {
         run_hls fft_ssr hls/fft_ssr.tcl \
             hls/fft_ssr.cpp hls/fft_ssr.tcl
     elif [[ "$impl" == "3" ]]; then
-        run_hls fft_ip_ssr hls/fft_ip_ssr.tcl \
-            hls/fft_ip_ssr.cpp hls/fft_ip_ssr.tcl
+        # pre generates the twiddle LUT header; post compiles against it.
+        run_hls fft_ip_ssr_pre hls/fft_ip_ssr_pre.tcl \
+            hls/fft_ip_ssr.cpp hls/fft_ip_ssr_pre.tcl \
+            hls/gen_twiddle_lut.cpp hls/gen_twiddle_lut.py
+        run_hls fft_ip_ssr_post hls/fft_ip_ssr_post.tcl \
+            hls/fft_ip_ssr.cpp hls/fft_ip_ssr_post.tcl
     fi
     # FFT_IMPL==1 (plain LogiCORE) needs no HLS FFT build.
 
