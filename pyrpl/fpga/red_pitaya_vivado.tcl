@@ -231,8 +231,8 @@ opt_design -directive NoBramPowerOpt
 place_design
 
 # phys_opt_design
-# phys_opt_design -directive AggressiveExplore
-phys_opt_design -directive AggressivePhysOptimization
+# phys_opt_design -directive AggressivePhysOptimization  (Vivado 2021+)
+phys_opt_design -directive AggressiveExplore
 
 write_checkpoint         -force   $path_out/post_place
 report_timing_summary    -file    $path_out/post_place_timing_summary.rpt
