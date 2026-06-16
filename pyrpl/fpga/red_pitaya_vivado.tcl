@@ -234,6 +234,25 @@ place_design
 # phys_opt_design -directive AggressivePhysOptimization  (Vivado 2021+)
 phys_opt_design -directive AggressiveExplore
 
+# Force replication of the xfft NonRealTime CE register (ce_predicted_reg, fo≈1000+).
+# Its Q output drives all pipeline CEs across the full IP footprint (94% routing delay).
+# Target the Q pin explicitly so we replicate the right register, not its D-input logic.
+# -force_replication_on_nets overrides DONT_TOUCH on the xfft IP cells.
+set ce_pins [get_pins -hier -quiet -filter {NAME =~ *fft_ip_ssr_bd_i*ce_predicted_reg/Q}]
+if {[llength $ce_pins] > 0} {
+    set ce_nets [get_nets -of_objects $ce_pins]
+    phys_opt_design -force_replication_on_nets $ce_nets
+}
+
+# Force replication of peak_detector pipeline-enable registers (ap_enable_reg_pp0_iter*).
+# Same pattern: high-routing-delay enable signals feeding DSP C-inputs via LUT6.
+# Logic delay alone (2.7 ns) fits in 4 ns; replication cuts the 2.9 ns routing overhead.
+set pd_en_pins [get_pins -hier -quiet -filter {NAME =~ *peak_detector_0*ap_enable_reg_pp0_iter*/Q}]
+if {[llength $pd_en_pins] > 0} {
+    set pd_en_nets [get_nets -of_objects $pd_en_pins]
+    phys_opt_design -force_replication_on_nets $pd_en_nets
+}
+
 write_checkpoint         -force   $path_out/post_place
 report_timing_summary    -file    $path_out/post_place_timing_summary.rpt
 #write_hwdef              -file    $path_sdk/red_pitaya.hwdef

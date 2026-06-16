@@ -80,13 +80,7 @@ set_property -dict [list \
 ] [get_bd_intf_ports s_axis]
 
 create_bd_intf_port -mode Master -vlnv xilinx.com:interface:axis_rtl:1.0 m_axis
-set_property -dict [list \
-    CONFIG.TDATA_NUM_BYTES  $out_bytes \
-    CONFIG.HAS_TKEEP        0 \
-    CONFIG.HAS_TLAST        1 \
-    CONFIG.HAS_TREADY       1 \
-    CONFIG.HAS_TSTRB        0 \
-] [get_bd_intf_ports m_axis]
+# Master port width is driven by the connected IP (post_0/m_axis); no set_property needed.
 
 # ---- Instances -----------------------------------------------------------
 create_bd_cell -type ip -vlnv xilinx.com:hls:fft_ip_ssr_pre:1.0  pre_0
