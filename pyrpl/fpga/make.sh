@@ -1,6 +1,56 @@
 #!/bin/bash
 set -euo pipefail
 
+# Script lives in the fpga/ directory; all paths are relative to it.
+ROOT=$(cd "$(dirname "$0")" && pwd)
+
+# ---- Remote build dispatch -------------------------------------------------
+# Usage: make.sh remote [-p PATCH] [make.sh args...]
+#   rsync the whole git repo to ${REMOTE_HOST:-oplab} at the same absolute path
+#   (carrying any local modifications), optionally apply PATCH on top, then run
+#   make.sh on the remote with the forwarded args. Use it to try an alternative
+#   fix on another machine in parallel with the local build.
+if [[ "${1:-}" == "remote" ]]; then
+    shift
+    REMOTE_HOST="${REMOTE_HOST:-oplab}"
+
+    PATCH=""
+    if [[ "${1:-}" == "-p" || "${1:-}" == "--patch" ]]; then
+        PATCH="$2"; shift 2
+        [[ -f "$PATCH" ]] || { echo "patch file not found: $PATCH" >&2; exit 1; }
+    fi
+
+    REPO_ROOT=$(cd "$ROOT" && git rev-parse --show-toplevel)
+    REL=${ROOT#"$REPO_ROOT"/}      # fpga subdir, relative to the repo root
+    echo "==> Remote build on ${REMOTE_HOST}:${REPO_ROOT}${PATCH:+  (patch: $PATCH)}"
+
+    # Mirror the whole repo to the same absolute path, excluding fpga build
+    # output. --delete keeps it an exact copy of the local working tree;
+    # excluded dirs on the remote are left untouched (make.sh wipes them anyway).
+    ssh "$REMOTE_HOST" "mkdir -p $(printf '%q' "$REPO_ROOT")"
+    rsync -az --delete \
+        --exclude "/$REL/out/" \
+        --exclude "/$REL/.hls/" \
+        --exclude "/$REL/.Xil/" \
+        --exclude "/$REL/.srcs/" \
+        --exclude "/$REL/sdk/" \
+        --exclude "/$REL/build.log" \
+        "$REPO_ROOT/" "$REMOTE_HOST:$REPO_ROOT/"
+
+    # Optionally apply a patch (read from stdin), then run make.sh on the remote.
+    remote_cmd="cd $(printf '%q' "$REPO_ROOT")"
+    [[ -n "$PATCH" ]] && remote_cmd+=" && git apply -v"
+    remote_cmd+=" && cd $(printf '%q' "$ROOT") && bash make.sh"
+    for a in "$@"; do remote_cmd+=" $(printf '%q' "$a")"; done
+
+    if [[ -n "$PATCH" ]]; then
+        ssh "$REMOTE_HOST" "$remote_cmd" < "$PATCH"
+    else
+        ssh "$REMOTE_HOST" "$remote_cmd"
+    fi
+    exit $?
+fi
+
 TA_PATH=/opt/Xilinx
 export XILINX_VITIS=${TA_PATH}/Vitis/2020.1
 export XILINX_VIVADO=${TA_PATH}/Vivado/2020.1
@@ -8,9 +58,6 @@ source ${XILINX_VIVADO}/settings64.sh
 
 VIVADO=${XILINX_VIVADO}/bin/vivado
 VIVADO_HLS=${XILINX_VITIS}/bin/vitis_hls
-
-# Script lives in the fpga/ directory; all paths are relative to it.
-ROOT=$(cd "$(dirname "$0")" && pwd)
 
 # Build parameters — uncomment and edit to override the defaults in the TCL scripts.
 # All values are passed to Vivado and Vitis HLS via environment variables.
