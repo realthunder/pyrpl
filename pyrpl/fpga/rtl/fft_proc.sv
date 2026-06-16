@@ -591,7 +591,9 @@ always @(posedge clk_i) begin
 
     fft_length_ <= 1<<fft_nfft;
     fft_shift_ <= FSZ - fft_nfft;
-    fft_length_plus_two_ <= (1<<fft_nfft) + 2;
+    // Stage 1 does the shift only (same op as fft_length_); the +2 add moves
+    // to stage 2 below, breaking the shift+adder carry chain from fft_nfft.
+    fft_length_plus_two_ <= 1<<fft_nfft;
     padding_up_ <= (1<<fft_nfft) - acq_up;
     padding_down_ <= (1<<fft_nfft) - acq_down;
 
@@ -611,7 +613,7 @@ always @(posedge clk_i) begin
     fft_length <= fft_length_;
     fft_length2 <= fft_length2_;
     fft_shift <= fft_shift_;
-    fft_length_plus_two <= fft_length_plus_two_;
+    fft_length_plus_two <= fft_length_plus_two_ + 2;
     padding_up <= padding_up_;
     padding_down <= padding_down_;
     up_toggle <= up_toggle_;
