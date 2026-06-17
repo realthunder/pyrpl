@@ -17,10 +17,14 @@ set fft_clk_period [getparam fft_clk_period 4.0]
 # Default (0): CORDIC vectoring mode, same convention as fft_ssr.cpp.
 set fft_use_approx [getparam fft_use_approx 1]
 set approx_flag    [expr {$fft_use_approx ? "-DUSE_APPROXIMATION" : ""}]
-# FFT_SCALED=0 (default): unscaled mode — xfft accumulates without ÷2 → ~140 dB dynamic range.
-# FFT_SCALED=1: scaled mode — ÷2 per stage, output stays in INT_W range → ~72 dB.
-set fft_scaled     [getparam fft_scaled     0]
-set scaled_flag    [expr {$fft_scaled ? "-DFFT_SCALED=1" : ""}]
+# FFT_SCALED: 0=unscaled 28-bit, 1=scaled 16-bit, 2=saturating 20-bit (default, fits xc7z020)
+set fft_scaled     [getparam fft_scaled     2]
+# scaled_flag: only mode 1 sets FFT_SCALED=1 in HLS; modes 0 and 2 both run unscaled xfft.
+# Mode 2 is unscaled-with-saturation, not a different scaling schedule — xfft scaled mode
+# always outputs exactly INT_W=16 bits regardless of schedule; there is no 20-bit scaled output.
+set scaled_flag    [expr {$fft_scaled == 1 ? "-DFFT_SCALED=1" : ""}]
+# fft_width = DSZ (magnitude output bits): 0→28, 1→16, 2→20
+set fft_width      [getparam fft_width      [expr {$fft_scaled == 1 ? 16 : ($fft_scaled == 2 ? 20 : 28)}]]
 
 set ssr_bits [expr {int(log($fft_ssr) / log(2) + 0.5)}]
 set sub_nfft [expr {$fft_nfft - $ssr_bits}]
@@ -66,6 +70,7 @@ add_files ../hls/fft_ip_ssr.cpp \
              -DSUB_NFFT=$sub_nfft \
              -DCFG_W=$cfg_w \
              -DCFG_WORD=$cfg_word \
+             -DDSZ=$fft_width \
              $approx_flag \
              $scaled_flag"
 
