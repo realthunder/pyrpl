@@ -60,8 +60,6 @@ localparam SSR_BITS = $clog2(FSSR);
 
 localparam READ_A_DELAY = READ_DELAY - 3;
 localparam READ_B_DELAY = READ_DELAY - 3;
-localparam WRITE_DELAY = 5;
-localparam PEAK_INPUT_DELAY = 5;
 
 logic           fft_in_halt, fft_out_halt, fft_status_halt;
 logic           fft_frame_start, fft_tlast_missing, fft_tlast_unexp;
@@ -131,28 +129,9 @@ logic               hist_b_we   ;
 logic [ HSZ-1: 0]   hist_a_raddr;
 logic [ HSZ-1: 0]   hist_b_raddr;
 
-(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _buf_a_waddr  [0 : WRITE_DELAY];
-(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _buf_b_waddr  [0 : WRITE_DELAY];
-(* SHREG_EXTRACT = "no" *) logic [ DSZ-1: 0]   _buf_a_wdata  [0 : WRITE_DELAY] [0 : FSSR-1];
-(* SHREG_EXTRACT = "no" *) logic [ DSZ-1: 0]   _buf_b_wdata  [0 : WRITE_DELAY] [0 : FSSR-1];
-(* SHREG_EXTRACT = "no" *) logic               _buf_a_we     [0 : WRITE_DELAY];
-(* SHREG_EXTRACT = "no" *) logic               _buf_b_we     [0 : WRITE_DELAY];
-
-(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _hist_a_waddr [0 : WRITE_DELAY];
-(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _hist_b_waddr [0 : WRITE_DELAY];
-(* SHREG_EXTRACT = "no" *) logic [ DSZ-1: 0]   _hist_a_wdata [0 : WRITE_DELAY];
-(* SHREG_EXTRACT = "no" *) logic [ DSZ-1: 0]   _hist_b_wdata [0 : WRITE_DELAY];
-(* SHREG_EXTRACT = "no" *) logic               _hist_a_we    [0 : WRITE_DELAY];
-(* SHREG_EXTRACT = "no" *) logic               _hist_b_we    [0 : WRITE_DELAY];
-assign hist_a_waddr = _hist_a_waddr[WRITE_DELAY];
-assign hist_b_waddr = _hist_b_waddr[WRITE_DELAY];
-assign hist_a_wdata = _hist_a_wdata[WRITE_DELAY];
-assign hist_b_wdata = _hist_b_wdata[WRITE_DELAY];
-assign hist_a_we    = _hist_a_we[WRITE_DELAY];
-assign hist_b_we    = _hist_b_we[WRITE_DELAY];
 
 genvar s, k;
-integer i, j;
+integer j;
 
 // Bit-reversed read addresses: Vivado can't part-select the result of a
 // streaming operator ({<<{}}[...]), so we materialise the reversal explicitly.
@@ -177,47 +156,23 @@ always @(posedge adc_clk_i) begin
 end
 
 always @(posedge clk_i) begin
-    _buf_a_waddr[0] <= fft_wp;
-    _buf_b_waddr[0] <= fft_wp;
-    _buf_a_we[0] <= up_out && fft_maxi_valid && fft_maxi_rdy;
-    _buf_b_we[0] <= !up_out && fft_maxi_valid && fft_maxi_rdy;
+    buf_a_waddr <= fft_wp;
+    buf_b_waddr <= fft_wp;
+    buf_a_we    <=  up_out && fft_maxi_valid && fft_maxi_rdy;
+    buf_b_we    <= !up_out && fft_maxi_valid && fft_maxi_rdy;
     for (j=0; j<FSSR; j+=1) begin
-        _buf_a_wdata[0][j] <= fft_maxi_data[j*DSZ +: DSZ];
-        _buf_b_wdata[0][j] <= fft_maxi_data[j*DSZ +: DSZ];
-        buf_a_wdata[j] <= _buf_a_wdata[WRITE_DELAY][j];
-        buf_b_wdata[j] <= _buf_b_wdata[WRITE_DELAY][j];
+        buf_a_wdata[j] <= fft_maxi_data[j*DSZ +: DSZ];
+        buf_b_wdata[j] <= fft_maxi_data[j*DSZ +: DSZ];
     end
-    for (i=0; i<WRITE_DELAY; i+=1) begin
-        _buf_a_we[i+1] <= _buf_a_we[i];
-        _buf_b_we[i+1] <= _buf_b_we[i];
-        _buf_a_waddr[i+1] <= _buf_a_waddr[i];
-        _buf_b_waddr[i+1] <= _buf_b_waddr[i];
-        for (j=0; j<FSSR; j+=1) begin
-            _buf_a_wdata[i+1][j] <= _buf_a_wdata[i][j];
-            _buf_b_wdata[i+1][j] <= _buf_b_wdata[i][j];
-        end
-    end
-    buf_a_waddr <= _buf_a_waddr[WRITE_DELAY];
-    buf_b_waddr <= _buf_b_waddr[WRITE_DELAY];
-    buf_a_we <= _buf_a_we[WRITE_DELAY];
-    buf_b_we <= _buf_b_we[WRITE_DELAY];
 end
 
 always @(posedge clk_i) begin
-    _hist_a_waddr[0] <= fft_hist_index;
-    _hist_b_waddr[0] <= fft_hist_index;
-    _hist_a_wdata[0] <= fft_peak_index_up;
-    _hist_b_wdata[0] <= fft_peak_index_down;
-    _hist_a_we[0] <= peak_up && peak_ready_trig;
-    _hist_b_we[0] <= !peak_up && peak_ready_trig;
-    for (i=0; i<WRITE_DELAY; i+=1) begin
-        _hist_a_waddr[i+1] <= _hist_a_waddr[i];
-        _hist_b_waddr[i+1] <= _hist_b_waddr[i];
-        _hist_a_wdata[i+1] <= _hist_a_wdata[i];
-        _hist_b_wdata[i+1] <= _hist_b_wdata[i];
-        _hist_a_we[i+1] <= _hist_a_we[i];
-        _hist_b_we[i+1] <= _hist_b_we[i];
-    end
+    hist_a_waddr <=  fft_hist_index;
+    hist_b_waddr <=  fft_hist_index;
+    hist_a_wdata <=  fft_peak_index_up;
+    hist_b_wdata <=  fft_peak_index_down;
+    hist_a_we    <=  peak_up && peak_ready_trig;
+    hist_b_we    <= !peak_up && peak_ready_trig;
 end
 
 logic  [ ASZ-1:0] data_i;
