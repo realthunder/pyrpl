@@ -34,11 +34,11 @@ connect_bd_net [get_bd_pins const_start/dout] [get_bd_pins peak_detector_0/ap_st
 create_bd_port -dir O ap_done
 connect_bd_net [get_bd_ports ap_done] [get_bd_pins peak_detector_0/ap_done]
 
-# Control ports (ap_none → direct wires; widths match HLS defaults DSZ=28, SSZ=14)
+# Control ports (ap_none → direct wires; widths match HLS defaults DSZ=16, SSZ=14)
 create_bd_port -dir I -from 15 -to 0 threshold_k_sq
 create_bd_port -dir I -from 13 -to 0 start_index
 create_bd_port -dir I -from 13 -to 0 end_index
-create_bd_port -dir I -from 27 -to 0 data_min
+create_bd_port -dir I -from [expr {$fft_width - 1}] -to 0 data_min
 create_bd_port -dir I -from  3 -to 0 nfft
 
 connect_bd_net [get_bd_ports threshold_k_sq] [get_bd_pins peak_detector_0/threshold_k_sq]

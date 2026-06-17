@@ -783,7 +783,7 @@ end else begin
 end
 
 // FSSR*DSZ-wide FIFO between FFT output and HLS peak detector.
-// FSSR*DSZ must be a multiple of 8; satisfied for even FSSR when DSZ=28.
+// FSSR*DSZ must be a multiple of 8; satisfied for even FSSR and DSZ=16.
 localparam PEAK_IN_WIDTH = FSSR * DSZ;
 
 logic [PEAK_IN_WIDTH-1:0] peak_in_data;

@@ -52,9 +52,6 @@
 #ifndef TWID_W
 #define TWID_W 18
 #endif
-#ifndef DSZ
-#define DSZ 28
-#endif
 #ifndef SUB_NFFT
 #define SUB_NFFT (FFT_NFFT - 1)   // default assumes SSR=2
 #endif
@@ -68,6 +65,30 @@
 
 #ifndef CORDIC_ITER
 #define CORDIC_ITER 16
+#endif
+
+// Scaling mode: 0=unscaled (default, ~140 dB dynamic range), 1=scaled (~72 dB)
+#ifndef FFT_SCALED
+#define FFT_SCALED 0
+#endif
+
+// xfft output I/Q width per component:
+//   scaled:   INT_W bits (÷2 per butterfly stage keeps output in input range)
+//   unscaled: INT_W+SUB_NFFT bits (accumulates over 2^SUB_NFFT points, no discarding)
+// XFFT_IQ_BYTES is the byte-rounded slot width; XCMPX_W is the full complex AXIS width.
+#if FFT_SCALED
+#define XFFT_IQ_W   INT_W
+#else
+#define XFFT_IQ_W   (INT_W + SUB_NFFT)
+#endif
+#define XFFT_IQ_BYTES ((XFFT_IQ_W + 7) / 8)
+#define XCMPX_W       (XFFT_IQ_BYTES * 8 * 2)
+
+// DSZ: magnitude output bits, rounded up to a multiple of 4 so that
+// FSSR*DSZ is a multiple of 8 (byte-aligned AXI-S) for even FSSR values.
+// scaled→16 (XFFT_IQ_W=16), unscaled→28 (XFFT_IQ_W=27 rounded up).
+#ifndef DSZ
+#define DSZ (((XFFT_IQ_W + 3) / 4) * 4)
 #endif
 
 #define FFT_SIZE  (1 << FFT_NFFT)
@@ -104,6 +125,7 @@ typedef ap_axiu<IN_W,   0, 0, 0>  axis_in_t;
 typedef ap_axiu<CMPX_W, 0, 0, 0>  axis_cmpx_t;
 typedef ap_axiu<CFG_W,  0, 0, 0>  axis_cfg_t;
 typedef ap_axiu<OUT_W,  0, 0, 0>  axis_out_t;
+typedef ap_axiu<XCMPX_W, 0, 0, 0> axis_xcmpx_t;  // xfft→post: wider in unscaled mode
 
 // -------------------------------------------------------------------------
 // Helpers
@@ -130,9 +152,9 @@ static void cmul(intern_t a_re, intern_t a_im,
 #ifndef USE_APPROXIMATION
 // INT_W+2 integer bits (headroom for CORDIC growth factor ~1.647×),
 // 12 fractional bits → gain constant 0.607252935 represented to <0.02% error.
-typedef ap_fixed<INT_W+14, INT_W+2> cord_t;
+typedef ap_fixed<XFFT_IQ_W+14, XFFT_IQ_W+2> cord_t;
 
-static cord_t cordic_magnitude_raw(ap_int<INT_W> re, ap_int<INT_W> im)
+static cord_t cordic_magnitude_raw(ap_int<XFFT_IQ_BYTES*8> re, ap_int<XFFT_IQ_BYTES*8> im)
 {
 #pragma HLS INLINE
     cord_t x = (re < 0) ? cord_t(-re) : cord_t(re);
@@ -157,26 +179,26 @@ static cord_t cordic_magnitude_raw(ap_int<INT_W> re, ap_int<INT_W> im)
 #endif
 
 // Magnitude dispatcher: CORDIC (default) or alpha-max-beta-min approximation.
-// Output: DSZ-bit unsigned magnitude scaled to fill the output range.
-static ap_uint<DSZ> magnitude(ap_int<INT_W> re, ap_int<INT_W> im)
+// Output: DSZ-bit magnitude. unscaled: max ~2^24 from 14-bit ADC; scaled: ~2^15.
+static ap_uint<DSZ> magnitude(ap_int<XFFT_IQ_BYTES*8> re, ap_int<XFFT_IQ_BYTES*8> im)
 {
 #pragma HLS INLINE
 #ifdef USE_APPROXIMATION
-    ap_uint<INT_W> abs_re = re < 0 ? (ap_uint<INT_W>)(-re) : (ap_uint<INT_W>)(re);
-    ap_uint<INT_W> abs_im = im < 0 ? (ap_uint<INT_W>)(-im) : (ap_uint<INT_W>)(im);
-    ap_uint<INT_W> max_v  = abs_re > abs_im ? abs_re : abs_im;
-    ap_uint<INT_W> min_v  = abs_re > abs_im ? abs_im : abs_re;
+    ap_uint<XFFT_IQ_W> abs_re = re < 0 ? (ap_uint<XFFT_IQ_W>)(-re) : (ap_uint<XFFT_IQ_W>)(re);
+    ap_uint<XFFT_IQ_W> abs_im = im < 0 ? (ap_uint<XFFT_IQ_W>)(-im) : (ap_uint<XFFT_IQ_W>)(im);
+    ap_uint<XFFT_IQ_W> max_v  = abs_re > abs_im ? abs_re : abs_im;
+    ap_uint<XFFT_IQ_W> min_v  = abs_re > abs_im ? abs_im : abs_re;
     // Two-stage registered path: BIND_OP latency=1 breaks the CARRY4-chain
     // routing path that caused pll_ser_clk WNS −0.720 ns without this.
-    ap_uint<INT_W + 1> min_approx = (ap_uint<INT_W+1>)(min_v >> 2)
-                                  + (ap_uint<INT_W+1>)(min_v >> 3);
+    ap_uint<XFFT_IQ_W + 1> min_approx = (ap_uint<XFFT_IQ_W+1>)(min_v >> 2)
+                                       + (ap_uint<XFFT_IQ_W+1>)(min_v >> 3);
 #pragma HLS BIND_OP variable=min_approx op=add latency=1
-    ap_uint<INT_W + 2> mag = (ap_uint<INT_W+2>)max_v
-                           + (ap_uint<INT_W+2>)min_approx;
-    return (ap_uint<DSZ>)mag << (DSZ - INT_W - 2);
+    ap_uint<XFFT_IQ_W + 2> mag = (ap_uint<XFFT_IQ_W+2>)max_v
+                                + (ap_uint<XFFT_IQ_W+2>)min_approx;
+    return (ap_uint<DSZ>)mag;
 #else
-    ap_uint<INT_W + 2> mag = (ap_uint<INT_W+2>)cordic_magnitude_raw(re, im);
-    return (ap_uint<DSZ>)mag << (DSZ - INT_W - 2);
+    ap_uint<XFFT_IQ_W + 2> mag = (ap_uint<XFFT_IQ_W+2>)cordic_magnitude_raw(re, im);
+    return (ap_uint<DSZ>)mag;
 #endif
 }
 
@@ -557,8 +579,8 @@ void fft_ip_ssr_pre(
 
 #if FFT_SSR == 1
 void fft_ip_ssr_post(
-    hls::stream<axis_cmpx_t> &s_axis_data0,
-    hls::stream<axis_out_t>  &m_axis
+    hls::stream<axis_xcmpx_t> &s_axis_data0,
+    hls::stream<axis_out_t>   &m_axis
 ) {
 #pragma HLS INTERFACE axis         port=s_axis_data0
 #pragma HLS INTERFACE axis         port=m_axis
@@ -567,9 +589,9 @@ void fft_ip_ssr_post(
     POST:
     for (int k = 0; k < FFT_SIZE; k++) {
 #pragma HLS PIPELINE II=1
-        axis_cmpx_t p0 = s_axis_data0.read();
-        ap_int<INT_W> re = p0.data.range(INT_W-1,   0);
-        ap_int<INT_W> im = p0.data.range(CMPX_W-1, INT_W);
+        axis_xcmpx_t p0 = s_axis_data0.read();
+        ap_int<XFFT_IQ_BYTES*8> re = p0.data.range(XFFT_IQ_BYTES*8-1,          0);
+        ap_int<XFFT_IQ_BYTES*8> im = p0.data.range(XCMPX_W-1, XFFT_IQ_BYTES*8);
 
         axis_out_t out;
         out.data.range(DSZ-1, 0) = magnitude(re, im);
@@ -580,9 +602,9 @@ void fft_ip_ssr_post(
 
 #elif FFT_SSR == 2
 void fft_ip_ssr_post(
-    hls::stream<axis_cmpx_t> &s_axis_data0,
-    hls::stream<axis_cmpx_t> &s_axis_data1,
-    hls::stream<axis_out_t>  &m_axis
+    hls::stream<axis_xcmpx_t> &s_axis_data0,
+    hls::stream<axis_xcmpx_t> &s_axis_data1,
+    hls::stream<axis_out_t>   &m_axis
 ) {
 #pragma HLS INTERFACE axis         port=s_axis_data0
 #pragma HLS INTERFACE axis         port=s_axis_data1
@@ -594,14 +616,14 @@ void fft_ip_ssr_post(
     POST:
     for (int k = 0; k < SUB_SIZE; k++) {
 #pragma HLS PIPELINE II=1
-        axis_cmpx_t p0 = s_axis_data0.read();
-        axis_cmpx_t p1 = s_axis_data1.read();
+        axis_xcmpx_t p0 = s_axis_data0.read();
+        axis_xcmpx_t p1 = s_axis_data1.read();
 
         // Extract signed components from raw bits
-        ap_int<INT_W> re0 = p0.data.range(INT_W-1,   0);
-        ap_int<INT_W> im0 = p0.data.range(CMPX_W-1,  INT_W);
-        ap_int<INT_W> re1 = p1.data.range(INT_W-1,   0);
-        ap_int<INT_W> im1 = p1.data.range(CMPX_W-1,  INT_W);
+        ap_int<XFFT_IQ_BYTES*8> re0 = p0.data.range(XFFT_IQ_BYTES*8-1,          0);
+        ap_int<XFFT_IQ_BYTES*8> im0 = p0.data.range(XCMPX_W-1, XFFT_IQ_BYTES*8);
+        ap_int<XFFT_IQ_BYTES*8> re1 = p1.data.range(XFFT_IQ_BYTES*8-1,          0);
+        ap_int<XFFT_IQ_BYTES*8> im1 = p1.data.range(XCMPX_W-1, XFFT_IQ_BYTES*8);
 
         axis_out_t out;
         out.data.range(DSZ-1,     0)   = magnitude(re0, im0);
@@ -613,11 +635,11 @@ void fft_ip_ssr_post(
 
 #elif FFT_SSR == 4
 void fft_ip_ssr_post(
-    hls::stream<axis_cmpx_t> &s_axis_data0,
-    hls::stream<axis_cmpx_t> &s_axis_data1,
-    hls::stream<axis_cmpx_t> &s_axis_data2,
-    hls::stream<axis_cmpx_t> &s_axis_data3,
-    hls::stream<axis_out_t>  &m_axis
+    hls::stream<axis_xcmpx_t> &s_axis_data0,
+    hls::stream<axis_xcmpx_t> &s_axis_data1,
+    hls::stream<axis_xcmpx_t> &s_axis_data2,
+    hls::stream<axis_xcmpx_t> &s_axis_data3,
+    hls::stream<axis_out_t>   &m_axis
 ) {
 #pragma HLS INTERFACE axis         port=s_axis_data0
 #pragma HLS INTERFACE axis         port=s_axis_data1
@@ -631,15 +653,15 @@ void fft_ip_ssr_post(
     POST:
     for (int k = 0; k < SUB_SIZE; k++) {
 #pragma HLS PIPELINE II=1
-        axis_cmpx_t p0 = s_axis_data0.read();
-        axis_cmpx_t p1 = s_axis_data1.read();
-        axis_cmpx_t p2 = s_axis_data2.read();
-        axis_cmpx_t p3 = s_axis_data3.read();
+        axis_xcmpx_t p0 = s_axis_data0.read();
+        axis_xcmpx_t p1 = s_axis_data1.read();
+        axis_xcmpx_t p2 = s_axis_data2.read();
+        axis_xcmpx_t p3 = s_axis_data3.read();
 
-        ap_int<INT_W> re0 = p0.data.range(INT_W-1,   0), im0 = p0.data.range(CMPX_W-1, INT_W);
-        ap_int<INT_W> re1 = p1.data.range(INT_W-1,   0), im1 = p1.data.range(CMPX_W-1, INT_W);
-        ap_int<INT_W> re2 = p2.data.range(INT_W-1,   0), im2 = p2.data.range(CMPX_W-1, INT_W);
-        ap_int<INT_W> re3 = p3.data.range(INT_W-1,   0), im3 = p3.data.range(CMPX_W-1, INT_W);
+        ap_int<XFFT_IQ_BYTES*8> re0 = p0.data.range(XFFT_IQ_BYTES*8-1, 0), im0 = p0.data.range(XCMPX_W-1, XFFT_IQ_BYTES*8);
+        ap_int<XFFT_IQ_BYTES*8> re1 = p1.data.range(XFFT_IQ_BYTES*8-1, 0), im1 = p1.data.range(XCMPX_W-1, XFFT_IQ_BYTES*8);
+        ap_int<XFFT_IQ_BYTES*8> re2 = p2.data.range(XFFT_IQ_BYTES*8-1, 0), im2 = p2.data.range(XCMPX_W-1, XFFT_IQ_BYTES*8);
+        ap_int<XFFT_IQ_BYTES*8> re3 = p3.data.range(XFFT_IQ_BYTES*8-1, 0), im3 = p3.data.range(XCMPX_W-1, XFFT_IQ_BYTES*8);
 
         axis_out_t out;
         out.data.range(  DSZ-1,     0) = magnitude(re0, im0);

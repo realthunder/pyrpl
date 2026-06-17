@@ -82,7 +82,7 @@ add_files ../hls/fft_ip_ssr.cpp \
              -DASZ=14 \
              -DINT_W=16 \
              -DTWID_W=18 \
-             -DDSZ=28 \
+             -DDSZ=16 \
              -DSUB_NFFT=$sub_nfft \
              -DCFG_W=$cfg_w \
              -DCFG_WORD=$cfg_word"

@@ -20,6 +20,8 @@ proc getparam {name default} {
 set part           [getparam part           xc7z020clg400-1]
 set fft_ssr        [getparam fft_ssr        2]
 set fft_nfft       [getparam fft_nfft       12]
+set fft_width      [getparam fft_width      28]
+set fft_scaled     [getparam fft_scaled     0]
 
 set ssr_bits  [expr {int(log($fft_ssr) / log(2) + 0.5)}]
 set sub_nfft  [expr {$fft_nfft - $ssr_bits}]
@@ -28,7 +30,8 @@ set stages_bram [expr {$sub_nfft > 9 ? $sub_nfft - 9 : 0}]
 
 # AXIS widths (bytes, rounded up)
 set in_bytes  [expr {($fft_ssr * 14 + 7) / 8}]   ;# ASZ=14
-set out_bytes [expr {($fft_ssr * 28 + 7) / 8}]   ;# DSZ=28
+set out_bytes    [expr {($fft_ssr * $fft_width + 7) / 8}]   ;# DSZ=$fft_width
+set scaling_opt  [expr {$fft_scaled ? "scaled" : "unscaled"}]
 set cmpx_bytes 4                                  ;# 2*INT_W/8 = 32/8 for INT_W=16
 
 # ---- Ensure a project exists (create temporary one when run standalone) --
@@ -97,7 +100,7 @@ for {set ch 0} {$ch < $fft_ssr} {incr ch} {
         CONFIG.phase_factor_width                                   {18} \
         CONFIG.rounding_modes                                       {convergent_rounding} \
         CONFIG.run_time_configurable_transform_length               {false} \
-        CONFIG.scaling_options                                      {scaled} \
+        CONFIG.scaling_options                                      $scaling_opt \
         CONFIG.target_clock_frequency                               {250} \
         CONFIG.target_data_throughput                               {250} \
         CONFIG.throttle_scheme                                      {nonrealtime} \
