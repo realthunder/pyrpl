@@ -165,6 +165,7 @@ synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivale
     -generic FFT_SSR=$fft_ssr \
     -generic FFT_WIDTH=$fft_width \
     -generic FFT_IMPL=$fft_impl \
+    -verilog_define STORE_HIST \
 
 # set debug_nets {asg_trig_n asg_trig2_p fft_dvalid fft_a_enable fft_b_enable}
 # set debug_nets {}
