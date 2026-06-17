@@ -262,6 +262,40 @@ set_false_path -hold -from [get_clocks adc_clk] -to [get_clocks pll_adc_clk]
 # set_false_path -from [get_clocks dac_clk_out] -to [get_clocks dac_2clk_out]
 # set_false_path -from [get_clocks dac_clk_out] -to [get_clocks dac_2ph_out]
 
+############################################################################
+# Floorplan: pre_0 b_1_reg_490 near its BRAM                              #
+############################################################################
+# pre_0/b_1_reg_490_reg drives buf_first_0 BRAM ENARDEN through a 4-LUT
+# chain.  Without constraints the register lands 20+ CLB columns right of
+# the BRAM, producing 2.958 ns routing (73% of a 4.045 ns path, WNS -0.574 ns).
+# Fix: tiny 6×6 pblocks (36 sites, 11 FFs → 30% density) adjacent to each
+# channel's BRAM column.  RAMB18_X2 (fft_b) ≈ SLICE_X24-30;
+# RAMB18_X3 (fft_a) ≈ SLICE_X36-42.  These micro-pblocks displace nothing.
+# pll_ser_clk: icmp_ln890 comparison path in peak_detector (pll_ser_clk WNS -0.544 ns).
+# CARRY4 comparison cells land at Y44-53 (fft_b) / Y41-43 (fft_a), forming a V-shaped
+# route to the phi_ln48 source (Y58/Y49) and icmp_reg destination (Y60/Y51-54).
+# Micro-pblocks (20-30 cells in 96-120 sites) pull CARRY4 cells into the band
+# between the source and destination, eliminating the 14-16 row routing detour.
+create_pblock pb_icmp_fft_b
+add_cells_to_pblock [get_pblocks pb_icmp_fft_b] \
+    [get_cells -hier -filter {NAME =~ i_scope/fft_b/pd_i/peak_detector_bd_i/peak_detector_0/inst/icmp_ln890_1_reg_1221*}]
+resize_pblock [get_pblocks pb_icmp_fft_b] -add {SLICE_X47Y56:SLICE_X60Y65}
+
+create_pblock pb_icmp_fft_a
+add_cells_to_pblock [get_pblocks pb_icmp_fft_a] \
+    [get_cells -hier -filter {NAME =~ i_scope/fft_a/pd_i/peak_detector_bd_i/peak_detector_0/inst/icmp_ln890_1_reg_1221*}]
+resize_pblock [get_pblocks pb_icmp_fft_a] -add {SLICE_X97Y45:SLICE_X110Y56}
+
+create_pblock pb_b1reg_fft_b
+add_cells_to_pblock [get_pblocks pb_b1reg_fft_b] \
+    [get_cells -hier -filter {NAME =~ i_scope/fft_b/gen_fft_ip_ssr.fft_i/fft_ip_ssr_bd_i/pre_0/inst/b_1_reg_490_reg[*]}]
+resize_pblock [get_pblocks pb_b1reg_fft_b] -add {SLICE_X24Y16:SLICE_X30Y22}
+
+create_pblock pb_b1reg_fft_a
+add_cells_to_pblock [get_pblocks pb_b1reg_fft_a] \
+    [get_cells -hier -filter {NAME =~ i_scope/fft_a/gen_fft_ip_ssr.fft_i/fft_ip_ssr_bd_i/pre_0/inst/b_1_reg_490_reg[*]}]
+resize_pblock [get_pblocks pb_b1reg_fft_a] -add {SLICE_X36Y28:SLICE_X42Y34}
+
 # set_false_path -from [filter [all_fanout -from [get_ports clka] \
 #     -flat -endpoints_only] {IS_LEAF}] -through [get_pins -of_objects \
 #     [get_cells -hier * -filter {PRIMITIVE_SUBGROUP==LUTRAM || \

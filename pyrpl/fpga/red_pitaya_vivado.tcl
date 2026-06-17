@@ -253,6 +253,15 @@ if {[llength $pd_en_pins] > 0} {
     phys_opt_design -force_replication_on_nets $pd_en_nets
 }
 
+# Force replication of i_dsp/sum1_reg (pll_adc_clk).
+# sum1_reg feeds a 12-LUT read-data mux tree to sys_rdata_reg (6.111 ns routing).
+# Replication plants a copy near the mux sinks to cut the long route.
+set sum1_pins [get_pins -hier -quiet -filter {NAME =~ i_dsp/sum1_reg*/Q}]
+if {[llength $sum1_pins] > 0} {
+    set sum1_nets [get_nets -of_objects $sum1_pins]
+    phys_opt_design -force_replication_on_nets $sum1_nets
+}
+
 write_checkpoint         -force   $path_out/post_place
 report_timing_summary    -file    $path_out/post_place_timing_summary.rpt
 #write_hwdef              -file    $path_sdk/red_pitaya.hwdef
