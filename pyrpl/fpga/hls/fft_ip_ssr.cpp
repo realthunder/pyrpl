@@ -195,10 +195,10 @@ static ap_uint<DSZ> magnitude(ap_int<XFFT_IQ_BYTES*8> re, ap_int<XFFT_IQ_BYTES*8
 #pragma HLS BIND_OP variable=min_approx op=add latency=1
     ap_uint<XFFT_IQ_W + 2> mag = (ap_uint<XFFT_IQ_W+2>)max_v
                                 + (ap_uint<XFFT_IQ_W+2>)min_approx;
-    return (ap_uint<DSZ>)mag;
+    return (mag >> DSZ) ? ap_uint<DSZ>(-1) : ap_uint<DSZ>(mag);
 #else
     ap_uint<XFFT_IQ_W + 2> mag = (ap_uint<XFFT_IQ_W+2>)cordic_magnitude_raw(re, im);
-    return (ap_uint<DSZ>)mag;
+    return (mag >> DSZ) ? ap_uint<DSZ>(-1) : ap_uint<DSZ>(mag);
 #endif
 }
 

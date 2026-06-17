@@ -35,18 +35,18 @@ set fft_ssr        [expr {[info exists env(FFT_SSR)]        ? $env(FFT_SSR)     
 set fft_clk_period [expr {[info exists env(FFT_CLK_PERIOD)] ? $env(FFT_CLK_PERIOD) : 4.0}]
 # FFT_IMPL: 1=plain LogiCORE, 2=HLS SSR (Vitis library), 3=IP SSR (LogiCORE sub-FFTs, natural order)
 set fft_impl       [expr {[info exists env(FFT_IMPL)]       ? $env(FFT_IMPL)       : 3}]
-# FFT_SCALED: 0=unscaled (default, ~140 dB dynamic range), 1=scaled (~72 dB, smaller hardware)
-set fft_scaled     [expr {[info exists env(FFT_SCALED)]     ? $env(FFT_SCALED)     : 0}]
+# FFT_SCALED: 0=unscaled 28-bit (~140 dB, needs large device), 1=scaled 16-bit (~72 dB),
+#             2=saturating 20-bit (default, fits xc7z020, ~90 dB small-signal detection)
+set fft_scaled     [expr {[info exists env(FFT_SCALED)]     ? $env(FFT_SCALED)     : 2}]
 set fft_use_approx [expr {[info exists env(FFT_USE_APPROX)] ? $env(FFT_USE_APPROX) : 1}]
-# fft_width = DSZ (magnitude output bits).  Derived from mode when FFT_WIDTH not set:
-#   unscaled: asz + sub_nfft rounded up to multiple of 4 (= 28 for default params)
-#   scaled:   16
+# fft_width = DSZ (magnitude output bits). Override with FFT_WIDTH env var if needed.
 if {[info exists env(FFT_WIDTH)]} {
     set fft_width $env(FFT_WIDTH)
 } else {
     set ssr_bits_ [expr {int(log($fft_ssr) / log(2) + 0.5)}]
     set sub_nfft_ [expr {$fft_nfft - $ssr_bits_}]
-    set fft_width [expr {$fft_scaled ? 16 : ((($sub_nfft_ + 14 + 3) / 4) * 4)}]
+    # 0→28 full unscaled, 1→16 scaled, 2→20 saturating unscaled
+    set fft_width [expr {$fft_scaled == 1 ? 16 : ($fft_scaled == 2 ? 20 : (($sub_nfft_ + 14 + 3) / 4 * 4))}]
 }
 
 if {[llength $argv] > 1 && [lindex $argv 0] == "alinx"} {
