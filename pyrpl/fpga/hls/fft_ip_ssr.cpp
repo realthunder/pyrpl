@@ -66,6 +66,10 @@
 #define CFG_WORD 0xD57
 #endif
 
+#ifndef CORDIC_ITER
+#define CORDIC_ITER 16
+#endif
+
 #define FFT_SIZE  (1 << FFT_NFFT)
 #define SUB_SIZE  (1 << SUB_NFFT)
 
@@ -119,28 +123,61 @@ static void cmul(intern_t a_re, intern_t a_im,
     r_im = (intern_t)m_im;
 }
 
-// Alpha-max-beta-min magnitude approximation (mag ≈ max + 0.375*min).
-// Input: raw signed 16-bit from xfft output.
-// Output: DSZ-bit unsigned magnitude, scaled to fill the output range.
+// CORDIC vectoring-mode magnitude (more accurate, ~0.6% relative error).
+// Adapted from fft_ssr.cpp cordic_mag; inputs are raw xfft INT_W-bit integers.
+// Internal type: INT_W+2 integer bits + 6 fractional bits for gain precision.
+// Compile with -D USE_APPROXIMATION to use the faster alpha-max-beta-min path.
+#ifndef USE_APPROXIMATION
+// INT_W+2 integer bits (headroom for CORDIC growth factor ~1.647×),
+// 12 fractional bits → gain constant 0.607252935 represented to <0.02% error.
+typedef ap_fixed<INT_W+14, INT_W+2> cord_t;
+
+static cord_t cordic_magnitude_raw(ap_int<INT_W> re, ap_int<INT_W> im)
+{
+#pragma HLS INLINE
+    cord_t x = (re < 0) ? cord_t(-re) : cord_t(re);
+    cord_t y = (im < 0) ? cord_t(-im) : cord_t(im);
+
+    const cord_t cordic_gain = 0.607252935;
+
+    for (int i = 0; i < CORDIC_ITER; i++) {
+#pragma HLS PIPELINE II=1
+        cord_t x_shift = x >> i;
+        cord_t y_shift = y >> i;
+        if (y > 0) {
+            x = x + y_shift;
+            y = y - x_shift;
+        } else {
+            x = x - y_shift;
+            y = y + x_shift;
+        }
+    }
+    return x * cordic_gain;
+}
+#endif
+
+// Magnitude dispatcher: CORDIC (default) or alpha-max-beta-min approximation.
+// Output: DSZ-bit unsigned magnitude scaled to fill the output range.
 static ap_uint<DSZ> magnitude(ap_int<INT_W> re, ap_int<INT_W> im)
 {
 #pragma HLS INLINE
+#ifdef USE_APPROXIMATION
     ap_uint<INT_W> abs_re = re < 0 ? (ap_uint<INT_W>)(-re) : (ap_uint<INT_W>)(re);
     ap_uint<INT_W> abs_im = im < 0 ? (ap_uint<INT_W>)(-im) : (ap_uint<INT_W>)(im);
     ap_uint<INT_W> max_v  = abs_re > abs_im ? abs_re : abs_im;
     ap_uint<INT_W> min_v  = abs_re > abs_im ? abs_im : abs_re;
-    // Stage 1: add the two fractional terms into one registered intermediate.
-    // BIND_OP latency=1 inserts a pipeline register after this add, breaking
-    // the CARRY4-chain → regslice-payload routing path (WNS −0.720 ns on
-    // pll_ser_clk without this).  The POST loop latency increases by 1 cycle
-    // (II=1 throughput is unchanged).
+    // Two-stage registered path: BIND_OP latency=1 breaks the CARRY4-chain
+    // routing path that caused pll_ser_clk WNS −0.720 ns without this.
     ap_uint<INT_W + 1> min_approx = (ap_uint<INT_W+1>)(min_v >> 2)
                                   + (ap_uint<INT_W+1>)(min_v >> 3);
 #pragma HLS BIND_OP variable=min_approx op=add latency=1
-    // Stage 2: final add from registered min_approx (shorter critical path).
     ap_uint<INT_W + 2> mag = (ap_uint<INT_W+2>)max_v
                            + (ap_uint<INT_W+2>)min_approx;
     return (ap_uint<DSZ>)mag << (DSZ - INT_W - 2);
+#else
+    ap_uint<INT_W + 2> mag = (ap_uint<INT_W+2>)cordic_magnitude_raw(re, im);
+    return (ap_uint<DSZ>)mag << (DSZ - INT_W - 2);
+#endif
 }
 
 // -------------------------------------------------------------------------

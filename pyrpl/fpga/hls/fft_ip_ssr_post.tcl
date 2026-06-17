@@ -13,6 +13,10 @@ set part           [getparam part           xc7z020clg400-1]
 set fft_ssr        [getparam fft_ssr        2]
 set fft_nfft       [getparam fft_nfft       12]
 set fft_clk_period [getparam fft_clk_period 4.0]
+# FFT_USE_APPROX=1: use fast alpha-max-beta-min (matches old behaviour).
+# Default (0): CORDIC vectoring mode, same convention as fft_ssr.cpp.
+set fft_use_approx [getparam fft_use_approx 0]
+set approx_flag    [expr {$fft_use_approx ? "-DUSE_APPROXIMATION" : ""}]
 
 set ssr_bits [expr {int(log($fft_ssr) / log(2) + 0.5)}]
 set sub_nfft [expr {$fft_nfft - $ssr_bits}]
@@ -58,7 +62,8 @@ add_files ../hls/fft_ip_ssr.cpp \
              -DDSZ=28 \
              -DSUB_NFFT=$sub_nfft \
              -DCFG_W=$cfg_w \
-             -DCFG_WORD=$cfg_word"
+             -DCFG_WORD=$cfg_word \
+             $approx_flag"
 
 set_top fft_ip_ssr_post
 
