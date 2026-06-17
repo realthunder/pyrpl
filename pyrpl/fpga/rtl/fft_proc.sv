@@ -58,12 +58,8 @@ module fft_proc #(
 
 localparam SSR_BITS = $clog2(FSSR);
 
-localparam ADDR_A_DELAY = 2;
-localparam ADDR_B_DELAY = 2;
-localparam READ_A_DELAY = READ_DELAY - ADDR_A_DELAY-4;
-localparam READ_B_DELAY = READ_DELAY - ADDR_B_DELAY-4;
-localparam WRITE_DELAY = 5;
-localparam PEAK_INPUT_DELAY = 5;
+localparam READ_A_DELAY = READ_DELAY - 3;
+localparam READ_B_DELAY = READ_DELAY - 3;
 
 logic           fft_in_halt, fft_out_halt, fft_status_halt;
 logic           fft_frame_start, fft_tlast_missing, fft_tlast_unexp;
@@ -133,44 +129,9 @@ logic               hist_b_we   ;
 logic [ HSZ-1: 0]   hist_a_raddr;
 logic [ HSZ-1: 0]   hist_b_raddr;
 
-(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _buf_a_waddr  [0 : WRITE_DELAY];
-(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _buf_b_waddr  [0 : WRITE_DELAY];
-(* SHREG_EXTRACT = "no" *) logic [ DSZ-1: 0]   _buf_a_wdata  [0 : WRITE_DELAY] [0 : FSSR-1];
-(* SHREG_EXTRACT = "no" *) logic [ DSZ-1: 0]   _buf_b_wdata  [0 : WRITE_DELAY] [0 : FSSR-1];
-(* SHREG_EXTRACT = "no" *) logic               _buf_a_we     [0 : WRITE_DELAY];
-(* SHREG_EXTRACT = "no" *) logic               _buf_b_we     [0 : WRITE_DELAY];
-(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _buf_a_raddr  [0 :ADDR_A_DELAY];
-(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _buf_b_raddr  [0 :ADDR_B_DELAY];
-
-// assign buf_a_waddr = _buf_a_waddr[WRITE_DELAY];
-// assign buf_b_waddr = _buf_b_waddr[WRITE_DELAY];
-// assign buf_a_wdata = _buf_a_wdata[WRITE_DELAY];
-// assign buf_b_wdata = _buf_b_wdata[WRITE_DELAY];
-// assign buf_a_we    = _buf_a_we[WRITE_DELAY];
-// assign buf_b_we    = _buf_b_we[WRITE_DELAY];
-// assign buf_a_raddr = _buf_a_raddr[ADDR_A_DELAY];
-// assign buf_b_raddr = _buf_b_raddr[ADDR_A_DELAY];
-
-(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _hist_a_waddr [0 : WRITE_DELAY];
-(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _hist_b_waddr [0 : WRITE_DELAY];
-(* SHREG_EXTRACT = "no" *) logic [ DSZ-1: 0]   _hist_a_wdata [0 : WRITE_DELAY];
-(* SHREG_EXTRACT = "no" *) logic [ DSZ-1: 0]   _hist_b_wdata [0 : WRITE_DELAY];
-(* SHREG_EXTRACT = "no" *) logic               _hist_a_we    [0 : WRITE_DELAY];
-(* SHREG_EXTRACT = "no" *) logic               _hist_b_we    [0 : WRITE_DELAY];
-(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _hist_a_raddr [0 :ADDR_A_DELAY];
-(* SHREG_EXTRACT = "no" *) logic [ FSZ-1: 0]   _hist_b_raddr [0 :ADDR_B_DELAY];
-
-assign hist_a_waddr = _hist_a_waddr[WRITE_DELAY];
-assign hist_b_waddr = _hist_b_waddr[WRITE_DELAY];
-assign hist_a_wdata = _hist_a_wdata[WRITE_DELAY];
-assign hist_b_wdata = _hist_b_wdata[WRITE_DELAY];
-assign hist_a_we    = _hist_a_we[WRITE_DELAY];
-assign hist_b_we    = _hist_b_we[WRITE_DELAY];
-assign hist_a_raddr = _hist_a_raddr[ADDR_A_DELAY];
-assign hist_b_raddr = _hist_b_raddr[ADDR_A_DELAY];
 
 genvar s, k;
-integer i, j;
+integer j;
 
 // Bit-reversed read addresses: Vivado can't part-select the result of a
 // streaming operator ({<<{}}[...]), so we materialise the reversal explicitly.
@@ -188,64 +149,30 @@ logic [32-1:0] fft_end_idx;
 assign fft_end_idx = fft_length << SSR_BITS;
 
 always @(posedge adc_clk_i) begin
-    _hist_a_raddr[0] <= sys_addr_in[HSZ-1+2:2];
-    _hist_b_raddr[0] <= sys_addr_in[HSZ-1+2:2];
-    _buf_a_raddr[0] <= sys_addr_in[FSZ-1+3:3];
-    _buf_b_raddr[0] <= sys_addr_in[FSZ-1+3:3];
-    for (i=0; i<ADDR_A_DELAY; i+=1) begin
-        _buf_a_raddr[i+1] <= _buf_a_raddr[i];
-        _hist_a_raddr[i+1] <= _hist_a_raddr[i];
-    end
-    for (i=0; i<ADDR_B_DELAY; i+=1) begin
-        _buf_b_raddr[i+1] <= _buf_b_raddr[i];
-        _hist_b_raddr[i+1] <= _hist_b_raddr[i];
-    end
-    buf_a_raddr <= _buf_a_raddr[ADDR_A_DELAY];
-    buf_b_raddr <= _buf_b_raddr[ADDR_A_DELAY];
+    buf_a_raddr  <= sys_addr_in[FSZ-1+3:3];
+    buf_b_raddr  <= sys_addr_in[FSZ-1+3:3];
+    hist_a_raddr <= sys_addr_in[HSZ-1+2:2];
+    hist_b_raddr <= sys_addr_in[HSZ-1+2:2];
 end
 
 always @(posedge clk_i) begin
-    _buf_a_waddr[0] <= fft_wp;
-    _buf_b_waddr[0] <= fft_wp;
-    _buf_a_we[0] <= up_out && fft_maxi_valid && fft_maxi_rdy;
-    _buf_b_we[0] <= !up_out && fft_maxi_valid && fft_maxi_rdy;
+    buf_a_waddr <= fft_wp;
+    buf_b_waddr <= fft_wp;
+    buf_a_we    <=  up_out && fft_maxi_valid && fft_maxi_rdy;
+    buf_b_we    <= !up_out && fft_maxi_valid && fft_maxi_rdy;
     for (j=0; j<FSSR; j+=1) begin
-        _buf_a_wdata[0][j] <= fft_maxi_data[j*DSZ +: DSZ];
-        _buf_b_wdata[0][j] <= fft_maxi_data[j*DSZ +: DSZ];
-        buf_a_wdata[j] <= _buf_a_wdata[WRITE_DELAY][j];
-        buf_b_wdata[j] <= _buf_b_wdata[WRITE_DELAY][j];
+        buf_a_wdata[j] <= fft_maxi_data[j*DSZ +: DSZ];
+        buf_b_wdata[j] <= fft_maxi_data[j*DSZ +: DSZ];
     end
-    for (i=0; i<WRITE_DELAY; i+=1) begin
-        _buf_a_we[i+1] <= _buf_a_we[i];
-        _buf_b_we[i+1] <= _buf_b_we[i];
-        _buf_a_waddr[i+1] <= _buf_a_waddr[i];
-        _buf_b_waddr[i+1] <= _buf_b_waddr[i];
-        for (j=0; j<FSSR; j+=1) begin
-            _buf_a_wdata[i+1][j] <= _buf_a_wdata[i][j];
-            _buf_b_wdata[i+1][j] <= _buf_b_wdata[i][j];
-        end
-    end
-    buf_a_waddr <= _buf_a_waddr[WRITE_DELAY];
-    buf_b_waddr <= _buf_b_waddr[WRITE_DELAY];
-    buf_a_we <= _buf_a_we[WRITE_DELAY];
-    buf_b_we <= _buf_b_we[WRITE_DELAY];
 end
 
 always @(posedge clk_i) begin
-    _hist_a_waddr[0] <= fft_hist_index;
-    _hist_b_waddr[0] <= fft_hist_index;
-    _hist_a_wdata[0] <= fft_peak_index_up;
-    _hist_b_wdata[0] <= fft_peak_index_down;
-    _hist_a_we[0] <= peak_up && peak_ready_trig;
-    _hist_b_we[0] <= !peak_up && peak_ready_trig;
-    for (i=0; i<WRITE_DELAY; i+=1) begin
-        _hist_a_waddr[i+1] <= _hist_a_waddr[i];
-        _hist_b_waddr[i+1] <= _hist_b_waddr[i];
-        _hist_a_wdata[i+1] <= _hist_a_wdata[i];
-        _hist_b_wdata[i+1] <= _hist_b_wdata[i];
-        _hist_a_we[i+1] <= _hist_a_we[i];
-        _hist_b_we[i+1] <= _hist_b_we[i];
-    end
+    hist_a_waddr <=  fft_hist_index;
+    hist_b_waddr <=  fft_hist_index;
+    hist_a_wdata <=  fft_peak_index_up;
+    hist_b_wdata <=  fft_peak_index_down;
+    hist_a_we    <=  peak_up && peak_ready_trig;
+    hist_b_we    <= !peak_up && peak_ready_trig;
 end
 
 logic  [ ASZ-1:0] data_i;
@@ -683,7 +610,7 @@ logic  fft_we_one;
 logic  fft_we_length_plus_one;
 assign fft_saxi_last = fft_we_one || fft_we_length_plus_one;
 assign fft_saxi_valid = (!padding_done || fin_dvalid) && fin_rd;
-assign fft_data_i = fin_dout;
+assign fft_data_i = padding_done ? fin_dout: '0;
 
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin

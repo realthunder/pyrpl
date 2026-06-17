@@ -51,6 +51,12 @@ if [[ "${1:-}" == "remote" ]]; then
     exit $?
 fi
 
+if [[ "${1:-}" == "clean" ]]; then
+    echo "==> Removing HLS stamps: $ROOT/.hls/"
+    rm -f "$ROOT/.hls/"*.stamp "$ROOT/.hls/"*.params
+    shift
+fi
+
 TA_PATH=/opt/Xilinx
 export XILINX_VITIS=${TA_PATH}/Vitis/2020.1
 export XILINX_VIVADO=${TA_PATH}/Vivado/2020.1
