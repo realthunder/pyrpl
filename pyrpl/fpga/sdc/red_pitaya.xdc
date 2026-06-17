@@ -289,12 +289,12 @@ resize_pblock [get_pblocks pb_icmp_fft_a] -add {SLICE_X97Y45:SLICE_X110Y56}
 create_pblock pb_b1reg_fft_b
 add_cells_to_pblock [get_pblocks pb_b1reg_fft_b] \
     [get_cells -hier -filter {NAME =~ i_scope/fft_b/gen_fft_ip_ssr.fft_i/fft_ip_ssr_bd_i/pre_0/inst/b_1_reg_490_reg*}]
-resize_pblock [get_pblocks pb_b1reg_fft_b] -add {SLICE_X24Y16:SLICE_X32Y22}
+resize_pblock [get_pblocks pb_b1reg_fft_b] -add {SLICE_X20Y12:SLICE_X34Y26}
 
 create_pblock pb_b1reg_fft_a
 add_cells_to_pblock [get_pblocks pb_b1reg_fft_a] \
     [get_cells -hier -filter {NAME =~ i_scope/fft_a/gen_fft_ip_ssr.fft_i/fft_ip_ssr_bd_i/pre_0/inst/b_1_reg_490_reg*}]
-resize_pblock [get_pblocks pb_b1reg_fft_a] -add {SLICE_X36Y28:SLICE_X42Y34}
+resize_pblock [get_pblocks pb_b1reg_fft_a] -add {SLICE_X36Y26:SLICE_X56Y36}
 
 # set_false_path -from [filter [all_fanout -from [get_ports clka] \
 #     -flat -endpoints_only] {IS_LEAF}] -through [get_pins -of_objects \
