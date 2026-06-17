@@ -35,6 +35,11 @@ void peak_detector(
     sum_t    sum    = 0;
     sum_sq_t sum_sq = 0;
     count_t  count  = 0;
+    // Pipeline register: holds delta_sum_sq from the previous beat.
+    // sum_sq += delayed_delta_sq (two registered values, ~0.8 ns) keeps the
+    // sum_sq carry off the sample_valid critical path (28-bit DSZ comparators),
+    // reliably achieving II=1 vs the marginal 2.929 ns direct path.
+    sum_sq_t delayed_delta_sq = 0;
 
     // Peak state: peak_val is unscaled (raw DSZ bits) for the output register
     data_t  peak_val   = 0;
@@ -103,9 +108,13 @@ void peak_detector(
             }
         }
 
-        // Merge beat results into frame accumulators
+        // Merge beat results into frame accumulators.
+        // sum_sq uses the PREVIOUS beat's delta (registered) to keep the
+        // 28-bit sample_valid comparators off the 48-bit carry critical path.
         sum    += delta_sum;
-        sum_sq += delta_sum_sq;
+#pragma HLS BIND_OP variable=sum_sq op=add impl=dsp
+        sum_sq += delayed_delta_sq;
+        delayed_delta_sq = delta_sum_sq;
         count  += delta_count;
         beat_idx++;
         // Single comparison on the carried path: one icmp (~2.5 ns) fits in II=1.
@@ -117,6 +126,9 @@ void peak_detector(
             peak_valid = true;
         }
     }
+
+    // Flush the pipeline register: last beat's delta_sum_sq is still pending.
+    sum_sq += delayed_delta_sq;
 
     // --- Output stage: division/sqrt-free threshold check ---
     // Condition: (peak - mean) > k*stdev
