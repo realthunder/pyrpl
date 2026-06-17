@@ -129,11 +129,17 @@ static ap_uint<DSZ> magnitude(ap_int<INT_W> re, ap_int<INT_W> im)
     ap_uint<INT_W> abs_im = im < 0 ? (ap_uint<INT_W>)(-im) : (ap_uint<INT_W>)(im);
     ap_uint<INT_W> max_v  = abs_re > abs_im ? abs_re : abs_im;
     ap_uint<INT_W> min_v  = abs_re > abs_im ? abs_im : abs_re;
-    // mag = max + (min>>2) + (min>>3) — two shifts, no multiply
+    // Stage 1: add the two fractional terms into one registered intermediate.
+    // BIND_OP latency=1 inserts a pipeline register after this add, breaking
+    // the CARRY4-chain → regslice-payload routing path (WNS −0.720 ns on
+    // pll_ser_clk without this).  The POST loop latency increases by 1 cycle
+    // (II=1 throughput is unchanged).
+    ap_uint<INT_W + 1> min_approx = (ap_uint<INT_W+1>)(min_v >> 2)
+                                  + (ap_uint<INT_W+1>)(min_v >> 3);
+#pragma HLS BIND_OP variable=min_approx op=add latency=1
+    // Stage 2: final add from registered min_approx (shorter critical path).
     ap_uint<INT_W + 2> mag = (ap_uint<INT_W+2>)max_v
-                           + (ap_uint<INT_W+2>)(min_v >> 2)
-                           + (ap_uint<INT_W+2>)(min_v >> 3);
-    // Left-shift to fill the DSZ output range
+                           + (ap_uint<INT_W+2>)min_approx;
     return (ap_uint<DSZ>)mag << (DSZ - INT_W - 2);
 }
 

@@ -217,7 +217,7 @@ always @(posedge clk_i) begin
         stage2 <= {LOOPBITS{1'b0}};
         stage3 <= {LOOPBITS{1'b0}};
         stage4 <= {LOOPBITS{1'b0}};
-        //stage5 <= {LOOPBITS{1'b0}};
+        stage5 <= {LOOPBITS{1'b0}};
         //stage6 <= {LOOPBITS{1'b0}};
     end
     else begin
@@ -231,7 +231,7 @@ always @(posedge clk_i) begin
     stage2 <= stage1;
     stage3 <= stage2;
     stage4 <= stage3;
-    //stage5 <= stage4;
+    stage5 <= stage4;
     //stage6 <= stage5;
 end
 
@@ -269,12 +269,10 @@ wire signed [IIRSIGNALBITS-1:0] p_ay1_full;
 wire signed [IIRSIGNALBITS-1:0] p_ay2_full;
 
 
-// PIPELINE=2: the module registers the raw DSP product (stage 1) then the
-// saturated result (stage 2), breaking the DSP→CARRY4 critical path.
-// Outputs p_ay1_full / p_ay2_full / p_bx0_full / p_bx1_full are now
-// registered inside the modules and are valid 2 cycles after their inputs
-// are loaded — aligned with the stage2 block below.
-red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS), .PIPELINE(2))
+// PIPELINE=3: stage1=raw multiply, stage2=rounding→FDRE, stage3=sat mux.
+// Separating rounding from saturation breaks the CARRY4→FDSE S-input path.
+// Outputs valid 3 cycles after inputs — aligned with the stage3 block below.
+red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS), .PIPELINE(3))
  p_ay1_module (
   .clk_i    (clk_i),
   .factor1_i(y1a),
@@ -285,7 +283,7 @@ red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(I
 
 //assign p_ay1_full = {p_ay1_over_2, 1'b0};
 
-red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS), .PIPELINE(2))
+red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS), .PIPELINE(3))
    p_ay2_module (
     .clk_i    (clk_i),
     .factor1_i(y2a),
@@ -297,7 +295,7 @@ red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(I
 
 wire signed [IIRSIGNALBITS-1:0] p_bx0_full;
 wire signed [IIRSIGNALBITS-1:0] p_bx1_full;
-red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS), .PIPELINE(2))
+red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS), .PIPELINE(3))
  p_bx0_module (
   .clk_i    (clk_i),
   .factor1_i(x0b),
@@ -305,7 +303,7 @@ red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(I
   .product_o(p_bx0_full),
   .overflow (overflow_i[3])
    );
-red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS), .PIPELINE(2))
+red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS), .PIPELINE(3))
    p_bx1_module (
     .clk_i    (clk_i),
     .factor1_i(x1b),
@@ -418,12 +416,12 @@ always @(posedge clk_i) begin
 
             x0_i[stage0]<=x0;
         end
-        //cycle n+2  (p_*_full arrive from 2-stage product_sat pipeline)
-        if (stage2<IIRSTAGES) begin
+        //cycle n+3  (p_*_full arrive from 3-stage product_sat pipeline)
+        if (stage3<IIRSTAGES) begin
             //y0 <= y0_full;//no saturation here, because y0 is two bits longer than other signals
-            y1_i[stage2] <= y_full; //update y1 memory
-            y2_i[stage2] <= y1_i[stage2]; //update y2 memory
-            x1_i[stage2] <= x0_i[stage2];
+            y1_i[stage3] <= y_full; //update y1 memory
+            y2_i[stage3] <= y1_i[stage3]; //update y2 memory
+            x1_i[stage3] <= x0_i[stage3];
             z0 <= y_full;
         end
         //cycle n+3
@@ -442,7 +440,7 @@ always @(posedge clk_i) begin
         //cycle n+5
         // start with a reset when the highest stage corresponding to an iir
         // filter being executed
-        if (stage3 == (loops-1) || stage3 == (IIRSTAGES-1)) begin
+        if (stage4 == (loops-1) || stage4 == (IIRSTAGES-1)) begin
             dat_o_sum <= z0;
         end
         // then increment
@@ -450,7 +448,7 @@ always @(posedge clk_i) begin
             dat_o_sum <= dat_o_sum + z0;
         end
         // once cycle of 5 is complete, output the fresh sum (after saturation)
-        if (stage4 == 0) begin
+        if (stage5 == 0) begin
             signal_o <= dat_o_full;
         end
     end

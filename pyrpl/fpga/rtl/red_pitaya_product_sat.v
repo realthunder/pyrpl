@@ -76,16 +76,34 @@ generate
     if (PIPELINE == 0) begin : g_comb
         // Original purely combinational path.
         assign {product_o, overflow} = `SAT_MUX(product);
-    end else begin : g_pipe
-        // Stage 1: raw DSP multiply only — no rounding constant added here.
-        // For wide multiplies (PROD_BITS > 48), the rounding addition requires
-        // a fabric carry chain that would otherwise sit on the critical path
-        // between the DSP cascade and this register.
+    end else if (PIPELINE == 3) begin : g_pipe3
+        // Stage 1: raw DSP multiply.
         reg signed [PROD_BITS-1:0] product_r;
         always @(posedge clk_i) product_r <= factor1_i * factor2_i;
 
-        // Stage 2: add rounding, apply saturation, register.
-        // Rounding + saturation from a register is well under one clock period.
+        // Stage 2: rounding addition registered into FDRE D-input.
+        // Separating this from saturation breaks the CARRY4→FDSE S-input
+        // critical path present in PIPELINE=2 (32×32 rounding uses ~13
+        // CARRY4s; FDSE S-pin setup is 0.472 ns vs FDRE D-pin 0.056 ns).
+        wire signed [PROD_BITS-1:0] product_r_rounded;
+        assign product_r_rounded = product_r + $signed(1 << (SHIFT-1));
+        reg signed [PROD_BITS-1:0] product_r2;
+        always @(posedge clk_i) product_r2 <= product_r_rounded;
+
+        // Stage 3: saturation mux from registered rounded value — short
+        // LUT path into FDRE/FDSE, well within one clock period.
+        wire [BITS_OUT:0] sat_wire;
+        assign sat_wire = `SAT_MUX(product_r2);
+        reg [BITS_OUT:0] sat_r;
+        always @(posedge clk_i) sat_r <= sat_wire;
+
+        assign {product_o, overflow} = sat_r;
+    end else begin : g_pipe2
+        // PIPELINE=2: stage 1 raw multiply, stage 2 rounding+saturation.
+        // Used by IQ modulator (16×16=32-bit, shorter carry chain, no FDSE issue).
+        reg signed [PROD_BITS-1:0] product_r;
+        always @(posedge clk_i) product_r <= factor1_i * factor2_i;
+
         wire signed [PROD_BITS-1:0] product_r_rounded;
         assign product_r_rounded = product_r + $signed(1 << (SHIFT-1));
 
