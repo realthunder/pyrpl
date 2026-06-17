@@ -259,8 +259,8 @@ end
 //---------------------------------------------------------------------------------
 //  ADC buffer RAM
 
-localparam READ_DELAY = (4-1);
-localparam FFT_RDELAY = (12-1);
+localparam READ_DELAY = (3-1);
+localparam FFT_RDELAY = (7-1);
 
 logic [ ASZ-1: 0] adc_a_rd      ;
 logic [ ASZ-1: 0] adc_b_rd      ;
@@ -297,8 +297,6 @@ integer i;
 
 reg   [ ASZ-1: 0] adc_a_buf [0:(1<<RSZ)-1] ;
 reg   [ ASZ-1: 0] adc_b_buf [0:(1<<RSZ)-1] ;
-reg   [ RSZ-1: 0] adc_raddr     ;
-
 always @(posedge adc_clk_i) begin
    if (adc_we && adc_dv) begin
       adc_a_buf[adc_wp] <= adc_a_dat ;
@@ -307,9 +305,8 @@ always @(posedge adc_clk_i) begin
 end
 
 always @(posedge adc_clk_i) begin
-   adc_raddr   <= sys_addr[RSZ-1+2:2] ; // address synchronous to clock
-   adc_a_raddr <= adc_raddr     ; // double register 
-   adc_b_raddr <= adc_raddr     ; // otherwise memory corruption at reading
+   adc_a_raddr <= sys_addr[RSZ-1+2:2] ;
+   adc_b_raddr <= sys_addr[RSZ-1+2:2] ;
    adc_a_rd    <= adc_a_buf[adc_a_raddr] ;
    adc_b_rd    <= adc_b_buf[adc_b_raddr] ;
 end
@@ -330,7 +327,7 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (RSZ),
     .ADDR_WIDTH_B           (RSZ),
     .CLOCKING_MODE          ("common_clock"),
-    .READ_LATENCY_B         (READ_DELAY-2),
+    .READ_LATENCY_B         (1),
     // .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (ASZ),
     .WRITE_DATA_WIDTH_A     (ASZ),
@@ -354,7 +351,7 @@ xpm_memory_sdpram #(
     .ADDR_WIDTH_A           (RSZ),
     .ADDR_WIDTH_B           (RSZ),
     .CLOCKING_MODE          ("common_clock"),
-    .READ_LATENCY_B         (READ_DELAY-2),
+    .READ_LATENCY_B         (1),
     // .WRITE_MODE_B           ("read_first"),
     .READ_DATA_WIDTH_B      (ASZ),
     .WRITE_DATA_WIDTH_A     (ASZ),
@@ -684,21 +681,16 @@ BUFGMUX clk_sel (
     .S  (fft_clk_sel_i)
 );
 
-always @(posedge adc_clk_i) begin
-    fft_rdata_up_a <= fft_rdata_up_a_;
-    fft_rdata_up_b <= fft_rdata_up_b_;
-    fft_rdata_down_b <= fft_rdata_down_b_;
-    fft_hist_rdata_up_a <= fft_hist_rdata_up_a_;
-    fft_hist_rdata_up_b <= fft_hist_rdata_up_b_;
-    fft_hist_rdata_down_b <= fft_hist_rdata_down_b_;
-    if (!fft_parallel) begin
-        fft_rdata_down_a <= fft_rdata_down_a_;
-        fft_hist_rdata_down_a <= fft_hist_rdata_down_a_;
-    end else begin
-        fft_rdata_down_a <= fft_rdata_up_b_;
-        fft_hist_rdata_down_a <= fft_hist_rdata_up_b_;
-    end
+assign fft_rdata_up_a        = fft_rdata_up_a_;
+assign fft_rdata_up_b        = fft_rdata_up_b_;
+assign fft_rdata_down_b      = fft_rdata_down_b_;
+assign fft_rdata_down_a      = fft_parallel ? fft_rdata_up_b_      : fft_rdata_down_a_;
+assign fft_hist_rdata_up_a   = fft_hist_rdata_up_a_;
+assign fft_hist_rdata_up_b   = fft_hist_rdata_up_b_;
+assign fft_hist_rdata_down_b = fft_hist_rdata_down_b_;
+assign fft_hist_rdata_down_a = fft_parallel ? fft_hist_rdata_up_b_ : fft_hist_rdata_down_a_;
 
+always @(posedge adc_clk_i) begin
     fft_a_acq1_cnt <= fft_acq1_cnt;
     fft_b_acq1_cnt <= fft_acq1_cnt;
     fft_a_acq2_cnt <= fft_acq2_cnt;
