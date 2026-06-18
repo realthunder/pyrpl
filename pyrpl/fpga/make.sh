@@ -30,6 +30,7 @@ if [[ "${1:-}" == "remote" ]]; then
     ssh "$REMOTE_HOST" "mkdir -p $(printf '%q' "$REPO_ROOT")"
     rsync -az --delete \
         --exclude "/$REL/out/" \
+        --exclude "/$REL/out.d/" \
         --exclude "/$REL/.hls/" \
         --exclude "/$REL/.Xil/" \
         --exclude "/$REL/.srcs/" \
@@ -183,7 +184,13 @@ if [[ "${1:-}" == "hls" ]]; then
     exit 0
 fi
 
-rm -rf "$ROOT/out" "$ROOT/.Xil" "$ROOT/.srcs" "$ROOT/sdk"
+# Archive the previous build output before wiping (keep at most 10 snapshots).
+if [[ -d "$ROOT/out" ]]; then
+    mkdir -p "$ROOT/out.d"
+    mv "$ROOT/out" "$ROOT/out.d/$(date +%Y%m%d-%H%M%S)"
+    ls -1dt "$ROOT/out.d"/[0-9]*-[0-9]* 2>/dev/null | tail -n +11 | xargs rm -rf
+fi
+rm -rf "$ROOT/.Xil" "$ROOT/.srcs" "$ROOT/sdk"
 
 check_hls
 
