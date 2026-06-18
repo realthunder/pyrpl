@@ -301,3 +301,25 @@ resize_pblock [get_pblocks pb_b1reg_fft_a] -add {SLICE_X36Y26:SLICE_X56Y36}
 #     [get_cells -hier * -filter {PRIMITIVE_SUBGROUP==LUTRAM || \
 #     PRIMITIVE_SUBGROUP==dram || PRIMITIVE_SUBGROUP==drom}] \
 #     -filter {DIRECTION==OUT}]
+
+############################################################################
+# Floorplan: peak_detector sum_sq accumulator near pipeline control logic  #
+############################################################################
+# Without constraint Vivado co-locates sum_sq with the output-stage DSP
+# (count*sum_sq multiply) at X113Y97 for fft_a, which is 21 CLBs from the
+# fo=155 pipeline-reset LUT driver at X92Y101 → 1.439 ns routing
+# → pll_ser_clk WNS -1.140 ns.  Constraining sum_sq to X82-X108 cuts
+# the routing to ≤16 CLBs.  The output-stage DSP floats to a closer
+# location since SLICE pblocks do not constrain DSP48 placement.
+create_pblock pb_sumsq_fft_a
+add_cells_to_pblock [get_pblocks pb_sumsq_fft_a] \
+    [get_cells -hier -filter {NAME =~ i_scope/fft_a/pd_i/peak_detector_bd_i/peak_detector_0/inst/sum_sq*}]
+resize_pblock [get_pblocks pb_sumsq_fft_a] -add {SLICE_X82Y90:SLICE_X108Y112}
+
+# fft_b mirror: symmetric treatment to prevent the same drift.
+create_pblock pb_sumsq_fft_b
+add_cells_to_pblock [get_pblocks pb_sumsq_fft_b] \
+    [get_cells -hier -filter {NAME =~ i_scope/fft_b/pd_i/peak_detector_bd_i/peak_detector_0/inst/sum_sq*}]
+resize_pblock [get_pblocks pb_sumsq_fft_b] -add {SLICE_X30Y80:SLICE_X68Y104}
+
+
