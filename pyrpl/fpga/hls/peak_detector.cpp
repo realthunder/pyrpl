@@ -36,21 +36,25 @@ void peak_detector(
     // Moves the dynamic barrel shift (nfft-dependent) out of the STREAM pipeline
     // body so bit_rev_full becomes pure static wiring on the II=1 critical path.
     // When nfft == FSZ (the common case), shift_amt == 0 — no barrel shift at all.
-    ap_uint<4> shift_amt = (ap_uint<4>)(FSZ - nfft);
+    // Use ap_uint<4> arithmetic throughout to avoid 32-bit widening of shift expressions.
+    ap_uint<4> shift_amt = (ap_uint<4>)(FSZ - (int)nfft);
     count_t start_rev = start_index << shift_amt;
-    // Inclusive upper bound in FSZ-bit space: fill the lower (FSZ-nfft) bits with 1s
-    // so that all full_rev values whose top nfft bits equal end_index are accepted.
-    count_t end_rev   = (end_index << shift_amt) | ((count_t)((1u << shift_amt) - 1));
+    // Inclusive upper bound in FSZ-bit space: fill the lower shift_amt bits with 1s
+    // so all full_rev values whose top nfft bits equal end_index are accepted.
+    count_t end_rev = (end_index << shift_amt) | ((count_t(1) << shift_amt) - count_t(1));
 
     // Frame accumulators (in clip(s << SQ_LSHIFT) units)
     sum_t    sum    = 0;
     sum_sq_t sum_sq = 0;
     count_t  count  = 0;
-    // Pipeline register: holds delta_sum_sq from the previous beat.
-    // sum_sq += delayed_delta_sq (two registered values, ~0.8 ns) keeps the
-    // sum_sq carry off the sample_valid critical path (28-bit DSZ comparators),
-    // reliably achieving II=1 vs the marginal 2.929 ns direct path.
-    sum_sq_t delayed_delta_sq = 0;
+    // Pipeline registers: hold deltas from the previous beat.
+    // Applying the previous beat's delta instead of the current one breaks
+    // the per-iteration carry chain (compare → mux → adder tree → frame add → reg)
+    // into two shorter paths (~2.5 ns each), which fits the 4 ns budget.
+    // The same pattern is applied to sum, sum_sq, and count.
+    sum_t    delayed_delta_sum   = 0;
+    sum_sq_t delayed_delta_sq    = 0;
+    count_t  delayed_delta_count = 0;
 
     // Peak state: peak_val is unscaled (raw DSZ bits) for the output register
     data_t  peak_val   = 0;
@@ -121,14 +125,17 @@ void peak_detector(
             }
         }
 
-        // Merge beat results into frame accumulators.
-        // sum_sq uses the PREVIOUS beat's delta (registered) to keep the
-        // 28-bit sample_valid comparators off the 48-bit carry critical path.
-        sum    += delta_sum;
+        // Merge beat results using PREVIOUS beat's deltas (delayed by one beat).
+        // Breaks the per-cycle carry chain (compare→mux→adder tree→frame add→reg)
+        // into two sub-4-ns paths: delta accumulation and frame update run in
+        // separate cycles so neither exceeds the 4 ns budget.
+        sum    += delayed_delta_sum;
 #pragma HLS BIND_OP variable=sum_sq op=add impl=dsp
         sum_sq += delayed_delta_sq;
-        delayed_delta_sq = delta_sum_sq;
-        count  += delta_count;
+        count  += delayed_delta_count;
+        delayed_delta_sum   = delta_sum;
+        delayed_delta_sq    = delta_sum_sq;
+        delayed_delta_count = delta_count;
         beat_idx++;
         // Single comparison on the carried path: one icmp (~2.5 ns) fits in II=1.
         // beat_peak > peak_val is always true for the first valid sample because
@@ -140,8 +147,10 @@ void peak_detector(
         }
     }
 
-    // Flush the pipeline register: last beat's delta_sum_sq is still pending.
+    // Flush all delayed pipeline registers: last beat's deltas are still pending.
+    sum    += delayed_delta_sum;
     sum_sq += delayed_delta_sq;
+    count  += delayed_delta_count;
 
     // --- Output stage: division/sqrt-free threshold check ---
     // Condition: (peak - mean) > k*stdev
@@ -179,8 +188,8 @@ void peak_detector(
     bool passes = peak_valid && ((thresh_t)diff_sq > threshold);
 
     // Convert stored FSZ-bit full_rev back to the nfft-bit actual bin.
-    // This shift is outside the STREAM loop so no timing constraint applies.
-    count_t actual_peak_bin = peak_bin >> (FSZ - nfft);
+    // Reuse shift_amt (ap_uint<4>) to avoid 32-bit widening of (FSZ - nfft).
+    count_t actual_peak_bin = peak_bin >> shift_amt;
 
     // Pack output: [DSZ-1:0]=value, [DSZ]=valid, [DSZ+FSZ:DSZ+1]=peak_bin
     ap_uint<OUT_WIDTH> out_data = 0;
