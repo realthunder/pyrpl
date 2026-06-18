@@ -441,11 +441,11 @@ end
 
 always @(posedge clk_i) begin
     if (fft_frame_start) begin
-        // if (up_in)
-        //     frame_cnt <= frame_cnt + 1;
-        // if (prev_hist_index != fft_hist_index)
-        //     scan_frame_cnt <= scan_frame_cnt + 1;
-        // prev_hist_index <= fft_hist_index;
+        if (up_in)
+            frame_cnt <= frame_cnt + 1;
+        if (prev_hist_index != fft_hist_index)
+            scan_frame_cnt <= scan_frame_cnt + 1;
+        prev_hist_index <= fft_hist_index;
     end
 end
 
@@ -626,7 +626,7 @@ if (rstn_i == 1'b0) begin
 end else begin
 
     if (fin_full) begin
-        // overflow_cnt <= overflow_cnt + 1;
+        overflow_cnt <= overflow_cnt + 1;
     end
 
     if (fft_trig && fft_done && up_in) begin
@@ -664,7 +664,6 @@ if (rstn_i == 1'b0) begin
     up_out  <= 1;
 end else if (fft_maxi_valid && fft_maxi_rdy) begin
     if (fft_maxi_last) begin
-        frame_cnt <= frame_cnt + 1;
         fft_wp    <= 0;
         up_out    <= up_out + up_toggle;
     end else begin
@@ -689,7 +688,6 @@ end else begin
         peak_up <= peak_up + up_toggle;
 
     if (peak_ready_pretrig) begin
-        scan_frame_cnt <= scan_frame_cnt + 1;
 
         fft_hist_index <= fft_hist_index_o;
 
@@ -705,8 +703,6 @@ end else begin
         out_send_ <= 0;
 
     fft_peak_ready <= {fft_peak_ready[0], peak_ready};
-    if (peak_ready_trig)
-        overflow_cnt <= overflow_cnt + 1;
 end
 
 // FSSR*DSZ-wide FIFO between FFT output and HLS peak detector.
