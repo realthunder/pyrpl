@@ -46,6 +46,11 @@ void peak_detector(
     // Frame accumulators (in clip(s << SQ_LSHIFT) units)
     sum_t    sum    = 0;
     sum_sq_t sum_sq = 0;
+#pragma HLS RESET variable=sum_sq off
+    // sum_sq uses a data-path mux (reset_sq flag) instead of the auto-generated
+    // R-pin reset. The auto-reset signal is a LUT output (fo=143, not replicable
+    // by phys_opt); the registered reset_sq flag is a FF Q output (replicable).
+    bool     reset_sq = true;
     count_t  count  = 0;
     // Pipeline registers: hold deltas from the previous beat.
     // Applying the previous beat's delta instead of the current one breaks
@@ -130,12 +135,17 @@ void peak_detector(
         // into two sub-4-ns paths: delta accumulation and frame update run in
         // separate cycles so neither exceeds the 4 ns budget.
         sum    += delayed_delta_sum;
+        // Zero sum_sq on beat 0 via registered flag instead of the HLS auto-reset
+        // R-pin path (which is a LUT output with fo=143, not replicable by phys_opt).
+        // reset_sq is a FF Q output → phys_opt can replicate it across the chip.
+        sum_sq_t sq_base = reset_sq ? sum_sq_t(0) : sum_sq;
 #pragma HLS BIND_OP variable=sum_sq op=add impl=dsp
-        sum_sq += delayed_delta_sq;
+        sum_sq = sq_base + delayed_delta_sq;
         count  += delayed_delta_count;
         delayed_delta_sum   = delta_sum;
         delayed_delta_sq    = delta_sum_sq;
         delayed_delta_count = delta_count;
+        reset_sq = false;
         beat_idx++;
         // Single comparison on the carried path: one icmp (~2.5 ns) fits in II=1.
         // beat_peak > peak_val is always true for the first valid sample because
