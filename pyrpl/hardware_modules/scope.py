@@ -139,10 +139,13 @@ class StatusBitsProperty(StringProperty):
         0:'busy',
         2:'adc_dly_do',
         3:'adc_we_keep',
+        4:'fft_parallel',
         5:'fft_enable',
         6:'fft_trig_sync',
         7:'fft_a_done',
         8:'fft_b_done',
+        9:'fft_a_peak_ready',
+        10:'fft_b_peak_ready',
         16:'fft_a_tlast_unexp',
         17:'fft_a_tlast_missing',
         18:'fft_a_frame_start',
@@ -255,7 +258,7 @@ class Scope(HardwareModule, AcquisitionModule):
                        "math_formula",
                        "xy_mode"]
     # running_state last for proper acquisition setup
-    _setup_attributes = _gui_attributes + ["rolling_mode", "fft_enable", 'nfft']
+    _setup_attributes = _gui_attributes + ["rolling_mode", "fft_enable", 'fft_parallel', 'nfft']
     # changing these resets the acquisition and autoscale (calls setup())
 
     data_length = data_length  # to use it in a list comprehension
@@ -290,6 +293,11 @@ class Scope(HardwareModule, AcquisitionModule):
                                                  "writestate machine. "
                                                  "Automatically goes back "
                                                  "to false.")
+
+    fft_dclk = BoolRegister(0x0, 11, doc="Double clock speed for fft")
+
+    _reset_peak_ready_a = BoolRegister(0x0, 9)
+    _reset_peak_ready_b = BoolRegister(0x0, 10)
 
     _trigger_armed = BoolRegister(0x0, 0, doc="Set to True to arm trigger")
 
@@ -407,6 +415,8 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_enable = BoolRegister(0x0, 5, doc="Enable fft")
 
+    fft_parallel = BoolRegister(0x0, 4, doc="Running dual fft in parallel for up and down")
+
     fft_trigger_sync = BoolRegister(0x0, 6, doc='Sync fft trigger to scope')
 
     _status = IntRegister(0x00)
@@ -450,8 +460,9 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_wp_last = IntRegister(0x68, doc="FFT last write size")
 
-    fft_q_wp = IntRegister(0x170, doc="FFT queue write count")
-    fft_q_rp = IntRegister(0x174, doc="FFT queue read count")
+    fft_debug = IntRegister(0x170)
+    fft_debug2 = IntRegister(0x174)
+    fft_debug3 = IntRegister(0x178)
 
     fft_state = IntRegister(0x6C, doc="FFT internal state")
 
