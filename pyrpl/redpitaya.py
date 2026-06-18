@@ -53,6 +53,7 @@ defaultparameters = dict(
     reloadserver=False,  # reinstall the server at startup if not necessary?
     reloadfpga=True,  # reload the fpga bitfile at startup?
     serverbinfilename='fpga.bit.bin',  # name of the binfile on the server
+    dtbo='fpga.bit.bin',  # name of the binfile on the server
     serverdirname = "/opt/pyrpl/",  # server directory for server app and bitfile
     leds_off=True,  # turn off all GPIO lets at startup (improves analog performance)
     frequency_correction=1.0,  # actual FPGA frequency is 125 MHz * frequency_correction
@@ -92,6 +93,8 @@ class RedPitaya(object):
             reloadfpga=True,  # reload the fpga bitfile at startup?
             filename='fpga//red_pitaya.bin',  # name of the bitfile for the fpga, None is default file
             serverbinfilename='fpga.bin',  # name of the binfile on the server
+            dtbo_filename='fpga//dts/dma.dtbo',  # name of the device tree overlay
+            server_dtbo='dma.dtbo',  # name of the dtbo file on the server
             serverdirname = "//opt//pyrpl//",  # server directory for server app and bitfile
             leds_off=True,  # turn off all GPIO lets at startup (improves analog performance)
             frequency_correction=1.0,  # actual FPGA frequency is 125 MHz * frequency_correction
@@ -278,17 +281,25 @@ class RedPitaya(object):
             str(gpiopin) + "/value")
         sleep(self.parameters['delay'])
 
-    def update_fpga(self, filename=None):
+    def update_fpga(self, filename=None, dtbo=None):
         serverdirname = self.parameters['serverdirname']
         serverbinfilename = os.path.join(serverdirname, self.parameters['serverbinfilename'])
+        server_dtbo = os.path.join(serverdirname, self.parameters['server_dtbo'])
         update_cmdfile = os.path.join(serverdirname, 'update_fpga.sh')
         # For version 2.0 and higher to load a custom fpga use the update_fpga.sh script
         update_cmd = f'bash -x {update_cmdfile} pyrpl {serverbinfilename}'
+        source = filename
         if filename is None:
             try:
                 source = self.parameters['filename']
             except KeyError:
                 source = None
+
+        if dtbo is None:
+            try:
+                dtbo = self.parameters['dtbo_filename']
+            except KeyError:
+                dtbo = None
 
         self.end()
         sleep(self.parameters['delay'])
@@ -314,6 +325,14 @@ class RedPitaya(object):
               "and filename=\"red_pitaya.bin\"! Current dirname: "
               + self.parameters['dirname'] +
               " current filename: "+self.parameters['filename'])
+
+        if dtbo is None or not os.path.isfile(dtbo):
+            if dtbo is not None:
+                self.logger.warning('Desired device tree overlay "%s" does not exist. Using default installation.', dtbo)
+
+            # prior to version 2.0 fpga default is to use the default pyrpl fpga
+            dtbo = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'fpga', 'dts', 'dma.dtbo')
+
         for i in range(3):
             try:
                 self.ssh.scp_put(
@@ -329,6 +348,16 @@ class RedPitaya(object):
         for i in range(3):
             try:
                 self.ssh.scp_put(source, serverbinfilename)
+            except (SCPException, SSHException):
+                # try again before failing
+                self.start_ssh()
+                sleep(self.parameters['delay'])
+            else:
+                break
+        for i in range(3):
+            try:
+                self.ssh.scp_put(dtbo, server_dtbo)
+                update_cmd += f' {server_dtbo}'
             except (SCPException, SSHException):
                 # try again before failing
                 self.start_ssh()
