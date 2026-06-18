@@ -431,7 +431,8 @@ end
 endgenerate
 assign trig_o = trig_signal;
 
-//IIR module 
+//IIR module
+`ifdef ENABLE_IIR
 generate for (j = IIR; j < IIR+1; j = j+1) begin
     red_pitaya_iir_block iir (
 	     // data
@@ -450,6 +451,12 @@ generate for (j = IIR; j < IIR+1; j = j+1) begin
       );
 	  assign output_signal[j] = output_direct[j];
 end endgenerate
+`else
+assign output_direct[IIR] = 14'h0;
+assign output_signal[IIR] = 14'h0;
+assign module_ack  [IIR]  = 1'b0;
+assign module_rdata[IIR]  = 32'h0;
+`endif
 
 
 //IQ modules iq0, iq1
