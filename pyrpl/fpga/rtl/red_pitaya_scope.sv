@@ -74,7 +74,8 @@ module red_pitaya_scope #(
   parameter RSZ  = 14,  // RAM size 2^RSZ
   parameter HSZ  = 14,  // fft history buffer size 2^HSZ
   parameter FSSR     = 1, // FFT super sample rate (parallel channels)
-  parameter FFT_IMPL = 3  // 1=LogiCORE, 2=HLS SSR (DIT), 3=IP SSR (DIF)
+  parameter FFT_IMPL = 3,  // 1=LogiCORE, 2=HLS SSR (DIT), 3=IP SSR (DIF)
+  parameter HIST_BLOCK_SIZE = 128
 )(
 
    // ADC
@@ -93,6 +94,17 @@ module red_pitaya_scope #(
    output                scope_sig_o     ,  // scan signaling
    output                x_step_0        ,  // x step
    output logic          y_step_0        ,  // y step
+
+   // Point cloud DMA outputs (AXI-S, one stream per FFT channel, clk_i domain)
+   output logic [ 63:0]  dma_a_tdata     ,
+   output logic          dma_a_tvalid    ,
+   input                 dma_a_tready    ,
+   output logic          dma_a_tlast     ,
+
+   output logic [ 63:0]  dma_b_tdata     ,
+   output logic          dma_b_tvalid    ,
+   input                 dma_b_tready    ,
+   output logic          dma_b_tlast     ,
 
    input                 sync_rst_i      ,  // syncrhonized reset signal (from ASG)
 
@@ -711,7 +723,9 @@ fft_proc #(.ASZ(ASZ),
            .HSZ(HSZ),
            .FSSR(FSSR),
            .FFT_IMPL(FFT_IMPL),
-           .READ_DELAY(FFT_RDELAY-2))
+           .READ_DELAY(FFT_RDELAY-2),
+           .HIST_BLOCK_SIZE(HIST_BLOCK_SIZE),
+           .CHANNEL_ID(4'd0))
 fft_a (
    .adc_clk_i (adc_clk_i),
    .adc_rstn_in (fft_rstn_i),
@@ -744,6 +758,11 @@ fft_a (
    .fft_hist_rdata_up_o (fft_hist_rdata_up_a_),
    .fft_hist_rdata_down_o (fft_hist_rdata_down_a_),
 
+   .m_dma_tdata   (dma_a_tdata),
+   .m_dma_tvalid  (dma_a_tvalid),
+   .m_dma_tready  (dma_a_tready),
+   .m_dma_tlast   (dma_a_tlast),
+
    .status_o (fft_status[0]),
    .fft_done_o (fft_done[0]),
    .fft_peak_ready_o (fft_peak_ready_a),
@@ -769,7 +788,9 @@ fft_proc #(.ASZ(ASZ),
            .HSZ(HSZ),
            .FSSR(FSSR),
            .FFT_IMPL(FFT_IMPL),
-           .READ_DELAY(FFT_RDELAY-2)
+           .READ_DELAY(FFT_RDELAY-2),
+           .HIST_BLOCK_SIZE(HIST_BLOCK_SIZE),
+           .CHANNEL_ID(4'd1)
 ) fft_b (
    .adc_clk_i (adc_clk_i),
    .adc_rstn_in (fft_rstn_i),
@@ -801,6 +822,11 @@ fft_proc #(.ASZ(ASZ),
 
    .fft_hist_rdata_up_o (fft_hist_rdata_up_b_),
    .fft_hist_rdata_down_o (fft_hist_rdata_down_b_),
+
+   .m_dma_tdata   (dma_b_tdata),
+   .m_dma_tvalid  (dma_b_tvalid),
+   .m_dma_tready  (dma_b_tready),
+   .m_dma_tlast   (dma_b_tlast),
 
    .status_o (fft_status[1]),
    .fft_done_o (fft_done[1]),
