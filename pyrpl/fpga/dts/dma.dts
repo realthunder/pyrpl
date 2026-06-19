@@ -1,0 +1,35 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * Lidar point-cloud DMA overlay for Red Pitaya (Zynq 7020).
+ *
+ * Reserves 128 KB at 0x1e000000 for the fft_proc DMA ring buffer
+ * (dma_s2mm, HP2 write path).  The write-pointer is readable from
+ * the PS at AXI-Lite address 0x40A00000.
+ *
+ * Compile:
+ *   dtc -@ -I dts -O dtb -o lidar_dma.dtbo lidar_dma.dts
+ *
+ * Load at runtime (requires configfs overlay support in kernel):
+ *   mkdir /sys/kernel/config/device-tree/overlays/lidar_dma
+ *   cp lidar_dma.dtbo /sys/kernel/config/device-tree/overlays/lidar_dma/dtbo
+ */
+
+/ {
+	fragment@0 {
+		target-path = "/";
+		__overlay__ {
+			reserved-memory {
+				#address-cells = <1>;
+				#size-cells = <1>;
+				ranges;
+
+				lidar_dma: lidar_dma@1e000000 {
+					reg = <0x1e000000 0x00020000>; /* 128 KB */
+					no-map;
+				};
+			};
+		};
+	};
+};

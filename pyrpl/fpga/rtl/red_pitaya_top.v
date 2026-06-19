@@ -89,7 +89,8 @@ module red_pitaya_top #(
     FFT_NFFT = 13,
     FFT_SSR  = 1,
     FFT_WIDTH = 28,
-    FFT_IMPL = 3
+    FFT_IMPL = 3,
+    HIST_BLOCK_SIZE = 183
 )(
    // PS connections
    inout  [54-1: 0] FIXED_IO_mio       ,
@@ -177,6 +178,26 @@ wire             axi1_wfixed , axi0_wfixed ;
 wire             axi1_werr   , axi0_werr   ;
 wire             axi1_wrdy   , axi0_wrdy   ;
 
+// HP2 wires for dma_s2mm → i_ps
+wire [ 31:0] hp2_awaddr;
+wire [  3:0] hp2_awlen;
+wire [  2:0] hp2_awsize;
+wire [  1:0] hp2_awburst;
+wire [  1:0] hp2_awlock;
+wire [  3:0] hp2_awcache;
+wire [  2:0] hp2_awprot;
+wire [  3:0] hp2_awqos;
+wire [  5:0] hp2_awid;
+wire         hp2_awvalid, hp2_awready;
+wire [ 63:0] hp2_wdata;
+wire [  7:0] hp2_wstrb;
+wire         hp2_wlast;
+wire [  5:0] hp2_wid;
+wire         hp2_wvalid, hp2_wready;
+wire         hp2_bvalid, hp2_bready;
+wire [  1:0] hp2_bresp;
+wire [  5:0] hp2_bid;
+
 red_pitaya_ps i_ps (
   .FIXED_IO_mio       (  FIXED_IO_mio                ),
   .FIXED_IO_ps_clk    (  FIXED_IO_ps_clk             ),
@@ -225,7 +246,27 @@ red_pitaya_ps i_ps (
   .axi1_wlen_i   (axi1_wlen   ),  .axi0_wlen_i   (axi0_wlen   ),  // system write burst length
   .axi1_wfixed_i (axi1_wfixed ),  .axi0_wfixed_i (axi0_wfixed ),  // system write burst type (fixed / incremental)
   .axi1_werr_o   (axi1_werr   ),  .axi0_werr_o   (axi0_werr   ),  // system write error
-  .axi1_wrdy_o   (axi1_wrdy   ),  .axi0_wrdy_o   (axi0_wrdy   )   // system write ready
+  .axi1_wrdy_o   (axi1_wrdy   ),  .axi0_wrdy_o   (axi0_wrdy   ),  // system write ready
+  // HP2 — point cloud DMA
+  .hp2_aclk_i    (fft_clk     ),
+  .hp2_awaddr_i  (hp2_awaddr  ),  .hp2_awready_o (hp2_awready ),
+  .hp2_awlen_i   (hp2_awlen   ),
+  .hp2_awsize_i  (hp2_awsize  ),
+  .hp2_awburst_i (hp2_awburst ),
+  .hp2_awlock_i  (hp2_awlock  ),
+  .hp2_awcache_i (hp2_awcache ),
+  .hp2_awprot_i  (hp2_awprot  ),
+  .hp2_awqos_i   (hp2_awqos   ),
+  .hp2_awid_i    (hp2_awid    ),
+  .hp2_awvalid_i (hp2_awvalid ),
+  .hp2_wdata_i   (hp2_wdata   ),  .hp2_wready_o  (hp2_wready  ),
+  .hp2_wstrb_i   (hp2_wstrb   ),
+  .hp2_wlast_i   (hp2_wlast   ),
+  .hp2_wid_i     (hp2_wid     ),
+  .hp2_wvalid_i  (hp2_wvalid  ),
+  .hp2_bvalid_o  (hp2_bvalid  ),  .hp2_bready_i  (hp2_bready  ),
+  .hp2_bresp_o   (hp2_bresp   ),
+  .hp2_bid_o     (hp2_bid     )
 );
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -256,7 +297,20 @@ assign ps_sys_ack   = |(sys_cs & sys_ack);
 
 // unused system bus slave ports
 
-assign sys_rdata[5*32+:32] = 32'h0; 
+// DMA write pointer (slot 5, base 0x40A00000)
+// fft_clk → sys_clk CDC; polling use, single-shot reads acceptable
+wire [$clog2(16384)-1:0] dma_wr_ptr_sys;
+xpm_cdc_array_single #(
+    .WIDTH         ($clog2(16384)),
+    .DEST_SYNC_FF  (2),
+    .SRC_INPUT_REG (0)
+) i_dma_ptr_cdc (
+    .src_clk  (fft_clk),
+    .src_in   (dma_wr_ptr),
+    .dest_clk (sys_clk),
+    .dest_out (dma_wr_ptr_sys)
+);
+assign sys_rdata[5*32+:32] = {{(32-$clog2(16384)){1'b0}}, dma_wr_ptr_sys};
 assign sys_err  [5       ] =  1'b0;
 assign sys_ack  [5       ] =  1'b1;
 
@@ -345,6 +399,16 @@ BUFG bufg_pwm_clk    (.O (pwm_clk   ), .I (pll_pwm_clk   ));
 
 wire fft_clk;
 assign fft_clk = ser_clk;
+
+wire fft_rstn;
+xpm_cdc_sync_rst #(
+    .DEST_SYNC_FF (2),
+    .INIT         (0)
+) i_fft_rstn_sync (
+    .dest_clk (fft_clk),
+    .src_rst  (adc_rstn),
+    .dest_rst (fft_rstn)
+);
 
 // ADC reset (active low) 
 always @(posedge adc_clk)
@@ -466,7 +530,55 @@ wire    [14-1: 0] to_scope_a;
 wire    [14-1: 0] to_scope_b;
 wire dsp_trigger;
 
-red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .FSSR(FFT_SSR), .DSZ(FFT_WIDTH), .FFT_IMPL(FFT_IMPL)) i_scope (
+wire [ 63:0] scope_dma_a_tdata,  scope_dma_b_tdata;
+wire         scope_dma_a_tvalid, scope_dma_b_tvalid;
+wire         scope_dma_a_tready, scope_dma_b_tready;
+wire         scope_dma_a_tlast,  scope_dma_b_tlast;
+
+wire [$clog2(16384)-1:0] dma_wr_ptr;
+
+dma_s2mm #(
+    .BUF_BASE  (32'h1e000000),
+    .BUF_WORDS (16384)
+) i_dma_s2mm (
+    .clk_i        (fft_clk             ),
+    .rstn_i       (fft_rstn            ),
+    .a_tdata_i    (scope_dma_a_tdata   ),
+    .a_tvalid_i   (scope_dma_a_tvalid  ),
+    .a_tready_o   (scope_dma_a_tready  ),
+    .a_tlast_i    (scope_dma_a_tlast   ),
+    .b_tdata_i    (scope_dma_b_tdata   ),
+    .b_tvalid_i   (scope_dma_b_tvalid  ),
+    .b_tready_o   (scope_dma_b_tready  ),
+    .b_tlast_i    (scope_dma_b_tlast   ),
+    .wr_ptr_o     (dma_wr_ptr          ),
+    .axi_awaddr_o (hp2_awaddr          ),
+    .axi_awlen_o  (hp2_awlen           ),
+    .axi_awsize_o (hp2_awsize          ),
+    .axi_awburst_o(hp2_awburst         ),
+    .axi_awlock_o (hp2_awlock          ),
+    .axi_awcache_o(hp2_awcache         ),
+    .axi_awprot_o (hp2_awprot          ),
+    .axi_awqos_o  (hp2_awqos           ),
+    .axi_awid_o   (hp2_awid            ),
+    .axi_awvalid_o(hp2_awvalid         ),
+    .axi_awready_i(hp2_awready         ),
+    .axi_wdata_o  (hp2_wdata           ),
+    .axi_wstrb_o  (hp2_wstrb           ),
+    .axi_wlast_o  (hp2_wlast           ),
+    .axi_wid_o    (hp2_wid             ),
+    .axi_wvalid_o (hp2_wvalid          ),
+    .axi_wready_i (hp2_wready          ),
+    .axi_bvalid_i (hp2_bvalid          ),
+    .axi_bresp_i  (hp2_bresp           ),
+    .axi_bid_i    (hp2_bid             ),
+    .axi_bready_o (hp2_bready          ),
+    .axi_arvalid_o(                    ),
+    .axi_rready_o (                    )
+);
+
+red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .FSSR(FFT_SSR), .DSZ(FFT_WIDTH), .FFT_IMPL(FFT_IMPL),
+                   .HIST_BLOCK_SIZE(HIST_BLOCK_SIZE)) i_scope (
   // ADC
   .adc_a_i         (  to_scope_a[14-1:14-ADC_SZ] ),  // CH 1
   .adc_b_i         (  to_scope_b[14-1:14-ADC_SZ] ),  // CH 2
@@ -483,6 +595,17 @@ red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .FSSR(FFT_SSR), .DSZ(FFT_WIDTH)
   .x_step_0        (  x_step_0                   ),
   .y_step_0        (  y_step_0                   ),
   .sync_rst_i      (  asg_sync_rst_o             ),
+
+  .dma_a_tdata     (  scope_dma_a_tdata          ),
+  .dma_a_tvalid    (  scope_dma_a_tvalid         ),
+  .dma_a_tready    (  scope_dma_a_tready         ),
+  .dma_a_tlast     (  scope_dma_a_tlast          ),
+
+  .dma_b_tdata     (  scope_dma_b_tdata          ),
+  .dma_b_tvalid    (  scope_dma_b_tvalid         ),
+  .dma_b_tready    (  scope_dma_b_tready         ),
+  .dma_b_tlast     (  scope_dma_b_tlast          ),
+
 
   .x_step_i        (  scan_x_step                ),
   .y_step_i        (  scan_y_step                ),

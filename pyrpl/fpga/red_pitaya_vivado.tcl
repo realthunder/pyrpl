@@ -38,7 +38,8 @@ set fft_impl       [expr {[info exists env(FFT_IMPL)]       ? $env(FFT_IMPL)    
 # FFT_SCALED: 0=unscaled 28-bit (~140 dB, needs large device), 1=scaled 16-bit (~72 dB),
 #             2=saturating 20-bit (default, fits xc7z020, ~90 dB small-signal detection)
 set fft_scaled     [expr {[info exists env(FFT_SCALED)]     ? $env(FFT_SCALED)     : 2}]
-set fft_use_approx [expr {[info exists env(FFT_USE_APPROX)] ? $env(FFT_USE_APPROX) : 1}]
+set fft_use_approx    [expr {[info exists env(FFT_USE_APPROX)]    ? $env(FFT_USE_APPROX)    : 1}]
+set hist_block_size   [expr {[info exists env(HIST_BLOCK_SIZE)]   ? $env(HIST_BLOCK_SIZE)   : 183}]
 # fft_width = DSZ (magnitude output bits). Override with FFT_WIDTH env var if needed.
 if {[info exists env(FFT_WIDTH)]} {
     set fft_width $env(FFT_WIDTH)
@@ -125,6 +126,7 @@ read_verilog                      $path_rtl/axi_slave.v
 read_verilog                      $path_rtl/axi_wr_fifo.v
 
 read_verilog                      $path_rtl/fft_proc.sv
+read_verilog                      $path_rtl/dma_s2mm.sv
 
 read_verilog                      $path_rtl/red_pitaya_ams.v
 read_verilog                      $path_rtl/red_pitaya_asg_ch.v
@@ -177,7 +179,7 @@ synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivale
     -generic FFT_SSR=$fft_ssr \
     -generic FFT_WIDTH=$fft_width \
     -generic FFT_IMPL=$fft_impl \
-    -verilog_define STORE_HIST \
+    -generic HIST_BLOCK_SIZE=$hist_block_size
 
 # set debug_nets {asg_trig_n asg_trig2_p fft_dvalid fft_a_enable fft_b_enable}
 # set debug_nets {}

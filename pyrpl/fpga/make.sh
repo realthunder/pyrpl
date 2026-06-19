@@ -104,6 +104,11 @@ VIVADO_HLS=${XILINX_VITIS}/bin/vitis_hls
 #   3 = HLS DIF SSR FFT using LogiCORE sub-FFTs — fft_ip_ssr (default)
 #export FFT_IMPL=3
 
+# HIST_BLOCK_SIZE: DMA packet size in detection words (excluding the 1-word header).
+#   Total UDP payload = (HIST_BLOCK_SIZE + 1) * 8 bytes.
+#   Default 183 → 184 * 8 = 1472 B = one standard Ethernet MTU (no fragmentation).
+#export HIST_BLOCK_SIZE=183
+
 mkdir -p "$ROOT/.hls"
 
 # Vivado HLS csim uses a bundled GCC 6.2.0 that doesn't know Ubuntu 24.04's
@@ -115,7 +120,7 @@ export CPATH=/usr/include/x86_64-linux-gnu:${CPATH:-}
 # Stored alongside each stamp so that changing FFT_SSR (or any other param)
 # invalidates the cached output even when source files haven't changed.
 hls_fingerprint() {
-    echo "FPGA_PART=${FPGA_PART:-} FFT_IMPL=${FFT_IMPL:-} FFT_SSR=${FFT_SSR:-} FFT_NFFT=${FFT_NFFT:-} FFT_WIDTH=${FFT_WIDTH:-} FFT_SCALED=${FFT_SCALED:-} FFT_CLK_PERIOD=${FFT_CLK_PERIOD:-} FFT_USE_APPROX=${FFT_USE_APPROX:-}"
+    echo "FPGA_PART=${FPGA_PART:-} FFT_IMPL=${FFT_IMPL:-} FFT_SSR=${FFT_SSR:-} FFT_NFFT=${FFT_NFFT:-} FFT_WIDTH=${FFT_WIDTH:-} FFT_SCALED=${FFT_SCALED:-} FFT_CLK_PERIOD=${FFT_CLK_PERIOD:-} FFT_USE_APPROX=${FFT_USE_APPROX:-} HIST_BLOCK_SIZE=${HIST_BLOCK_SIZE:-}"
 }
 
 needs_rebuild() {

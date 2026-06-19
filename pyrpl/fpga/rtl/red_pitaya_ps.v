@@ -88,7 +88,30 @@ module red_pitaya_ps (
   input   [  4-1: 0] axi1_wlen_i  , axi0_wlen_i  ,  // system write burst length
   input              axi1_wfixed_i, axi0_wfixed_i,  // system write burst type (fixed / incremental)
   output             axi1_werr_o  , axi0_werr_o  ,  // system write error
-  output             axi1_wrdy_o  , axi0_wrdy_o     // system write ready
+  output             axi1_wrdy_o  , axi0_wrdy_o  ,  // system write ready
+  // HP2 raw AXI3 write master (point cloud DMA)
+  input              hp2_aclk_i   ,
+  input   [ 32-1: 0] hp2_awaddr_i ,
+  input   [  4-1: 0] hp2_awlen_i  ,
+  input   [  3-1: 0] hp2_awsize_i ,
+  input   [  2-1: 0] hp2_awburst_i,
+  input   [  2-1: 0] hp2_awlock_i ,
+  input   [  4-1: 0] hp2_awcache_i,
+  input   [  3-1: 0] hp2_awprot_i ,
+  input   [  4-1: 0] hp2_awqos_i  ,
+  input   [  6-1: 0] hp2_awid_i   ,
+  input              hp2_awvalid_i,
+  output             hp2_awready_o,
+  input   [ 64-1: 0] hp2_wdata_i  ,
+  input   [  8-1: 0] hp2_wstrb_i  ,
+  input              hp2_wlast_i  ,
+  input   [  6-1: 0] hp2_wid_i    ,
+  input              hp2_wvalid_i ,
+  output             hp2_wready_o ,
+  output             hp2_bvalid_o ,
+  output  [  2-1: 0] hp2_bresp_o  ,
+  output  [  6-1: 0] hp2_bid_o    ,
+  input              hp2_bready_i
 );
 
 //------------------------------------------------------------------------------
@@ -219,6 +242,19 @@ assign hp1_saxi_awqos  = 4'h0 ;
 assign hp1_saxi_clk_i  = axi1_clk_i     ;
 assign hp1_saxi_rstn_i = axi1_rstn_i    ;
 assign hp1_saxi_aclk   = hp1_saxi_clk_i ;
+
+// HP2 — write-only; read channel tied to zero
+assign hp2_awready_o = hp2_saxi_awready;
+assign hp2_wready_o  = hp2_saxi_wready;
+assign hp2_bvalid_o  = hp2_saxi_bvalid;
+assign hp2_bresp_o   = hp2_saxi_bresp;
+assign hp2_bid_o     = hp2_saxi_bid;
+
+wire             hp2_saxi_awready;
+wire             hp2_saxi_wready;
+wire             hp2_saxi_bvalid;
+wire [  2-1: 0]  hp2_saxi_bresp;
+wire [  6-1: 0]  hp2_saxi_bid;
 
 //------------------------------------------------------------------------------
 // AXI SLAVE
@@ -459,7 +495,42 @@ system_wrapper system_i (
   .S_AXI_HP0_awid    (hp0_saxi_awid   ),  .S_AXI_HP1_awid    (hp1_saxi_awid   ), // in 6
   .S_AXI_HP0_wid     (hp0_saxi_wid    ),  .S_AXI_HP1_wid     (hp1_saxi_wid    ), // in 6
   .S_AXI_HP0_wdata   (hp0_saxi_wdata  ),  .S_AXI_HP1_wdata   (hp1_saxi_wdata  ), // in 64
-  .S_AXI_HP0_wstrb   (hp0_saxi_wstrb  ),  .S_AXI_HP1_wstrb   (hp1_saxi_wstrb  )  // in 8
+  .S_AXI_HP0_wstrb   (hp0_saxi_wstrb  ),  .S_AXI_HP1_wstrb   (hp1_saxi_wstrb  ), // in 8
+  // HP2 (write-only — read inputs tied to 0)
+  .S_AXI_HP2_aclk    (hp2_aclk_i      ),
+  .S_AXI_HP2_awvalid (hp2_awvalid_i   ),  .S_AXI_HP2_awready (hp2_saxi_awready),
+  .S_AXI_HP2_awaddr  (hp2_awaddr_i    ),
+  .S_AXI_HP2_awlen   (hp2_awlen_i     ),
+  .S_AXI_HP2_awsize  (hp2_awsize_i    ),
+  .S_AXI_HP2_awburst (hp2_awburst_i   ),
+  .S_AXI_HP2_awlock  (hp2_awlock_i    ),
+  .S_AXI_HP2_awcache (hp2_awcache_i   ),
+  .S_AXI_HP2_awprot  (hp2_awprot_i    ),
+  .S_AXI_HP2_awqos   (hp2_awqos_i     ),
+  .S_AXI_HP2_awid    (hp2_awid_i      ),
+  .S_AXI_HP2_wvalid  (hp2_wvalid_i    ),  .S_AXI_HP2_wready  (hp2_saxi_wready ),
+  .S_AXI_HP2_wdata   (hp2_wdata_i     ),
+  .S_AXI_HP2_wstrb   (hp2_wstrb_i     ),
+  .S_AXI_HP2_wlast   (hp2_wlast_i     ),
+  .S_AXI_HP2_wid     (hp2_wid_i       ),
+  .S_AXI_HP2_bvalid  (hp2_saxi_bvalid ),  .S_AXI_HP2_bready  (hp2_bready_i    ),
+  .S_AXI_HP2_bresp   (hp2_saxi_bresp  ),
+  .S_AXI_HP2_bid     (hp2_saxi_bid    ),
+  .S_AXI_HP2_arvalid (1'b0            ),  .S_AXI_HP2_arready (),
+  .S_AXI_HP2_araddr  (32'h0           ),
+  .S_AXI_HP2_arlen   (4'h0            ),
+  .S_AXI_HP2_arsize  (3'b011          ),
+  .S_AXI_HP2_arburst (2'b01           ),
+  .S_AXI_HP2_arlock  (2'b00           ),
+  .S_AXI_HP2_arcache (4'h0            ),
+  .S_AXI_HP2_arprot  (3'b000          ),
+  .S_AXI_HP2_arqos   (4'h0            ),
+  .S_AXI_HP2_arid    (6'h0            ),
+  .S_AXI_HP2_rready  (1'b0            ),  .S_AXI_HP2_rvalid  (),
+  .S_AXI_HP2_rdata   (),
+  .S_AXI_HP2_rresp   (),
+  .S_AXI_HP2_rlast   (),
+  .S_AXI_HP2_rid     ()
 );
 
 endmodule

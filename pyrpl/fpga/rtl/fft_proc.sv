@@ -7,7 +7,9 @@ module fft_proc #(
   parameter RSZ,        // RAM size 2^RSZ
   parameter HSZ,        // fft history buffer size 2^HSZ (Note: consider word size of 32bit, better not exceed 64KBytes in total)
   parameter QSZ,        // FFT queue size 2^QSZ
-  parameter READ_DELAY  // memory output read delay
+  parameter READ_DELAY,  // memory output read delay
+  parameter HIST_BLOCK_SIZE = 183,  // DMA packet size in detection words (183+1 hdr = 184×8 = 1472 B = one Ethernet MTU)
+  parameter [3:0] CHANNEL_ID = 0   // 4-bit channel tag stamped into header bits [63:60]
 )(
   input logic             adc_clk_i,
   input logic             clk_i,
@@ -36,6 +38,11 @@ module fft_proc #(
 
   output logic [ FSZ-1:0] fft_hist_rdata_up_o,
   output logic [ FSZ-1:0] fft_hist_rdata_down_o,
+
+  output logic [ 63:0]    m_dma_tdata,
+  output logic            m_dma_tvalid,
+  input  logic            m_dma_tready,
+  output logic            m_dma_tlast,
 
   output logic [  6-1: 0] status_o,
   output logic            fft_done_o,
@@ -762,6 +769,102 @@ logic  fft_peak_valid = peak_out_data[DSZ];
 assign fft_peak_idx   = fft_peak_valid ? peak_out_data[DSZ + FSZ : DSZ + 1] : 0;
 assign fft_peak       = peak_out_data[DSZ-1 : 0];
 assign peak_ready     = peak_out_valid;
+
+// --- DMA point cloud output ---
+// Packet = 1 header word + HIST_BLOCK_SIZE data words, tlast on last data word.
+//
+// Header word (64-bit):
+//   [31:0]           frame_cnt       (cumulative frame counter)
+//   [31+HSZ:32]      fft_hist_index  (scan-position tag for this block)
+//   [59:32+HSZ]      reserved 0
+//   [63:60]          CHANNEL_ID      (4-bit channel tag: 0=fft_a, 1=fft_b)
+//
+// Data word (64-bit):
+//   [FSZ-1:0]       peak_bin_up
+//   [2*FSZ-1:FSZ]   peak_bin_down
+//   [63:2*FSZ]      reserved 0
+//
+// Emit condition: sequential (up_toggle=1) → after down chirp (both peaks fresh);
+//                 parallel  (up_toggle=0) → every frame.
+// On the first detection of a new block the header is sent this cycle and the
+// paired data word is held one cycle (dma_data_pending).
+// fft_index_flush_i closes any in-progress packet cleanly (emits tlast) so the
+// downstream FIFO and dma_s2mm stay consistent with no PS intervention.
+localparam DMA_HDR_RSVD = 64 - 4 - 32 - HSZ;  // [63:60]=channel_id [59:32+HSZ]=rsvd [31+HSZ:32]=hist_index [31:0]=frame_cnt
+localparam DMA_DAT_RSVD = 64 - 2*FSZ;
+
+logic [15:0]    dma_data_sent;      // data words sent in current packet (0..HIST_BLOCK_SIZE)
+logic           dma_data_pending;   // first data word buffered after header
+logic [FSZ-1:0] dma_saved_peak_up;
+logic [FSZ-1:0] dma_saved_peak_down;
+
+logic [63:0]    dma_wr_data;
+logic           dma_wr_en;
+logic           dma_wr_tlast;
+
+wire dma_emit = peak_ready_trig && (peak_up || !up_toggle);
+
+always @(posedge clk_i) begin
+    dma_wr_en <= 0;
+    if (!rstn_i) begin
+        dma_data_sent    <= 0;
+        dma_data_pending <= 0;
+    end else if (fft_index_flush_i) begin
+        // Close any in-progress packet so the AXI-S FIFO receives a proper tlast.
+        if (dma_data_pending) begin
+            dma_wr_data  <= { {DMA_DAT_RSVD{1'b0}}, dma_saved_peak_down, dma_saved_peak_up };
+            dma_wr_tlast <= 1;
+            dma_wr_en    <= 1;
+        end else if (dma_data_sent != 0) begin
+            dma_wr_data  <= 64'h0;
+            dma_wr_tlast <= 1;
+            dma_wr_en    <= 1;
+        end
+        dma_data_sent    <= 0;
+        dma_data_pending <= 0;
+    end else if (dma_data_pending) begin
+        // Emit buffered first data word (header was sent last cycle)
+        dma_wr_data      <= { {DMA_DAT_RSVD{1'b0}}, dma_saved_peak_down, dma_saved_peak_up };
+        dma_wr_tlast     <= (HIST_BLOCK_SIZE == 1);
+        dma_wr_en        <= 1;
+        dma_data_pending <= 0;
+        dma_data_sent    <= (HIST_BLOCK_SIZE == 1) ? 16'd0 : 16'd1;
+    end else if (dma_emit) begin
+        if (dma_data_sent == 0) begin
+            // First detection of new block: send header, buffer data for next cycle
+            dma_wr_data         <= { CHANNEL_ID, {DMA_HDR_RSVD{1'b0}}, fft_hist_index, frame_cnt };
+            dma_wr_tlast        <= 0;
+            dma_wr_en           <= 1;
+            dma_saved_peak_up   <= fft_peak_index_up;
+            dma_saved_peak_down <= fft_peak_index_down;
+            dma_data_pending    <= 1;
+        end else begin
+            // Subsequent detection: emit data word directly
+            dma_wr_data  <= { {DMA_DAT_RSVD{1'b0}}, fft_peak_index_down, fft_peak_index_up };
+            dma_wr_tlast <= (dma_data_sent == HIST_BLOCK_SIZE - 1);
+            dma_wr_en    <= 1;
+            dma_data_sent <= (dma_data_sent == HIST_BLOCK_SIZE - 1) ? 16'd0
+                                                                     : (dma_data_sent + 16'd1);
+        end
+    end
+end
+
+xpm_fifo_axis #(
+    .TDATA_WIDTH      (64),
+    .FIFO_DEPTH       (1 << $clog2(HIST_BLOCK_SIZE * 2 + 4)),
+    .USE_ADV_FEATURES (16'h0000)
+) fifo_dma_out (
+    .s_aclk          (clk_i),
+    .s_aresetn       (rstn_i),
+    .s_axis_tdata    (dma_wr_data),
+    .s_axis_tvalid   (dma_wr_en),
+    .s_axis_tready   (),
+    .s_axis_tlast    (dma_wr_tlast),
+    .m_axis_tdata    (m_dma_tdata),
+    .m_axis_tvalid   (m_dma_tvalid),
+    .m_axis_tready   (m_dma_tready),
+    .m_axis_tlast    (m_dma_tlast)
+);
 
 generate
 if (FFT_IMPL == 1) begin : gen_fft_single
