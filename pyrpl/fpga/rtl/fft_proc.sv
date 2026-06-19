@@ -316,8 +316,9 @@ if (FSSR == 1) begin
     assign fft_rdata_down_o     = fft_rdata_down[0];
     assign buf_a_raddr_reversed = buf_a_raddr_bitrev >> fft_shift;
     assign buf_b_raddr_reversed = buf_b_raddr_bitrev >> fft_shift;
-end else if (FFT_IMPL == 3) begin
+end else if (FFT_IMPL == 3 || FFT_IMPL == 5) begin
     // DIF: channel = k mod FSSR — low SSR_BITS of the bin index, no reversal needed.
+    // FFT_IMPL==5 (direct hls::fft) shares the IMPL==3 DIF output ordering.
     assign fft_rdata_up_o       = fft_rdata_up  [buf_a_raddr[SSR_BITS-1:0]];
     assign fft_rdata_down_o     = fft_rdata_down[buf_b_raddr[SSR_BITS-1:0]];
     assign buf_a_raddr_reversed = buf_a_raddr_bitrev[FSZ-SSR_BITS-1:0];
@@ -911,6 +912,28 @@ end else if (FFT_IMPL == 3) begin : gen_fft_ip_ssr
     // Lane 0 = even bins, lane 1 = odd bins, both in bit-reversed beat order.
 
     fft_ip_ssr_bd_wrapper fft_i (
+        .aclk                   (clk_i),
+        .aresetn                (fft_rstn_i),
+
+        .s_axis_tdata           (fft_data_i),
+        .s_axis_tvalid          (fft_saxi_valid),
+        .s_axis_tready          (fft_saxi_rdy),
+        .s_axis_tlast           (fft_saxi_last),
+
+        .m_axis_tdata           (fft_maxi_data),
+        .m_axis_tvalid          (fft_maxi_valid),
+        .m_axis_tready          (fft_maxi_rdy),
+        .m_axis_tlast           (fft_maxi_last),
+
+        .event_frame_started    (fft_frame_start)
+    );
+
+end else if (FFT_IMPL == 5) begin : gen_fft_hls_direct
+    // Direct hls::fft: one HLS IP instantiates the LogiCORE sub-FFTs internally,
+    // fusing pre/FFT/post — no xfft cell or separate post IP. DIF output ordering
+    // (handled by the IMPL==3 lane-map branch above).
+
+    fft_hls_direct_bd_wrapper fft_i (
         .aclk                   (clk_i),
         .aresetn                (fft_rstn_i),
 
