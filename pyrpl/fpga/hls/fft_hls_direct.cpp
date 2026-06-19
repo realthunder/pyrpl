@@ -153,6 +153,19 @@ static inline cfixed_twid_t get_twiddle(int k) {
     return w;
 }
 
+#if FFT_SSR == 4
+// Row-2 twiddle W_N^{2k} for the SSR=4 stage-2 butterflies. The ROM stores
+// W_N^{2k} as twid_re_2/twid_im_2[k] (k in [0, N/4)), so this is a direct lookup
+// rather than indexing twid_re_1 at 2*i (which is out of range for SSR=4).
+static inline cfixed_twid_t get_twiddle2(int k) {
+#pragma HLS INLINE
+    cfixed_twid_t w;
+    w.real(twid_re_2[k]);
+    w.imag(twid_im_2[k]);
+    return w;
+}
+#endif
+
 // Alpha-max-beta-min magnitude: |z| ≈ max(|re|,|im|) + 3/8·min(|re|,|im|)
 // Maps [0,~1.5) input to a DSZ-bit unsigned integer with 2 integer bits.
 static inline ap_uint<DSZ> magnitude(cfixed_t v) {
@@ -457,7 +470,7 @@ static void stage2_upper(hls::stream<par_data>  &din,
         f0.real(f0r >> 1); f0.imag(f0i >> 1);
         d.real(dr >> 1);   d.imag(di >> 1);
         fft0_in.write(f0);
-        fft2_in.write(cmul(d, get_twiddle(2*i)));
+        fft2_in.write(cmul(d, get_twiddle2(i)));
     }
 }
 
@@ -479,7 +492,7 @@ static void stage2_lower(hls::stream<par_data>  &din,
         f1.real(f1r >> 1); f1.imag(f1i >> 1);
         d.real(dr >> 1);   d.imag(di >> 1);
         fft1_in.write(f1);
-        fft3_in.write(cmul(d, get_twiddle(2*i)));
+        fft3_in.write(cmul(d, get_twiddle2(i)));
     }
 }
 

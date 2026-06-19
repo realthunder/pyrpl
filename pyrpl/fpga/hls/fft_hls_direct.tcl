@@ -11,7 +11,9 @@
 proc getparam {name default} {
     upvar #0 $name g
     if {[info exists g] && $g ne ""} { return $g }
-    if {[info exists ::env($name)]}   { return $::env($name) }
+    # Env vars are UPPERCASE (FFT_SSR); the tcl var name is lowercase (fft_ssr).
+    set envname [string toupper $name]
+    if {[info exists ::env($envname)]} { return $::env($envname) }
     return $default
 }
 
@@ -29,7 +31,17 @@ set hls_dir [file normalize [file dirname [info script]]]
 set lut_hdr [file join $hls_dir fft_ip_ssr_twiddle.hpp]
 set gen_src [file join $hls_dir gen_twiddle_lut.cpp]
 set gen_exe [file join $hls_dir gen_twiddle_lut_exe]
+# Regenerate when missing, when the generator changed, OR when the header's
+# params (FFT_SIZE/FFT_SSR in its comment) don't match this build — the ROM
+# layout differs by SSR (e.g. SSR=4 adds twid_re_2/twid_re_3 rows).
+set need_gen 0
 if {![file exists $lut_hdr] || [file mtime $gen_src] > [file mtime $lut_hdr]} {
+    set need_gen 1
+} else {
+    set fh [open $lut_hdr r]; set hdr [read $fh 256]; close $fh
+    if {![string match "*FFT_SIZE=$fft_size *FFT_SSR=$fft_ssr *" $hdr]} { set need_gen 1 }
+}
+if {$need_gen} {
     puts "Generating twiddle LUT: $lut_hdr ..."
     set orig [pwd]
     cd $hls_dir

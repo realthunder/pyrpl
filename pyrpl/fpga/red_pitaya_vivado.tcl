@@ -253,6 +253,23 @@ report_power             -file    $path_out/post_synth_power.rpt
 # set_multicycle_path -setup 2 -from $multicyle_path
 # set_multicycle_path -hold 1 -to $multicyle_path
 # set_multicycle_path -setup 2 -to $multicyle_path
+# Optional: pin the FFT clock mux for timing analysis. The FFT runs off a runtime
+# BUFGMUX (i_scope/clk_sel) selecting adc_clk (125 MHz, I0) vs fft_clk (250 MHz, I1)
+# via fft_clk_sel. With FFT_CLK_SEL=0 the timing engine analyses the FFT at 125 MHz
+# only (e.g. for SSR=4, which is meant to run at 125 MHz). Unset → analyse both
+# (default 250 MHz path dominates), so the default build is unaffected.
+set fft_clk_sel [expr {[info exists env(FFT_CLK_SEL)] ? $env(FFT_CLK_SEL) : -1}]
+if {$fft_clk_sel == 0 || $fft_clk_sel == 1} {
+    set sel_q [get_pins -hier -quiet -filter {NAME =~ *fft_clk_sel_i_reg/Q}]
+    if {[llength $sel_q] > 0} {
+        set_case_analysis $fft_clk_sel $sel_q
+        puts "INFO: FFT clock pinned via set_case_analysis fft_clk_sel=$fft_clk_sel \
+              ([expr {$fft_clk_sel == 0 ? {125 MHz adc_clk} : {250 MHz fft_clk}}])"
+    } else {
+        puts "WARNING: FFT_CLK_SEL set but fft_clk_sel_i_reg/Q pin not found"
+    }
+}
+
 set_false_path -from [get_cells -hier -filter {NAME =~ *fft_threshold_k_arg*}] \
 				-to   [get_cells -hier -filter {NAME =~ *pd_i*}]
 set_false_path -from [get_cells -hier -filter {NAME =~ *fft_peak_start_arg*}] \
