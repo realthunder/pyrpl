@@ -247,8 +247,8 @@ red_pitaya_ps i_ps (
   .axi1_wfixed_i (axi1_wfixed ),  .axi0_wfixed_i (axi0_wfixed ),  // system write burst type (fixed / incremental)
   .axi1_werr_o   (axi1_werr   ),  .axi0_werr_o   (axi0_werr   ),  // system write error
   .axi1_wrdy_o   (axi1_wrdy   ),  .axi0_wrdy_o   (axi0_wrdy   ),  // system write ready
-  // HP2 — point cloud DMA
-  .hp2_aclk_i    (fft_clk     ),
+  // HP2 — point cloud DMA (125 MHz, matches i_dma_s2mm clk_i)
+  .hp2_aclk_i    (adc_clk     ),
   .hp2_awaddr_i  (hp2_awaddr  ),  .hp2_awready_o (hp2_awready ),
   .hp2_awlen_i   (hp2_awlen   ),
   .hp2_awsize_i  (hp2_awsize  ),
@@ -298,19 +298,10 @@ assign ps_sys_ack   = |(sys_cs & sys_ack);
 // unused system bus slave ports
 
 // DMA write pointer (slot 5, base 0x40A00000)
-// fft_clk → sys_clk CDC; polling use, single-shot reads acceptable
-wire [$clog2(16384)-1:0] dma_wr_ptr_sys;
-xpm_cdc_array_single #(
-    .WIDTH         ($clog2(16384)),
-    .DEST_SYNC_FF  (2),
-    .SRC_INPUT_REG (0)
-) i_dma_ptr_cdc (
-    .src_clk  (fft_clk),
-    .src_in   (dma_wr_ptr),
-    .dest_clk (sys_clk),
-    .dest_out (dma_wr_ptr_sys)
-);
-assign sys_rdata[5*32+:32] = {{(32-$clog2(16384)){1'b0}}, dma_wr_ptr_sys};
+// i_dma_s2mm now runs on adc_clk, which is the same net as the system-bus clock
+// (sys_clk = axi0_clk_o = adc_clk). dma_wr_ptr is therefore already in the
+// sys_clk domain — the former fft_clk->sys_clk CDC is no longer needed.
+assign sys_rdata[5*32+:32] = {{(32-$clog2(16384)){1'b0}}, dma_wr_ptr};
 assign sys_err  [5       ] =  1'b0;
 assign sys_ack  [5       ] =  1'b1;
 
@@ -400,17 +391,7 @@ BUFG bufg_pwm_clk    (.O (pwm_clk   ), .I (pll_pwm_clk   ));
 wire fft_clk;
 assign fft_clk = ser_clk;
 
-wire fft_rstn;
-xpm_cdc_sync_rst #(
-    .DEST_SYNC_FF (2),
-    .INIT         (0)
-) i_fft_rstn_sync (
-    .dest_clk (fft_clk),
-    .src_rst  (adc_rstn),
-    .dest_rst (fft_rstn)
-);
-
-// ADC reset (active low) 
+// ADC reset (active low)
 always @(posedge adc_clk)
 adc_rstn_i <=  frstn[0] &  pll_locked;
 
@@ -541,8 +522,8 @@ dma_s2mm #(
     .BUF_BASE  (32'h1e000000),
     .BUF_WORDS (16384)
 ) i_dma_s2mm (
-    .clk_i        (fft_clk             ),
-    .rstn_i       (fft_rstn            ),
+    .clk_i        (adc_clk             ),  // 125 MHz: DMA reads fifo_dma_out on adc clk (CDC in FIFO)
+    .rstn_i       (adc_rstn            ),
     .a_tdata_i    (scope_dma_a_tdata   ),
     .a_tvalid_i   (scope_dma_a_tvalid  ),
     .a_tready_o   (scope_dma_a_tready  ),
