@@ -27,6 +27,10 @@ open_solution -reset solution1
 set_part $part
 create_clock -period $fft_clk_period
 
+# NOTE: config_compile -pipeline_style frp tried here — no effect. The STREAM
+# loop carries accumulator/peak recurrences, so it is non-flushable and frp
+# silently falls back to stp (identical RTL/timing). Left on default (stp).
+
 # -------- RUN FLOW --------
 # -ldflags "-B/usr/bin": use system ld (binutils 2.42) instead of Vivado's
 # bundled binutils-2.26, which can't resolve libm GROUP paths on Ubuntu 24.04.

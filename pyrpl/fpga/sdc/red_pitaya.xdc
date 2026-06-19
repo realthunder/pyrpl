@@ -255,6 +255,27 @@ set_multicycle_path 1 -hold  -to   [get_cells -hierarchical -filter {NAME =~ *ce
 set_multicycle_path 2 -setup -from [get_cells -hierarchical -filter {NAME =~ pwm*/v_r_reg*}]
 set_multicycle_path 1 -hold  -from [get_cells -hierarchical -filter {NAME =~ pwm*/v_r_reg*}]
 
+# AXI/sys-bus config writes and readback are quasi-static.  On a write,
+# axi_slave latches wr_wdata once at the request and holds it for the whole
+# multi-cycle AXI transaction while sys_wen (registered, one cycle later) pulses,
+# so the config register's final capture has >=2 settled cycles.  On a read,
+# sys_addr is held for the transaction while sys_rdata is registered and returned
+# over the ack window.  The remaining pll_adc_clk violations are all such paths
+# (i_asg config-register writes + sys_rdata readback, 0-few logic levels /
+# ~93% route after the i_dsp trim freed area).  Relax both to 2 cycles.
+set_multicycle_path 2 -setup -from [get_cells -hierarchical -filter {NAME =~ *axi_slave_gp0/wr_wdata_reg*}]
+set_multicycle_path 1 -hold  -from [get_cells -hierarchical -filter {NAME =~ *axi_slave_gp0/wr_wdata_reg*}]
+set_multicycle_path 2 -setup -to   [get_cells -hierarchical -filter {NAME =~ *sys_rdata_reg*}]
+set_multicycle_path 1 -hold  -to   [get_cells -hierarchical -filter {NAME =~ *sys_rdata_reg*}]
+
+# fft_nfft is the runtime FFT-size config (log2 N), set once at configuration and
+# static while the FFT streams.  In each FFT instance it is registered on the ser
+# clock and fans out (fo~80) to fft_length and size-dependent logic — quasi-static
+# same-clock ser paths, relaxed to 2 cycles.  (The adc->ser config CDC into these
+# regs is already covered by the pll_adc_clk->pll_ser_clk false_path above.)
+set_multicycle_path 2 -setup -from [get_cells -hierarchical -filter {NAME =~ *fft_nfft_reg*}]
+set_multicycle_path 1 -hold  -from [get_cells -hierarchical -filter {NAME =~ *fft_nfft_reg*}]
+
 # ADC data hold: adc_dat_*_i input_delay is referenced to adc_clk, but the
 # IOB register is clocked by pll_adc_clk (large internal skew vs adc_clk).
 # Hold analysis across these two clocks is not meaningful — suppress it.
@@ -263,63 +284,14 @@ set_false_path -hold -from [get_clocks adc_clk] -to [get_clocks pll_adc_clk]
 # set_false_path -from [get_clocks dac_clk_out] -to [get_clocks dac_2ph_out]
 
 ############################################################################
-# Floorplan: pre_0 b_1_reg_490 near its BRAM                              #
+# Floorplan: fft_b pre_0 s_axis regslice near fifo_in read pointer        #
 ############################################################################
-# pre_0/b_1_reg_490_reg drives buf_first_0 BRAM ENARDEN through a 4-LUT
-# chain.  Without constraints the register lands 20+ CLB columns right of
-# the BRAM, producing 2.958 ns routing (73% of a 4.045 ns path, WNS -0.574 ns).
-# Fix: tiny 6×6 pblocks (36 sites, 11 FFs → 30% density) adjacent to each
-# channel's BRAM column.  RAMB18_X2 (fft_b) ≈ SLICE_X24-30;
-# RAMB18_X3 (fft_a) ≈ SLICE_X36-42.  These micro-pblocks displace nothing.
-# pll_ser_clk: icmp_ln890 comparison path in peak_detector (pll_ser_clk WNS -0.544 ns).
-# CARRY4 comparison cells land at Y44-53 (fft_b) / Y41-43 (fft_a), forming a V-shaped
-# route to the phi_ln48 source (Y58/Y49) and icmp_reg destination (Y60/Y51-54).
-# Micro-pblocks (20-30 cells in 96-120 sites) pull CARRY4 cells into the band
-# between the source and destination, eliminating the 14-16 row routing detour.
-create_pblock pb_icmp_fft_b
-add_cells_to_pblock [get_pblocks pb_icmp_fft_b] \
-    [get_cells -hier -filter {NAME =~ i_scope/fft_b/pd_i/peak_detector_bd_i/peak_detector_0/inst/icmp_ln890_1_reg_1221*}]
-resize_pblock [get_pblocks pb_icmp_fft_b] -add {SLICE_X47Y56:SLICE_X60Y65}
-
-create_pblock pb_icmp_fft_a
-add_cells_to_pblock [get_pblocks pb_icmp_fft_a] \
-    [get_cells -hier -filter {NAME =~ i_scope/fft_a/pd_i/peak_detector_bd_i/peak_detector_0/inst/icmp_ln890_1_reg_1221*}]
-resize_pblock [get_pblocks pb_icmp_fft_a] -add {SLICE_X97Y45:SLICE_X110Y56}
-
-create_pblock pb_b1reg_fft_b
-add_cells_to_pblock [get_pblocks pb_b1reg_fft_b] \
-    [get_cells -hier -filter {NAME =~ i_scope/fft_b/gen_fft_ip_ssr.fft_i/fft_ip_ssr_bd_i/pre_0/inst/b_1_reg_490_reg*}]
-resize_pblock [get_pblocks pb_b1reg_fft_b] -add {SLICE_X20Y12:SLICE_X34Y26}
-
-create_pblock pb_b1reg_fft_a
-add_cells_to_pblock [get_pblocks pb_b1reg_fft_a] \
-    [get_cells -hier -filter {NAME =~ i_scope/fft_a/gen_fft_ip_ssr.fft_i/fft_ip_ssr_bd_i/pre_0/inst/b_1_reg_490_reg*}]
-resize_pblock [get_pblocks pb_b1reg_fft_a] -add {SLICE_X36Y26:SLICE_X56Y36}
-
-# set_false_path -from [filter [all_fanout -from [get_ports clka] \
-#     -flat -endpoints_only] {IS_LEAF}] -through [get_pins -of_objects \
-#     [get_cells -hier * -filter {PRIMITIVE_SUBGROUP==LUTRAM || \
-#     PRIMITIVE_SUBGROUP==dram || PRIMITIVE_SUBGROUP==drom}] \
-#     -filter {DIRECTION==OUT}]
-
-############################################################################
-# Floorplan: peak_detector sum_sq accumulator near pipeline control logic  #
-############################################################################
-# Without constraint Vivado co-locates sum_sq with the output-stage DSP
-# (count*sum_sq multiply) at X113Y97 for fft_a, which is 21 CLBs from the
-# fo=155 pipeline-reset LUT driver at X92Y101 → 1.439 ns routing
-# → pll_ser_clk WNS -1.140 ns.  Constraining sum_sq to X82-X108 cuts
-# the routing to ≤16 CLBs.  The output-stage DSP floats to a closer
-# location since SLICE pblocks do not constrain DSP48 placement.
-create_pblock pb_sumsq_fft_a
-add_cells_to_pblock [get_pblocks pb_sumsq_fft_a] \
-    [get_cells -hier -filter {NAME =~ i_scope/fft_a/pd_i/peak_detector_bd_i/peak_detector_0/inst/sum_sq*}]
-resize_pblock [get_pblocks pb_sumsq_fft_a] -add {SLICE_X82Y90:SLICE_X108Y112}
-
-# fft_b mirror: symmetric treatment to prevent the same drift.
-create_pblock pb_sumsq_fft_b
-add_cells_to_pblock [get_pblocks pb_sumsq_fft_b] \
-    [get_cells -hier -filter {NAME =~ i_scope/fft_b/pd_i/peak_detector_bd_i/peak_detector_0/inst/sum_sq*}]
-resize_pblock [get_pblocks pb_sumsq_fft_b] -add {SLICE_X30Y80:SLICE_X68Y104}
-
+# Without constraint: regslice_both_s_axis state_reg lands at X49Y41 while
+# fifo_in rdp count_value sits at X51Y23-Y25 — 16-row gap causes 0.836 ns
+# routing delay on the state→rdp path (dominant pll_ser_clk violation).
+# Pin the regslice cells to the band adjacent to fifo_in.
+create_pblock pb_saxisreg_fft_b
+add_cells_to_pblock [get_pblocks pb_saxisreg_fft_b] \
+    [get_cells -hier -filter {NAME =~ i_scope/fft_b/gen_fft_ip_ssr.fft_i/fft_ip_ssr_bd_i/pre_0/inst/regslice_both_s_axis_V_data_V_U/*}]
+resize_pblock [get_pblocks pb_saxisreg_fft_b] -add {SLICE_X47Y21:SLICE_X54Y32}
 
