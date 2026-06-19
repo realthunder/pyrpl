@@ -1,0 +1,70 @@
+# HLS build for fft_hls_direct (FFT_IMPL==5).
+# Instantiates the LogiCORE FFT directly inside HLS via hls::fft<> (hls_fft.h),
+# fusing the SSR butterfly/twiddle pre, the sub-FFTs, and the magnitude post into
+# ONE HLS IP — no block design and no separate post IP. This is the approach that
+# failed on Vivado 2020.1 (hls::fft internal buffer corruption under dataflow);
+# retried on 2025.2.
+#
+# Sourced standalone via: vitis_hls -f hls/fft_hls_direct.tcl
+# or from make.sh check_hls after globals are set.
+
+proc getparam {name default} {
+    upvar #0 $name g
+    if {[info exists g] && $g ne ""} { return $g }
+    if {[info exists ::env($name)]}   { return $::env($name) }
+    return $default
+}
+
+set part           [getparam part           xc7z020clg400-1]
+set fft_ssr        [getparam fft_ssr        2]
+set fft_nfft       [getparam fft_nfft       12]
+set fft_clk_period [getparam fft_clk_period 4.0]
+set fft_scaled     [getparam fft_scaled     2]
+# fft_width = DSZ (magnitude output bits): 0->28, 1->16, 2->20
+set fft_width      [getparam fft_width      [expr {$fft_scaled == 1 ? 16 : ($fft_scaled == 2 ? 20 : 28)}]]
+set fft_size       [expr {1 << $fft_nfft}]
+
+# ---- Generate twiddle LUT if not present (shared with FFT_IMPL=3) ----------
+set hls_dir [file normalize [file dirname [info script]]]
+set lut_hdr [file join $hls_dir fft_ip_ssr_twiddle.hpp]
+set gen_src [file join $hls_dir gen_twiddle_lut.cpp]
+set gen_exe [file join $hls_dir gen_twiddle_lut_exe]
+if {![file exists $lut_hdr] || [file mtime $gen_src] > [file mtime $lut_hdr]} {
+    puts "Generating twiddle LUT: $lut_hdr ..."
+    set orig [pwd]
+    cd $hls_dir
+    set compiled 0
+    if {![catch {exec g++ -O2 -o $gen_exe $gen_src}]} {
+        if {![catch {exec $gen_exe $fft_size $fft_ssr 18} msg]} { puts $msg; set compiled 1 }
+    }
+    if {!$compiled} {
+        set py_script [file join $hls_dir gen_twiddle_lut.py]
+        set rc [catch {exec python3 $py_script $fft_size $fft_ssr 18} msg]
+        if {$rc} { error "gen_twiddle_lut failed: $msg" }
+        puts $msg
+    }
+    cd $orig
+}
+
+set path_out .hls
+file mkdir $path_out
+cd $path_out
+
+open_project -reset fft_hls_direct
+add_files ../hls/fft_hls_direct.cpp \
+    -cflags "-I../hls \
+             -DFFT_SSR=$fft_ssr \
+             -DFFT_NFFT=$fft_nfft \
+             -DASZ=14 \
+             -DDSZ=$fft_width"
+
+set_top fft_hls_direct
+
+open_solution -reset solution1
+set_part $part
+create_clock -period $fft_clk_period
+
+csynth_design
+export_design -format ip_catalog -rtl verilog
+
+exit

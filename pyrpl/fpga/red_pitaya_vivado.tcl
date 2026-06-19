@@ -94,6 +94,9 @@ if {$fft_impl == 1} {
 } elseif {$fft_impl == 4} {
     source                        $path_ip/fft_ssr_native_bd.tcl
     generate_target all [get_files fft_ssr_native_bd.bd]
+} elseif {$fft_impl == 5} {
+    source                        $path_ip/fft_hls_direct_bd.tcl
+    generate_target all [get_files fft_hls_direct_bd.bd]
 } else {
     source                        $path_ip/fft_ip_ssr_bd.tcl
     generate_target all [get_files fft_ip_ssr_bd.bd]
@@ -130,6 +133,8 @@ if {$fft_impl == 1} {
     read_bd_wrapper fft_ssr_bd
 } elseif {$fft_impl == 4} {
     read_bd_wrapper fft_ssr_native_bd
+} elseif {$fft_impl == 5} {
+    read_bd_wrapper fft_hls_direct_bd
 } else {
     read_bd_wrapper fft_ip_ssr_bd
 }
