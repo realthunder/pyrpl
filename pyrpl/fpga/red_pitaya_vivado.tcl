@@ -82,7 +82,7 @@ source                            $path_ip/system_bd.tcl
 
 # generate SDK files
 generate_target all [get_files    system.bd]
-write_hwdef              -file    $path_sdk/red_pitaya.hwdef
+# write_hwdef removed in Vivado 2020.2+; replaced by write_hw_platform below after bitstream
 
 
 if {$fft_impl == 1} {
@@ -109,17 +109,27 @@ generate_target all [get_files    peak_detector_bd.bd]
 # template
 #read_verilog                      $path_rtl/...
 
-read_verilog                      .srcs/sources_1/bd/system/hdl/system_wrapper.v
-
-if {$fft_impl == 1} {
-    read_verilog                  .srcs/sources_1/bd/fft/hdl/fft_wrapper.v
-} elseif {$fft_impl == 2} {
-    read_verilog                  .srcs/sources_1/bd/fft_ssr_bd/hdl/fft_ssr_bd_wrapper.v
-} else {
-    read_verilog                  .srcs/sources_1/bd/fft_ip_ssr_bd/hdl/fft_ip_ssr_bd_wrapper.v
+# Vivado 2025.2+ generates BD wrappers into .gen/ instead of .srcs/.
+# Search both so the script works across versions.
+proc read_bd_wrapper {name} {
+    foreach base {.gen .srcs} {
+        set f "$base/sources_1/bd/$name/hdl/${name}_wrapper.v"
+        if {[file exists $f]} { read_verilog $f; return }
+    }
+    error "Cannot find BD wrapper for '$name' in .gen/ or .srcs/"
 }
 
-read_verilog                      .srcs/sources_1/bd/peak_detector_bd/hdl/peak_detector_bd_wrapper.v
+read_bd_wrapper system
+
+if {$fft_impl == 1} {
+    read_bd_wrapper fft
+} elseif {$fft_impl == 2} {
+    read_bd_wrapper fft_ssr_bd
+} else {
+    read_bd_wrapper fft_ip_ssr_bd
+}
+
+read_bd_wrapper peak_detector_bd
 
 read_verilog                      $path_rtl/axi_master.v
 read_verilog                      $path_rtl/axi_slave.v
@@ -336,11 +346,9 @@ write_cfgmem -force -format BIN -size 4 -interface SMAPx32 -disablebitswap -load
 file copy -force $path_out/red_pitaya.bin red_pitaya.bin
 
 ################################################################################
-# generate system definition
+# generate hardware platform (XSA) — replaces write_hwdef/write_sysdef (removed 2020.2+)
 ################################################################################
 
-write_sysdef             -hwdef   $path_sdk/red_pitaya.hwdef \
-                         -bitfile $path_out/red_pitaya.bit \
-                         -file    $path_sdk/red_pitaya.sysdef
+write_hw_platform -fixed -force -include_bit -file $path_sdk/red_pitaya.xsa
 
 

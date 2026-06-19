@@ -58,13 +58,28 @@ if [[ "${1:-}" == "clean" ]]; then
     shift
 fi
 
-TA_PATH=/opt/Xilinx
-export XILINX_VITIS=${TA_PATH}/Vitis/2020.1
-export XILINX_VIVADO=${TA_PATH}/Vivado/2020.1
-source ${XILINX_VIVADO}/settings64.sh
+# XILINX_VERSION: Vivado/Vitis toolchain version to use.
+#   Set in environment to override (e.g. XILINX_VERSION=2020.1 ./make.sh).
+#   Directory layout changed between 2020.1 and 2025.2:
+#     2020.1: /opt/Xilinx/{Vivado,Vitis}/2020.1/
+#     2025.2: /opt/Xilinx/2025.2/{Vivado,Vitis}/
+XILINX_VERSION=${XILINX_VERSION:-2025.2}
 
-VIVADO=${XILINX_VIVADO}/bin/vivado
-VIVADO_HLS=${XILINX_VITIS}/bin/vitis_hls
+if [[ "$XILINX_VERSION" == "2020.1" ]]; then
+    export XILINX_VIVADO=/opt/Xilinx/Vivado/2020.1
+    export XILINX_VITIS=/opt/Xilinx/Vitis/2020.1
+    set +u; source ${XILINX_VIVADO}/settings64.sh; set -u
+    VIVADO=${XILINX_VIVADO}/bin/vivado
+    VIVADO_HLS=${XILINX_VITIS}/bin/vitis_hls
+else
+    export XILINX_VIVADO=/opt/Xilinx/${XILINX_VERSION}/Vivado
+    export XILINX_VITIS=/opt/Xilinx/${XILINX_VERSION}/Vitis
+    set +u; source ${XILINX_VIVADO}/settings64.sh; set -u
+    VIVADO=${XILINX_VIVADO}/bin/vivado
+    # In 2025.2+, vitis_hls wrapper was removed from bin/; go through loader
+    # which sources setupEnv.sh/rdiArgs.sh to set RDI_DATADIR, TCL_LIBRARY, etc.
+    VIVADO_HLS="${XILINX_VITIS}/bin/loader -exec vitis_hls"
+fi
 
 # Build parameters — uncomment and edit to override the defaults in the TCL scripts.
 # All values are passed to Vivado and Vitis HLS via environment variables.
@@ -220,7 +235,7 @@ if [[ -d "$ROOT/out" ]]; then
     mv "$ROOT/out" "$ROOT/out.d/$(date +%Y%m%d-%H%M%S)"
     ls -1dt "$ROOT/out.d"/[0-9]*-[0-9]* 2>/dev/null | tail -n +11 | xargs rm -rf
 fi
-rm -rf "$ROOT/.Xil" "$ROOT/.srcs" "$ROOT/sdk"
+rm -rf "$ROOT/.Xil" "$ROOT/.srcs" "$ROOT/.gen" "$ROOT/sdk"
 
 check_hls
 build_dtbo
