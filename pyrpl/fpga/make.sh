@@ -199,33 +199,8 @@ check_hls() {
         hls/peak_detector_tb.cpp hls/peak_detector.tcl
 }
 
-# Compile the device-tree overlay (dts/dma.dts -> dts/dma.dtbo) when the source
-# changes. Needs the device-tree compiler (dtc); if it is missing, warn and skip
-# rather than failing the FPGA build, which does not depend on the overlay.
-build_dtbo() {
-    local dts="$ROOT/dts/dma.dts"
-    local dtbo="$ROOT/dts/dma.dtbo"
-    [[ -f "$dts" ]] || return 0
-    if [[ -f "$dtbo" && ! "$dts" -nt "$dtbo" ]]; then
-        echo "==> DTBO: dma.dtbo up to date, skipping."
-        return 0
-    fi
-    if ! command -v dtc >/dev/null 2>&1; then
-        echo "==> DTBO: dtc not found, skipping dma.dtbo (install device-tree-compiler)" >&2
-        return 0
-    fi
-    echo "==> DTBO: compiling dma.dtbo"
-    dtc -@ -I dts -O dtb -o "$dtbo" "$dts"
-    echo "==> DTBO: done."
-}
-
 if [[ "${1:-}" == "hls" ]]; then
     check_hls
-    exit 0
-fi
-
-if [[ "${1:-}" == "dtbo" ]]; then
-    build_dtbo
     exit 0
 fi
 
@@ -238,7 +213,6 @@ fi
 rm -rf "$ROOT/.Xil" "$ROOT/.srcs" "$ROOT/.gen" "$ROOT/sdk"
 
 check_hls
-build_dtbo
 
 script="${1:-red_pitaya_vivado.tcl}"
 [[ $# -gt 0 ]] && shift
