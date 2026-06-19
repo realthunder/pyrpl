@@ -68,9 +68,8 @@
 
 module red_pitaya_scope #(
   parameter ASZ  = 14,  // ADC input sample data width
-  parameter QSZ  = 11,  // FFT buffer queue size 2^QSZ
   parameter DSZ  = 28,  // FFT_output width
-  parameter FSZ  = 13,  // FFT transform length 2^FSZ
+  parameter FSZ  = 13,  // FFT transform length 2^FSZ (max runtime size)
   parameter RSZ  = 14,  // RAM size 2^RSZ
   parameter HSZ  = 14,  // fft history buffer size 2^HSZ
   parameter FSSR     = 1, // FFT super sample rate (parallel channels)
@@ -261,6 +260,15 @@ end
 
 localparam READ_DELAY = (3-1);
 localparam FFT_RDELAY = (7-1);
+// fifo_in depth. Reads are blocked during zero-padding; peak occupancy =
+// min(acq_samples, padding_duration_in_adc_cycles). With fft_clk=2x adc_clk,
+// padding clears at FSSR*2 ADC-sample-equivalents per ADC cycle, so padding
+// duration = x*N/(2*FSSR) ADC cycles. The two bounds cross at x=2*FSSR/(1+2*FSSR)
+// giving peak = N/(1+2*FSSR) = 2^FSZ/(1+2*FSSR). Since 2*FSSR < 1+2*FSSR < 4*FSSR,
+// floor(log2(1+2*FSSR)) = SSR_BITS+1, so QSZ_min = FSZ - SSR_BITS - 1 exactly.
+// WARNING: if fft_clk_sel=0 (fft_clk=adc_clk), peak grows to N/(1+FSSR) which
+// exceeds this depth; application must restrict padding to avoid FIFO overflow.
+localparam QSZ = FSZ - $clog2(FSSR) - 1;
 
 logic [ ASZ-1: 0] adc_a_rd      ;
 logic [ ASZ-1: 0] adc_b_rd      ;

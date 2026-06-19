@@ -177,7 +177,6 @@ synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivale
     -generic FFT_SSR=$fft_ssr \
     -generic FFT_WIDTH=$fft_width \
     -generic FFT_IMPL=$fft_impl \
-    -verilog_define STORE_HIST \
 
 # set debug_nets {asg_trig_n asg_trig2_p fft_dvalid fft_a_enable fft_b_enable}
 # set debug_nets {}
@@ -241,6 +240,9 @@ set_false_path -from [get_cells -hier -filter {NAME =~ *fft_peak_minimum_arg*}] 
 # opt_design
 opt_design -directive NoBramPowerOpt
 # power_opt_design
+# NOTE: place_design -directive Explore was tried and regressed both clocks
+# (adc -0.483->-0.593, ser -0.674->-0.771). The default placer finds a better
+# basin for this design; leave it on default.
 place_design
 
 # phys_opt_design
@@ -257,23 +259,20 @@ if {[llength $ce_pins] > 0} {
     phys_opt_design -force_replication_on_nets $ce_nets
 }
 
-# Force replication of peak_detector pipeline-enable registers (ap_enable_reg_pp0_iter*).
-# Same pattern: high-routing-delay enable signals feeding DSP C-inputs via LUT6.
-# Logic delay alone (2.7 ns) fits in 4 ns; replication cuts the 2.9 ns routing overhead.
-set pd_en_pins [get_pins -hier -quiet -filter {NAME =~ *peak_detector_0*ap_enable_reg_pp0_iter*/Q}]
-if {[llength $pd_en_pins] > 0} {
-    set pd_en_nets [get_nets -of_objects $pd_en_pins]
-    phys_opt_design -force_replication_on_nets $pd_en_nets
+# Force replication of icmp_ln617_reg_522_pp0_iter7_reg (fo=307 CE loads in post_0).
+set icmp_pins [get_pins -hier -quiet -filter {NAME =~ *post_0*icmp_ln617_reg_522_pp0_iter7_reg_reg*/Q}]
+if {[llength $icmp_pins] > 0} {
+    set icmp_nets [get_nets -of_objects $icmp_pins]
+    phys_opt_design -force_replication_on_nets $icmp_nets
 }
 
-# Force replication of i_dsp/sum1_reg (pll_adc_clk).
-# sum1_reg feeds a 12-LUT read-data mux tree to sys_rdata_reg (6.111 ns routing).
-# Replication plants a copy near the mux sinks to cut the long route.
-set sum1_pins [get_pins -hier -quiet -filter {NAME =~ i_dsp/sum1_reg*/Q}]
-if {[llength $sum1_pins] > 0} {
-    set sum1_nets [get_nets -of_objects $sum1_pins]
-    phys_opt_design -force_replication_on_nets $sum1_nets
+# Force replication of k_reg_152_reg[0] (fo=168 sync-reset loads in post_0).
+set k_pins [get_pins -hier -quiet -filter {NAME =~ *post_0*k_reg_152_reg[0]/Q}]
+if {[llength $k_pins] > 0} {
+    set k_nets [get_nets -of_objects $k_pins]
+    phys_opt_design -force_replication_on_nets $k_nets
 }
+
 
 write_checkpoint         -force   $path_out/post_place
 report_timing_summary    -file    $path_out/post_place_timing_summary.rpt
