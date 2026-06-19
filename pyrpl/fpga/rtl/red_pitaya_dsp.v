@@ -383,7 +383,14 @@ assign diff_input_signal[0] = diff_output_signal[1]; // difference input of PID0
 assign diff_input_signal[1] = diff_output_signal[0]; // difference input of PID1 is PID0
 assign diff_input_signal[2] = {14{1'b0}};      // difference input of PID2 is zero
 
-generate for (j = PID0; j <= PID2; j = j+1) begin
+// PID0 is always present. PID1/PID2 are restored by defining ENABLE_PID_EXTRA
+// (off by default to relieve DSP/LUT congestion). Mirrors the ENABLE_IIR guard.
+`ifdef ENABLE_PID_EXTRA
+localparam PID_LAST = PID2;
+`else
+localparam PID_LAST = PID0;
+`endif
+generate for (j = PID0; j <= PID_LAST; j = j+1) begin
    red_pitaya_pid_block i_pid (
      // data
      .clk_i        (  clk_i          ),  // clock
@@ -405,6 +412,19 @@ generate for (j = PID0; j <= PID2; j = j+1) begin
    assign output_signal[j] = output_direct[j];
 end
 endgenerate
+`ifndef ENABLE_PID_EXTRA
+// PID1, PID2 disabled — tie off their outputs and bus (see ENABLE_PID_EXTRA).
+assign output_direct[PID1]      = 14'h0;
+assign output_signal[PID1]      = 14'h0;
+assign diff_output_signal[PID1] = 14'h0;
+assign module_ack[PID1]         = 1'b0;
+assign module_rdata[PID1]       = 32'h0;
+assign output_direct[PID2]      = 14'h0;
+assign output_signal[PID2]      = 14'h0;
+assign diff_output_signal[PID2] = 14'h0;
+assign module_ack[PID2]         = 1'b0;
+assign module_rdata[PID2]       = 32'h0;
+`endif
 
 wire trig_signal;
 //TRIG
@@ -460,8 +480,14 @@ assign module_rdata[IIR]  = 32'h0;
 
 
 //IQ modules iq0, iq1
-generate for (j = IQ0; j < IQ2; j = j+1) begin
-    red_pitaya_iq_block 
+// IQ0 is always present. IQ1 is restored by defining ENABLE_IQ1 (off by default).
+`ifdef ENABLE_IQ1
+localparam IQ_LAST = IQ1;
+`else
+localparam IQ_LAST = IQ0;
+`endif
+generate for (j = IQ0; j <= IQ_LAST; j = j+1) begin
+    red_pitaya_iq_block
       iq
       (
 	     // data
@@ -485,8 +511,16 @@ generate for (j = IQ0; j < IQ2; j = j+1) begin
 	     .wdata (sys_wdata)
       );
 end endgenerate
+`ifndef ENABLE_IQ1
+// IQ1 disabled — tie off outputs and bus.
+assign output_direct[IQ1] = 14'h0;
+assign output_signal[IQ1] = 14'h0;
+assign module_ack[IQ1]    = 1'b0;
+assign module_rdata[IQ1]  = 32'h0;
+`endif
 
-// IQ with two outputs iq2
+// IQ with two outputs iq2 — restored by defining ENABLE_IQ2 (off by default).
+`ifdef ENABLE_IQ2
 red_pitaya_iq_block   #( .QUADRATUREFILTERSTAGES(4) )
     iq_2_outputs
     (
@@ -507,5 +541,13 @@ red_pitaya_iq_block   #( .QUADRATUREFILTERSTAGES(4) )
         .rdata (module_rdata[IQ2]),
         .wdata (sys_wdata)
     );
+`else
+// iq_2_outputs disabled — tie off both outputs and bus.
+assign output_direct[IQ2]   = 14'h0;
+assign output_signal[IQ2]   = 14'h0;
+assign output_signal[IQ2_2] = 14'h0;
+assign module_ack[IQ2]      = 1'b0;
+assign module_rdata[IQ2]    = 32'h0;
+`endif
 
 endmodule
