@@ -73,6 +73,9 @@ After this, the server will wait for the next command.
 #include <stdint.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
+#include <pthread.h>
+#include <time.h>
 
 void error(const char *msg);
 
@@ -101,6 +104,117 @@ int fd = -1;
 //sockets are globally defined for error handling
 int sockfd;
 int newsockfd;
+
+/* -------------------------------------------------------------------------
+ * DMA point-cloud multicast thread
+ *
+ * Polls the FPGA write pointer at 0x40A00000, reads complete packets from
+ * the ring buffer at 0x1e000000, and multicasts each packet via UDP using
+ * sendmsg(iovec) to avoid a copy across the ring-buffer wrap boundary.
+ *
+ * Packet layout (HIST_BLOCK_SIZE+1 words of 8 bytes each):
+ *   Word 0  [63:60] channel_id  [31:0] frame_cnt  [31+HSZ:32] fft_hist_index
+ *   Word 1..183: { peak_bin_down, peak_bin_up }
+ *
+ * DMA_PKT_WORDS must equal HIST_BLOCK_SIZE+1 from the FPGA build.
+ * ------------------------------------------------------------------------- */
+#define DMA_BUF_BASE     0x1e000000UL
+#define DMA_BUF_WORDS    16384           /* must match BUF_WORDS in dma_s2mm */
+#define DMA_BUF_BYTES    (DMA_BUF_WORDS * 8)
+#define DMA_REG_BASE     0x40a00000UL    /* AXI-Lite slot 5 — write pointer  */
+#define DMA_PKT_WORDS    184             /* 1 header + 183 data = 1472 B = one Ethernet MTU */
+#define DMA_PKT_BYTES    (DMA_PKT_WORDS * 8)
+#define DMA_DEFAULT_MCAST "239.255.0.1"
+#define DMA_DEFAULT_PORT  12468
+
+typedef struct { int port; const char *group; } dma_thread_args_t;
+
+static void *dma_poll_thread(void *arg)
+{
+    dma_thread_args_t *a = (dma_thread_args_t *)arg;
+    int port = a->port;
+    const char *mcast_group = a->group;
+    int devfd;
+    volatile uint64_t *dma_buf;
+    volatile uint32_t *dma_reg;
+    int sock;
+    struct sockaddr_in mcast_addr;
+    uint32_t rd_ptr = 0;
+    const struct timespec poll_sleep = { .tv_sec = 0, .tv_nsec = 100000 }; /* 100 µs */
+
+    devfd = open("/dev/mem", O_RDONLY | O_SYNC);
+    if (devfd < 0) { perror("dma: open /dev/mem"); return NULL; }
+
+    dma_buf = mmap(NULL, DMA_BUF_BYTES, PROT_READ, MAP_SHARED, devfd, DMA_BUF_BASE);
+    if (dma_buf == MAP_FAILED) {
+        perror("dma: mmap ring buffer"); close(devfd); return NULL;
+    }
+
+    dma_reg = mmap(NULL, 4096, PROT_READ, MAP_SHARED, devfd, DMA_REG_BASE);
+    if (dma_reg == MAP_FAILED) {
+        perror("dma: mmap register"); munmap((void *)dma_buf, DMA_BUF_BYTES);
+        close(devfd); return NULL;
+    }
+
+    sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) { perror("dma: socket"); goto cleanup; }
+
+    {
+        unsigned char ttl = 1;
+        setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
+    }
+
+    memset(&mcast_addr, 0, sizeof(mcast_addr));
+    mcast_addr.sin_family      = AF_INET;
+    mcast_addr.sin_port        = htons((uint16_t)port);
+    mcast_addr.sin_addr.s_addr = inet_addr(mcast_group);
+
+    fprintf(stderr, "dma: multicasting on %s:%d\n", mcast_group, port);
+
+    while (1) {
+        uint32_t wr_ptr = dma_reg[0] & (DMA_BUF_WORDS - 1);
+        uint32_t avail  = (wr_ptr - rd_ptr + DMA_BUF_WORDS) & (DMA_BUF_WORDS - 1);
+
+        if (avail < DMA_PKT_WORDS) {
+            nanosleep(&poll_sleep, NULL);
+            continue;
+        }
+
+        /* scatter-gather across possible ring-buffer wrap — no memcpy */
+        uint32_t end = (rd_ptr + DMA_PKT_WORDS) & (DMA_BUF_WORDS - 1);
+        struct iovec iov[2];
+        int niov;
+
+        if (rd_ptr + DMA_PKT_WORDS <= DMA_BUF_WORDS) {
+            iov[0].iov_base = (void *)&dma_buf[rd_ptr];
+            iov[0].iov_len  = DMA_PKT_BYTES;
+            niov = 1;
+        } else {
+            uint32_t first  = DMA_BUF_WORDS - rd_ptr;
+            iov[0].iov_base = (void *)&dma_buf[rd_ptr];
+            iov[0].iov_len  = first * 8;
+            iov[1].iov_base = (void *)&dma_buf[0];
+            iov[1].iov_len  = (DMA_PKT_WORDS - first) * 8;
+            niov = 2;
+        }
+
+        struct msghdr msg = {
+            .msg_name    = &mcast_addr,
+            .msg_namelen = sizeof(mcast_addr),
+            .msg_iov     = iov,
+            .msg_iovlen  = niov,
+        };
+        sendmsg(sock, &msg, 0);
+
+        rd_ptr = end;
+    }
+
+cleanup:
+    munmap((void *)dma_buf, DMA_BUF_BYTES);
+    munmap((void *)dma_reg, 4096);
+    close(devfd);
+    return NULL;
+}
 
 //open and close memory mapping to FPGA registers
 void open_map_base() {
@@ -170,6 +284,22 @@ int main(int argc, char *argv[])
          fprintf(stderr,"ERROR, no port provided\n");
          exit(1);
      }
+
+     /* start DMA multicast thread (argv[2] = "mcast-ip:udp-port") */
+     {
+         static dma_thread_args_t dma_args;
+         static char dma_group[64];
+         int dma_port = DMA_DEFAULT_PORT;
+         strncpy(dma_group, DMA_DEFAULT_MCAST, sizeof(dma_group));
+         if (argc >= 3)
+             sscanf(argv[2], "%63[^:]:%d", dma_group, &dma_port);
+         dma_args.port  = dma_port;
+         dma_args.group = dma_group;
+         pthread_t dma_tid;
+         pthread_create(&dma_tid, NULL, dma_poll_thread, &dma_args);
+         pthread_detach(dma_tid);
+     }
+
      sockfd = socket(AF_INET, SOCK_STREAM, 0);
      if (sockfd < 0) 
         error("ERROR opening socket");
