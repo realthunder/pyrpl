@@ -54,7 +54,10 @@ fi
 
 if [[ "${1:-}" == "clean" ]]; then
     echo "==> Removing HLS stamps: $ROOT/.hls/"
-    rm -f "$ROOT/.hls/"*.stamp "$ROOT/.hls/"*.params
+    # Stamps/params are hidden files (.${name}.stamp), so the *.stamp glob alone
+    # misses them — include the dotfile patterns or 'clean' won't force a rebuild.
+    rm -f "$ROOT/.hls/"*.stamp "$ROOT/.hls/"*.params \
+          "$ROOT/.hls/".*.stamp "$ROOT/.hls/".*.params
     shift
 fi
 
