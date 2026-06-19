@@ -326,7 +326,12 @@ write_bitstream -force $path_out/red_pitaya.bit
 
 set_property BITSTREAM.GENERAL.COMPRESS FALSE [current_design]
 write_bitstream -force $path_out/red_pitaya_uncompressed.bit
-write_cfgmem -force -format BIN -size 4 -interface SMAPx32 -disablebitswap -loadbit "up 0x0 $path_out/red_pitaya_uncompressed.bit" red_pitaya.bin
+# Write the .bin into out/ so it is archived alongside the .bit when out/ is
+# rotated to out.d/, then copy it to the repo root for flashing
+# (cat red_pitaya.bin > /dev/xdevcfg). The .bin is derived from the
+# uncompressed .bit, so any archived build's .bin can be regenerated from it.
+write_cfgmem -force -format BIN -size 4 -interface SMAPx32 -disablebitswap -loadbit "up 0x0 $path_out/red_pitaya_uncompressed.bit" $path_out/red_pitaya.bin
+file copy -force $path_out/red_pitaya.bin red_pitaya.bin
 
 ################################################################################
 # generate system definition
