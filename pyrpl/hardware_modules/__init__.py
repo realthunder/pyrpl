@@ -33,3 +33,4 @@ from .iq import Iq
 from .iir import IIR
 from .ams import AMS
 from .trig import Trig
+from .dma_client import DmaUdpClient
