@@ -191,6 +191,12 @@ check_hls() {
             hls/gen_twiddle_lut.cpp hls/gen_twiddle_lut.py
         run_hls fft_ip_ssr_post hls/fft_ip_ssr_post.tcl \
             hls/fft_ip_ssr.cpp hls/fft_ip_ssr_post.tcl
+    elif [[ "$impl" == "4" ]]; then
+        # Native-SSR xfft (Vivado 2025.2 CONFIG.super_sample_rates): thin pre + mag.
+        run_hls fft_native_pre hls/fft_ssr_native_pre.tcl \
+            hls/fft_ssr_native.cpp hls/fft_ssr_native_pre.tcl
+        run_hls fft_native_mag hls/fft_ssr_native_mag.tcl \
+            hls/fft_ssr_native.cpp hls/fft_ssr_native_mag.tcl
     fi
     # FFT_IMPL==1 (plain LogiCORE) needs no HLS FFT build.
 
