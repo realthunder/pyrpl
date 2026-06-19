@@ -927,6 +927,28 @@ end else if (FFT_IMPL == 3) begin : gen_fft_ip_ssr
         .event_frame_started    (fft_frame_start)
     );
 
+end else if (FFT_IMPL == 4) begin : gen_fft_native
+    // Native-SSR xfft (Vivado 2025.2 CONFIG.super_sample_rates): single SSR xfft
+    // with thin HLS pre (real->complex+config) and mag (complex->magnitude) wrappers.
+    // Output ordering matches FFT_IMPL==2 (handled by the DIT lane-map branch above).
+
+    fft_ssr_native_bd_wrapper fft_i (
+        .aclk                   (clk_i),
+        .aresetn                (fft_rstn_i),
+
+        .s_axis_tdata           (fft_data_i),
+        .s_axis_tvalid          (fft_saxi_valid),
+        .s_axis_tready          (fft_saxi_rdy),
+        .s_axis_tlast           (fft_saxi_last),
+
+        .m_axis_tdata           (fft_maxi_data),
+        .m_axis_tvalid          (fft_maxi_valid),
+        .m_axis_tready          (fft_maxi_rdy),
+        .m_axis_tlast           (fft_maxi_last),
+
+        .event_frame_started    (fft_frame_start)
+    );
+
 end else begin : gen_fft_ssr
     // DIT SSR FFT (Vitis xf::dsp::fft): lane 0 = lower-half bins, lane 1 = upper-half.
 
