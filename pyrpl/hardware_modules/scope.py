@@ -122,6 +122,7 @@ large an integrator gain will quickly saturate the outputs.
 
 import time
 from .dsp import all_inputs, dsp_addr_base, InputSelectRegister
+from .dma_client import DmaUdpClient
 from ..acquisition_module import AcquisitionModule
 from ..async_utils import wait, ensure_future, sleep_async
 from ..pyrpl_utils import sorted_dict
@@ -577,12 +578,21 @@ class Scope(HardwareModule, AcquisitionModule):
                                         doc="whether a curve acquisition has been "
                                             "initiated")
 
+    def __init__(self, parent, name=None):
+        super().__init__(parent, name=name)
+        self._dma_udp_client = DmaUdpClient()
+        self._last_dma_frame_cnt = [-1, -1]
+
     def _ownership_changed(self, old, new):
         """
         If the scope was in continuous mode when slaved, it has to stop!!
         """
         if new is not None:
             self.stop()
+
+    def stop(self):
+        super().stop()
+        self._dma_udp_client.stop()
 
     @property
     def _fft_length(self):
@@ -603,8 +613,23 @@ class Scope(HardwareModule, AcquisitionModule):
         d2 = d[np.arange(1, length, 2)]
         return d2, d1
 
-    def get_fft_history(self, addr, length):
-        """raw data from fft history"""
+    def get_fft_history(self, addr, length, channel=None):
+        """raw data from fft history.
+
+        If channel (0=fft_a, 1=fft_b) is given, reads from the DMA UDP client
+        instead of AXI-Lite registers and returns None when frame_cnt has not
+        advanced since the last call.
+        """
+        if channel is not None:
+            current_cnt = self._dma_udp_client.frame_count(channel)
+            if current_cnt == self._last_dma_frame_cnt[channel]:
+                return None
+            self._last_dma_frame_cnt[channel] = current_cnt
+            frame = self._dma_udp_client.get_frame(channel)
+            if frame is None:
+                return None
+            peak_down, peak_up = frame
+            return peak_down[:length], peak_up[:length]
         d = np.array(self._reads(addr, length), dtype=np.uint32)
         d1 = np.array(d & 0xffff, dtype=np.int32)
         d2 = np.array(d >> 16, dtype=np.int32)
@@ -619,10 +644,10 @@ class Scope(HardwareModule, AcquisitionModule):
         return self.get_fft_data(0x40000)
 
     def _ffthist_ch1(self, length):
-        return self.get_fft_history(0x50000, length)
+        return self.get_fft_history(0x50000, length, channel=0)
 
     def _ffthist_ch2(self, length):
-        return self.get_fft_history(0x60000, length)
+        return self.get_fft_history(0x60000, length, channel=1)
 
     _fftdata = _fftdata_ch1
     _ffthist = _ffthist_ch1
@@ -779,6 +804,8 @@ class Scope(HardwareModule, AcquisitionModule):
         """
         Start acquisition of a curve in rolling_mode=False
         """
+        if self.fft_enable and not self._dma_udp_client._running:
+            self._dma_udp_client.start()
         autosave_backup = self._autosave_active
         self._autosave_active = False  # Don't save anything in config file
         # during setup!! # maybe even better in
