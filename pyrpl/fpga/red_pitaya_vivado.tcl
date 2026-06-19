@@ -262,29 +262,30 @@ place_design
 # phys_opt_design -directive AggressivePhysOptimization  (Vivado 2021+)
 phys_opt_design -directive AggressiveExplore
 
+# [2020.1 levers — disabled on 2025.2; FFT is no longer critical]
 # Force replication of the xfft NonRealTime CE register (ce_predicted_reg, fo≈1000+).
 # Its Q output drives all pipeline CEs across the full IP footprint (94% routing delay).
 # Target the Q pin explicitly so we replicate the right register, not its D-input logic.
 # -force_replication_on_nets overrides DONT_TOUCH on the xfft IP cells.
-set ce_pins [get_pins -hier -quiet -filter {NAME =~ *fft_ip_ssr_bd_i*ce_predicted_reg/Q}]
-if {[llength $ce_pins] > 0} {
-    set ce_nets [get_nets -of_objects $ce_pins]
-    phys_opt_design -force_replication_on_nets $ce_nets
-}
-
-# Force replication of icmp_ln617_reg_522_pp0_iter7_reg (fo=307 CE loads in post_0).
-set icmp_pins [get_pins -hier -quiet -filter {NAME =~ *post_0*icmp_ln617_reg_522_pp0_iter7_reg_reg*/Q}]
-if {[llength $icmp_pins] > 0} {
-    set icmp_nets [get_nets -of_objects $icmp_pins]
-    phys_opt_design -force_replication_on_nets $icmp_nets
-}
-
-# Force replication of k_reg_152_reg[0] (fo=168 sync-reset loads in post_0).
-set k_pins [get_pins -hier -quiet -filter {NAME =~ *post_0*k_reg_152_reg[0]/Q}]
-if {[llength $k_pins] > 0} {
-    set k_nets [get_nets -of_objects $k_pins]
-    phys_opt_design -force_replication_on_nets $k_nets
-}
+# set ce_pins [get_pins -hier -quiet -filter {NAME =~ *fft_ip_ssr_bd_i*ce_predicted_reg/Q}]
+# if {[llength $ce_pins] > 0} {
+#     set ce_nets [get_nets -of_objects $ce_pins]
+#     phys_opt_design -force_replication_on_nets $ce_nets
+# }
+#
+# # Force replication of icmp_ln617_reg_522_pp0_iter7_reg (fo=307 CE loads in post_0).
+# set icmp_pins [get_pins -hier -quiet -filter {NAME =~ *post_0*icmp_ln617_reg_522_pp0_iter7_reg_reg*/Q}]
+# if {[llength $icmp_pins] > 0} {
+#     set icmp_nets [get_nets -of_objects $icmp_pins]
+#     phys_opt_design -force_replication_on_nets $icmp_nets
+# }
+#
+# # Force replication of k_reg_152_reg[0] (fo=168 sync-reset loads in post_0).
+# set k_pins [get_pins -hier -quiet -filter {NAME =~ *post_0*k_reg_152_reg[0]/Q}]
+# if {[llength $k_pins] > 0} {
+#     set k_nets [get_nets -of_objects $k_pins]
+#     phys_opt_design -force_replication_on_nets $k_nets
+# }
 
 
 write_checkpoint         -force   $path_out/post_place
