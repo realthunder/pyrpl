@@ -135,11 +135,13 @@ void peak_detector(
         // into two sub-4-ns paths: delta accumulation and frame update run in
         // separate cycles so neither exceeds the 4 ns budget.
         sum    += delayed_delta_sum;
-        // Zero sum_sq on beat 0 via registered flag instead of the HLS auto-reset
-        // R-pin path (which is a LUT output with fo=143, not replicable by phys_opt).
-        // reset_sq is a FF Q output → phys_opt can replicate it across the chip.
+        // Zero sum_sq on beat 0 via registered flag (sq_base). On 2025.2 this mux
+        // also gives the placer a second register endpoint, splitting the II=1
+        // recurrence. impl=fabric (CARRY-chain) instead of a DSP: the DSP forced a
+        // combinational add + fabric round-trip that became the binding 250 MHz wall
+        // (ser -0.345); the fabric carry-chain add removes sum_sq from both clocks.
         sum_sq_t sq_base = reset_sq ? sum_sq_t(0) : sum_sq;
-#pragma HLS BIND_OP variable=sum_sq op=add impl=dsp
+#pragma HLS BIND_OP variable=sum_sq op=add impl=fabric
         sum_sq = sq_base + delayed_delta_sq;
         count  += delayed_delta_count;
         delayed_delta_sum   = delta_sum;
