@@ -849,12 +849,21 @@ always @(posedge clk_i) begin
     end
 end
 
+// Independent-clock FIFO: written on the FFT/ser clock (clk_i, 250 MHz), read on
+// the DMA/adc clock (adc_clk_i, 125 MHz). This bridges the FFT output to a
+// 125 MHz DMA so the DMA's a_tready handshake is no longer a 250 MHz cross-chip
+// path; the FIFO synchronisers handle the clock crossing. Point-cloud data is
+// sparse, so 125 MHz read keeps up easily.
 xpm_fifo_axis #(
     .TDATA_WIDTH      (64),
     .FIFO_DEPTH       (1 << $clog2(HIST_BLOCK_SIZE * 2 + 4)),
+    .CLOCKING_MODE    ("independent_clock"),
+    .RELATED_CLOCKS   (0),
+    .CDC_SYNC_STAGES  (2),
     .USE_ADV_FEATURES (16'h0000)
 ) fifo_dma_out (
     .s_aclk          (clk_i),
+    .m_aclk          (adc_clk_i),
     .s_aresetn       (rstn_i),
     .s_axis_tdata    (dma_wr_data),
     .s_axis_tvalid   (dma_wr_en),
