@@ -18,7 +18,7 @@ proc getparam {name default} {
 }
 
 set part           [getparam part           xc7z020clg400-1]
-set fft_ssr        [getparam fft_ssr        2]
+set fft_ssr        [getparam fft_ssr        4]
 set fft_nfft       [getparam fft_nfft       12]
 set fft_clk_period [getparam fft_clk_period 4.0]
 set fft_scaled     [getparam fft_scaled     2]
