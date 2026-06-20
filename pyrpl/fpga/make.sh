@@ -127,6 +127,15 @@ fi
 #   Default 183 → 184 * 8 = 1472 B = one standard Ethernet MTU (no fragmentation).
 #export HIST_BLOCK_SIZE=183
 
+# ---- Active build defaults (override on the command line, e.g. FFT_IMPL=3 ./make.sh) ----
+# Default build: direct hls::fft (FFT_IMPL=5), SSR=4, FFT clock pinned to 125 MHz
+# (FFT_CLK_SEL=0). SSR=4 @ 125 MHz = same 500 Msps as SSR=2 @ 250 MHz but an 8 ns
+# budget, which closes the FFT timing (pll_ser_clk +1.8 ns). Fits at ~98% DSP.
+# See HANDOFF.md / memory project-hls-direct-fft.
+export FFT_IMPL=${FFT_IMPL:-5}
+export FFT_SSR=${FFT_SSR:-4}
+export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
+
 mkdir -p "$ROOT/.hls"
 
 # Vivado HLS csim uses a bundled GCC 6.2.0 that doesn't know Ubuntu 24.04's
