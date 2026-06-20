@@ -216,8 +216,15 @@ void fft_ssr(
             fft_calc_t mag = cordic_mag<CORDIC_ITER>(re, im);
 #endif
 
-            // Match Vivado scaling
+            // Normalise the magnitude to an integer-valued output. The 2020.1
+            // array FFT carried FRAC extra fractional bits in its output type, so
+            // it shifted right by FRAC; the 2025.2 stream FFT already returns the
+            // true value, so no shift (otherwise every bin underflows to ~0).
+#ifdef SSR_FFT_LEGACY_ARRAY
             fft_calc_t mag_norm = mag >> FRAC;
+#else
+            fft_calc_t mag_norm = mag;
+#endif
 
             // rounding
             mag_norm += 1;
