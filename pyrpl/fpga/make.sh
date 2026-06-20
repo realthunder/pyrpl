@@ -149,6 +149,12 @@ export FFT_IMPL=${FFT_IMPL:-5}
 export FFT_SSR=${FFT_SSR:-4}
 export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
 
+# DETERMINISTIC doubles as the Vivado placer seed (see red_pitaya_vivado.tcl):
+#   0 (default) = fast 8-thread P&R, NOT run-to-run reproducible
+#   >=1         = single-threaded P&R with that exact seed → bit-identical bitstream
+# e.g. DETERMINISTIC=1 ./make.sh   (or sweep DETERMINISTIC=1..N for the best WNS).
+export DETERMINISTIC=${DETERMINISTIC:-0}
+
 mkdir -p "$ROOT/.hls"
 
 # Vivado HLS csim uses a bundled GCC 6.2.0 that doesn't know Ubuntu 24.04's
@@ -264,7 +270,46 @@ check_hls
 script="${1:-red_pitaya_vivado.tcl}"
 [[ $# -gt 0 ]] && shift
 
+# ---- Build provenance manifest ---------------------------------------------
+# Written into out/ (which red_pitaya_vivado.tcl also writes to) so every build
+# — and every out.d/ archive — is self-describing and reproducible from the
+# recorded git commit + params + seed.
+if [[ "$DETERMINISTIC" =~ ^[1-9][0-9]*$ ]]; then
+    seed_str="$DETERMINISTIC (deterministic: maxThreads 1, place_design -seed $DETERMINISTIC)"
+else
+    seed_str="default(1) — NOT reproducible (multithreaded, maxThreads 8)"
+fi
+git_dirty=$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)
+mkdir -p "$ROOT/out"
+manifest="$ROOT/out/BUILD_INFO.txt"
+{
+    echo "build_date    = $(date -Is)"
+    echo "host          = $(hostname)"
+    echo "git_branch    = $(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    echo "git_commit    = $(git -C "$ROOT" rev-parse HEAD 2>/dev/null)"
+    echo "git_dirty     = $([[ -n "$git_dirty" ]] && echo yes || echo no)"
+    [[ -n "$git_dirty" ]] && { echo "git_dirty_tracked:"; echo "$git_dirty" | sed 's/^/    /'; }
+    echo "xilinx_version= $XILINX_VERSION"
+    echo "placer_seed   = $seed_str"
+    echo "# Build params (empty => tcl default at the above git_commit):"
+    for v in FPGA_PART ADC_SZ CLK_MULT CLK_ADC_DIV FFT_IMPL FFT_SSR FFT_NFFT \
+             FFT_WIDTH FFT_SCALED FFT_CLK_PERIOD FFT_CLK_SEL FFT_USE_APPROX HIST_BLOCK_SIZE; do
+        printf '%-14s= %s\n' "$v" "${!v:-}"
+    done
+} > "$manifest"
+
 vivado_start=$SECONDS
 (cd "$ROOT" && $VIVADO -nolog -nojournal -mode tcl -source "$script" -tclargs "$@")
 echo "==> Vivado done in $(fmt_elapsed $((SECONDS - vivado_start)))."
+
+# Append the post-route WNS so the manifest captures the build's actual result.
+if [[ -f "$ROOT/out/post_route_timing_summary.rpt" ]]; then
+    {
+        echo ""
+        echo "# post-route intra-clock WNS (ns):"
+        grep -E "^  (pll_adc_clk|pll_ser_clk|pll_dac_clk_1x) " \
+            "$ROOT/out/post_route_timing_summary.rpt" | awk '{printf "    %-16s%s\n", $1, $2}'
+    } >> "$manifest"
+fi
+
 echo "==> Build complete in $(fmt_elapsed $((SECONDS - BUILD_START)))."

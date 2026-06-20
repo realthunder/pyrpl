@@ -9,7 +9,24 @@
 # define paths
 ################################################################################
 
-set_param general.maxThreads 8
+# Reproducibility: DETERMINISTIC doubles as the placer seed. 0 (default) = fast
+# 8-thread place/route, which is NOT run-to-run reproducible — Vivado's parallel
+# placer reshuffles the basin per run (the ~0.2 ns pll_adc_clk swing). Any value
+# >=1 forces single-threaded P&R + that exact placer seed, yielding a bit-identical
+# bitstream. Costs build time. Set via DETERMINISTIC=<seed> ./make.sh; the effective
+# seed is echoed below and recorded in out/BUILD_INFO.txt.
+set det_seed 0
+if {[info exists env(DETERMINISTIC)] && [string is integer -strict $env(DETERMINISTIC)] \
+        && $env(DETERMINISTIC) >= 1} {
+    set det_seed $env(DETERMINISTIC)
+}
+set deterministic [expr {$det_seed >= 1}]
+set_param general.maxThreads [expr {$deterministic ? 1 : 8}]
+if {$deterministic} {
+    puts "INFO: DETERMINISTIC build — maxThreads 1, place_design -seed $det_seed"
+} else {
+    puts "INFO: non-deterministic build (maxThreads 8); set DETERMINISTIC=<seed> for reproducible P&R"
+}
 
 set path_rtl rtl
 set path_ip  ip
@@ -300,7 +317,7 @@ opt_design -directive NoBramPowerOpt
 # (adc -0.483->-0.593, ser -0.674->-0.771). The default placer finds a better
 # basin for this design; leave it on default.
 
-place_design
+if {$deterministic} { place_design -seed $det_seed } else { place_design }
 
 # phys_opt_design
 # phys_opt_design -directive AggressivePhysOptimization  (Vivado 2021+)
