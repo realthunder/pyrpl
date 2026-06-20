@@ -31,10 +31,11 @@ set clk_mult       [expr {[info exists env(CLK_MULT)]       ? $env(CLK_MULT)    
 set clk_adc_div    [expr {[info exists env(CLK_ADC_DIV)]    ? $env(CLK_ADC_DIV)    : 8}]
 set adc_sz         [expr {[info exists env(ADC_SZ)]         ? $env(ADC_SZ)         : 14}]
 set fft_nfft       [expr {[info exists env(FFT_NFFT)]       ? $env(FFT_NFFT)       : 12}]
-set fft_ssr        [expr {[info exists env(FFT_SSR)]        ? $env(FFT_SSR)        : 2}]
+set fft_ssr        [expr {[info exists env(FFT_SSR)]        ? $env(FFT_SSR)        : 4}]
 set fft_clk_period [expr {[info exists env(FFT_CLK_PERIOD)] ? $env(FFT_CLK_PERIOD) : 4.0}]
-# FFT_IMPL: 1=plain LogiCORE, 2=HLS SSR (Vitis library), 3=IP SSR (LogiCORE sub-FFTs, natural order)
-set fft_impl       [expr {[info exists env(FFT_IMPL)]       ? $env(FFT_IMPL)       : 3}]
+# FFT_IMPL: 1=plain LogiCORE, 2=HLS SSR (Vitis library), 3=IP SSR (LogiCORE sub-FFTs),
+#           4=native-SSR xfft, 5=direct hls::fft (default; SSR=4 @ 125 MHz)
+set fft_impl       [expr {[info exists env(FFT_IMPL)]       ? $env(FFT_IMPL)       : 5}]
 # FFT_SCALED: 0=unscaled 28-bit (~140 dB, needs large device), 1=scaled 16-bit (~72 dB),
 #             2=saturating 20-bit (default, fits xc7z020, ~90 dB small-signal detection)
 set fft_scaled     [expr {[info exists env(FFT_SCALED)]     ? $env(FFT_SCALED)     : 2}]
@@ -273,7 +274,7 @@ report_power             -file    $path_out/post_synth_power.rpt
 # via fft_clk_sel. With FFT_CLK_SEL=0 the timing engine analyses the FFT at 125 MHz
 # only (e.g. for SSR=4, which is meant to run at 125 MHz). Unset → analyse both
 # (default 250 MHz path dominates), so the default build is unaffected.
-set fft_clk_sel [expr {[info exists env(FFT_CLK_SEL)] ? $env(FFT_CLK_SEL) : -1}]
+set fft_clk_sel [expr {[info exists env(FFT_CLK_SEL)] ? $env(FFT_CLK_SEL) : 0}]
 if {$fft_clk_sel == 0 || $fft_clk_sel == 1} {
     set sel_q [get_pins -hier -quiet -filter {NAME =~ *fft_clk_sel_i_reg/Q}]
     if {[llength $sel_q] > 0} {
