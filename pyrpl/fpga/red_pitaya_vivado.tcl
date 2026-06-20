@@ -201,6 +201,21 @@ synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivale
     -generic FFT_IMPL=$fft_impl \
     -generic HIST_BLOCK_SIZE=$hist_block_size
 
+# Per-FFT-implementation constraints.  read_xdc's restricted interpreter rejects
+# tcl `if`/`set`/`expr`, so the impl conditioning lives here (real tcl) and each
+# file holds only plain constraint commands.  Read AFTER synth_design so the
+# pblock get_cells membership resolves against the synthesized netlist (reading
+# before synthesis would match nothing and create silent empty pblocks).
+if {$fft_impl == 1 || $fft_impl == 3 || $fft_impl == 4} {
+    read_xdc                      $path_sdc/fft_xfft_ce.xdc
+}
+if {$fft_impl == 3} {
+    read_xdc                      $path_sdc/fft_impl3_pblock.xdc
+}
+if {$fft_impl == 4} {
+    read_xdc                      $path_sdc/fft_impl4_pblock.xdc
+}
+
 # set debug_nets {asg_trig_n asg_trig2_p fft_dvalid fft_a_enable fft_b_enable}
 # set debug_nets {}
 set debug_nets [get_nets -hierarchical -filter {MARK_DEBUG == 1}]

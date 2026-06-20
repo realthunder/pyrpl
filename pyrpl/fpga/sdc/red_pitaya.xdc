@@ -240,15 +240,7 @@ set_false_path -from [get_clocks clk_fpga_0]  -to [get_clocks adc_clk]
 set_false_path -from [get_clocks pll_ser_clk] -to [get_clocks pll_adc_clk]
 set_false_path -from [get_clocks pll_adc_clk] -to [get_clocks pll_ser_clk]
 
-# xfft LogiCORE: ce_predicted_reg is asserted one clock cycle early by design.
-# Outgoing paths: fo~256 high-fanout net to DSP CEB2 inputs needs 2 cycles.
-# Incoming paths: combinational ce_predicted logic has long routes inside xfft.
-# The IP is designed for the CE to be valid 1 cycle early, so 2-cycle budget
-# for both the computation and propagation is within the IP's timing intent.
-set_multicycle_path 2 -setup -from [get_cells -hierarchical -filter {NAME =~ *ce_predicted_reg*}]
-set_multicycle_path 1 -hold  -from [get_cells -hierarchical -filter {NAME =~ *ce_predicted_reg*}]
-set_multicycle_path 2 -setup -to   [get_cells -hierarchical -filter {NAME =~ *ce_predicted_reg*}]
-set_multicycle_path 1 -hold  -to   [get_cells -hierarchical -filter {NAME =~ *ce_predicted_reg*}]
+# (xfft ce_predicted multicycle moved to the per-FFT-implementation section below)
 
 # PWM comparator: v_r drives a CARRY4×2 chain to an OLOGIC IOB register;
 # negative clock skew tightens the path to below 4 ns.  Allow 2 cycles.
@@ -284,20 +276,16 @@ set_false_path -hold -from [get_clocks adc_clk] -to [get_clocks pll_adc_clk]
 # set_false_path -from [get_clocks dac_clk_out] -to [get_clocks dac_2ph_out]
 
 ############################################################################
-# Floorplan: fft_b pre_0 s_axis regslice near fifo_in read pointer        #
+# Per-FFT-implementation timing / floorplan constraints                    #
 ############################################################################
-# Without constraint: regslice_both_s_axis state_reg lands at X49Y41 while
-# fifo_in rdp count_value sits at X51Y23-Y25 — 16-row gap causes 0.836 ns
-# routing delay on the state→rdp path (dominant pll_ser_clk violation).
-# Pin the regslice cells to the band adjacent to fifo_in.
-# FFT_IMPL==3 only: this hierarchy (fft_ip_ssr_bd/pre_0) exists only in the IP-SSR
-# block design. IMPL=4/5 have no pre_0 regslice, so guard on cell existence to avoid
-# an empty-pblock CRITICAL WARNING (the default build is FFT_IMPL=5).
-set _saxisreg_cells [get_cells -hier -quiet -filter \
-    {NAME =~ i_scope/fft_b/gen_fft_ip_ssr.fft_i/fft_ip_ssr_bd_i/pre_0/inst/regslice_both_s_axis_V_data_V_U/*}]
-if {[llength $_saxisreg_cells] > 0} {
-    create_pblock pb_saxisreg_fft_b
-    add_cells_to_pblock [get_pblocks pb_saxisreg_fft_b] $_saxisreg_cells
-    resize_pblock [get_pblocks pb_saxisreg_fft_b] -add {SLICE_X47Y21:SLICE_X54Y32}
-}
+# These depend on which FFT core is instantiated and are kept in separate
+# constraint files (sdc/fft_*.xdc) read conditionally from red_pitaya_vivado.tcl
+# based on $fft_impl.  They cannot live here behind a tcl `if`: read_xdc uses a
+# restricted interpreter that rejects `if`/`set`/`expr` ("Command 'if' is not
+# supported in the xdc constraint file").  The generic system/CDC exceptions
+# above (clk_fpga->adc, ser<->adc CDC, pwm, axi/sys_rdata, fft_nfft, adc hold)
+# hold for every impl and stay global here.
+#   fft_xfft_ce.xdc      - ce_predicted multicycle  (FFT_IMPL 1 / 3 / 4)
+#   fft_impl3_pblock.xdc - fft_b pre_0 regslice pblock (FFT_IMPL 3)
+#   fft_impl4_pblock.xdc - adc sum / sum1 replica pblock (FFT_IMPL 4)
 
