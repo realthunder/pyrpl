@@ -283,11 +283,26 @@ opt_design -directive NoBramPowerOpt
 # NOTE: place_design -directive Explore was tried and regressed both clocks
 # (adc -0.483->-0.593, ser -0.674->-0.771). The default placer finds a better
 # basin for this design; leave it on default.
+
 place_design
 
 # phys_opt_design
 # phys_opt_design -directive AggressivePhysOptimization  (Vivado 2021+)
 phys_opt_design -directive AggressiveExplore
+
+# adc: i_dsp/sum1_reg (the DSP output summer) is a high-fanout source feeding the
+# pyrpl output-bus loopback (sum1 -> dac_saturate -> dat_a -> iq/trigger/... inputs).
+# Its route to the IQ input-filter is the lone adc violation (~-0.022); pinning one
+# consumer just displaces the others, so instead replicate the high-fanout sum1 nets
+# and let phys_opt place a local copy per consumer cluster. FFT@125 only (CLK_SEL=0).
+if {$fft_clk_sel == 0} {
+    set sum1_pins [get_pins -hier -quiet -filter {NAME =~ i_dsp/sum1_reg*/Q}]
+    if {[llength $sum1_pins] > 0} {
+        set sum1_nets [get_nets -of_objects $sum1_pins]
+        phys_opt_design -force_replication_on_nets $sum1_nets
+        puts "INFO: forced replication on [llength $sum1_nets] sum1 nets (adc)"
+    }
+}
 
 # [2020.1 levers — disabled on 2025.2; FFT is no longer critical]
 # Force replication of the xfft NonRealTime CE register (ce_predicted_reg, fo≈1000+).
