@@ -48,6 +48,9 @@ pyrpl/fpga/project/.*
 pyrpl/fpga/project/
 *.jou
 
+# Vitis_Libraries (external checkout used by FFT_IMPL=2 verification; clone separately)
+pyrpl/fpga/Vitis_Libraries/
+
 #fpga-related
 fpga/out/
 fpga/sdk/

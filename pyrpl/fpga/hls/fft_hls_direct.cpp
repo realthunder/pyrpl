@@ -185,6 +185,18 @@ static inline ap_uint<DSZ> magnitude(cfixed_t v) {
     return out.range(DSZ-1, 0);
 }
 
+// Convert a raw signed ASZ-bit ADC sample to the internal ap_fixed<INT_W,1> value
+// in [-1,1) by MSB-aligning it into the top ASZ bits. A plain value cast
+// (ap_fixed<INT_W,1>(raw)) WRAPS any |raw|>=1 — i.e. it zeroes the whole 14-bit
+// ADC input — which silently broke the FFT (csim: every tone collapsed to bin 0).
+// Matches fft_ip_ssr.cpp's input handling.
+static inline ap_fixed<INT_W,1> adc_to_fixed(ap_int<ASZ> raw) {
+#pragma HLS INLINE
+    ap_fixed<INT_W,1> v = 0;
+    v.range(INT_W-1, INT_W-ASZ) = raw;
+    return v;
+}
+
 // hls::fft (2020.1) takes C arrays, not streams, so each FFT needs an array feed
 // and drain. These run as processes in the TOP-level DATAFLOW region alongside
 // hls::fft — matching the canonical Xilinx FFT example's two-level dataflow
@@ -224,7 +236,7 @@ static void input_ssr1(hls::stream<axis_in_t> &s_axis,
 #pragma HLS PIPELINE II=1
         ap_int<ASZ> raw = s_axis.read().data.range(ASZ-1, 0);
         cfixed_t v;
-        v.real(ap_fixed<INT_W,1>(raw));
+        v.real(adc_to_fixed(raw));
         v.imag(0);
         out.write(v);
     }
@@ -255,9 +267,9 @@ static void input_ssr2(hls::stream<axis_in_t> &s_axis,
 #pragma HLS PIPELINE II=1
         auto d = s_axis.read().data;
         par_data t;
-        t.data0.real(ap_fixed<INT_W,1>((ap_int<ASZ>)d.range(  ASZ-1,     0)));
+        t.data0.real(adc_to_fixed((ap_int<ASZ>)d.range(  ASZ-1,     0)));
         t.data0.imag(0);
-        t.data1.real(ap_fixed<INT_W,1>((ap_int<ASZ>)d.range(2*ASZ-1,   ASZ)));
+        t.data1.real(adc_to_fixed((ap_int<ASZ>)d.range(2*ASZ-1,   ASZ)));
         t.data1.imag(0);
         out.write(t);
     }
@@ -357,7 +369,7 @@ static void input_ssr4(hls::stream<axis_in_t>  &s_axis,
         par_data4 t;
         for (int q = 0; q < 4; q++) {
 #pragma HLS UNROLL
-            t.data[q].real(ap_fixed<INT_W,1>((ap_int<ASZ>)d.range((q+1)*ASZ-1, q*ASZ)));
+            t.data[q].real(adc_to_fixed((ap_int<ASZ>)d.range((q+1)*ASZ-1, q*ASZ)));
             t.data[q].imag(0);
         }
         out.write(t);
