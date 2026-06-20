@@ -131,7 +131,8 @@ fi
 # FFT_IMPL: FFT implementation selector.
 #   1 = plain LogiCORE IP (no HLS FFT build needed)
 #   2 = Vitis HLS SSR FFT, Decimation-In-Time (DIT) — fft_ssr
-#   3 = HLS DIF SSR FFT using LogiCORE sub-FFTs — fft_ip_ssr (default)
+#   3 = HLS DIF SSR FFT using LogiCORE sub-FFTs — fft_ip_ssr
+#   5 = direct hls::fft (default; SSR=4 @ 125 MHz, see active defaults below)
 #export FFT_IMPL=3
 
 # HIST_BLOCK_SIZE: DMA packet size in detection words (excluding the 1-word header).
@@ -160,6 +161,12 @@ export CPATH=/usr/include/x86_64-linux-gnu:${CPATH:-}
 # invalidates the cached output even when source files haven't changed.
 hls_fingerprint() {
     echo "FPGA_PART=${FPGA_PART:-} FFT_IMPL=${FFT_IMPL:-} FFT_SSR=${FFT_SSR:-} FFT_NFFT=${FFT_NFFT:-} FFT_WIDTH=${FFT_WIDTH:-} FFT_SCALED=${FFT_SCALED:-} FFT_CLK_PERIOD=${FFT_CLK_PERIOD:-} FFT_USE_APPROX=${FFT_USE_APPROX:-} HIST_BLOCK_SIZE=${HIST_BLOCK_SIZE:-}"
+}
+
+fmt_elapsed() {
+    local t=$1
+    if [[ $t -ge 60 ]]; then printf '%dm %02ds' $((t/60)) $((t%60))
+    else printf '%ds' $t; fi
 }
 
 needs_rebuild() {
@@ -193,10 +200,11 @@ run_hls() {
 
     if needs_rebuild "$stamp" "$@"; then
         echo "==> HLS: $name rebuilding..."
+        local t0=$SECONDS
         (cd "$ROOT" && $VIVADO_HLS -f "$tcl")
         hls_fingerprint > "$params_file"
         touch "$stamp"
-        echo "==> HLS: $name done."
+        echo "==> HLS: $name done in $(fmt_elapsed $((SECONDS - t0)))."
     else
         echo "==> HLS: $name up to date, skipping."
     fi
@@ -235,8 +243,11 @@ check_hls() {
         hls/peak_detector_tb.cpp hls/peak_detector.tcl
 }
 
+BUILD_START=$SECONDS
+
 if [[ "${1:-}" == "hls" ]]; then
     check_hls
+    echo "==> HLS build complete in $(fmt_elapsed $((SECONDS - BUILD_START)))."
     exit 0
 fi
 
@@ -253,6 +264,7 @@ check_hls
 script="${1:-red_pitaya_vivado.tcl}"
 [[ $# -gt 0 ]] && shift
 
+vivado_start=$SECONDS
 (cd "$ROOT" && $VIVADO -nolog -nojournal -mode tcl -source "$script" -tclargs "$@")
-
-echo "compilation finished"
+echo "==> Vivado done in $(fmt_elapsed $((SECONDS - vivado_start)))."
+echo "==> Build complete in $(fmt_elapsed $((SECONDS - BUILD_START)))."
