@@ -207,7 +207,7 @@ synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivale
 # file holds only plain constraint commands.  Read AFTER synth_design so the
 # pblock get_cells membership resolves against the synthesized netlist (reading
 # before synthesis would match nothing and create silent empty pblocks).
-if {$fft_impl == 1 || $fft_impl == 3 || $fft_impl == 4} {
+if {$fft_impl == 1 || $fft_impl == 3 || $fft_impl == 4 || $fft_impl == 5} {
     read_xdc                      $path_sdc/fft_xfft_ce.xdc
 }
 if {$fft_impl == 3} {
