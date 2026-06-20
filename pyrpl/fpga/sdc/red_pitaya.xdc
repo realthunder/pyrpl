@@ -290,8 +290,14 @@ set_false_path -hold -from [get_clocks adc_clk] -to [get_clocks pll_adc_clk]
 # fifo_in rdp count_value sits at X51Y23-Y25 — 16-row gap causes 0.836 ns
 # routing delay on the state→rdp path (dominant pll_ser_clk violation).
 # Pin the regslice cells to the band adjacent to fifo_in.
-create_pblock pb_saxisreg_fft_b
-add_cells_to_pblock [get_pblocks pb_saxisreg_fft_b] \
-    [get_cells -hier -filter {NAME =~ i_scope/fft_b/gen_fft_ip_ssr.fft_i/fft_ip_ssr_bd_i/pre_0/inst/regslice_both_s_axis_V_data_V_U/*}]
-resize_pblock [get_pblocks pb_saxisreg_fft_b] -add {SLICE_X47Y21:SLICE_X54Y32}
+# FFT_IMPL==3 only: this hierarchy (fft_ip_ssr_bd/pre_0) exists only in the IP-SSR
+# block design. IMPL=4/5 have no pre_0 regslice, so guard on cell existence to avoid
+# an empty-pblock CRITICAL WARNING (the default build is FFT_IMPL=5).
+set _saxisreg_cells [get_cells -hier -quiet -filter \
+    {NAME =~ i_scope/fft_b/gen_fft_ip_ssr.fft_i/fft_ip_ssr_bd_i/pre_0/inst/regslice_both_s_axis_V_data_V_U/*}]
+if {[llength $_saxisreg_cells] > 0} {
+    create_pblock pb_saxisreg_fft_b
+    add_cells_to_pblock [get_pblocks pb_saxisreg_fft_b] $_saxisreg_cells
+    resize_pblock [get_pblocks pb_saxisreg_fft_b] -add {SLICE_X47Y21:SLICE_X54Y32}
+}
 
