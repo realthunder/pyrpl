@@ -82,6 +82,18 @@ else
     # In 2025.2+, vitis_hls wrapper was removed from bin/; go through loader
     # which sources setupEnv.sh/rdiArgs.sh to set RDI_DATADIR, TCL_LIBRARY, etc.
     VIVADO_HLS="${XILINX_VITIS}/bin/loader -exec vitis_hls"
+
+    # 2025.2's rdiArgs.sh hard-codes LC_ALL=en_US.UTF-8 at startup; if that
+    # locale isn't installed the C++ runtime aborts with:
+    #   locale::facet::_S_create_c_locale name not valid
+    # (2020.1 does not have this problem.)
+    # Fix: sudo locale-gen en_US.UTF-8  (then re-run make.sh)
+    if ! locale -a 2>/dev/null | grep -qi "en_US.utf8\|en_US.UTF-8"; then
+        echo "ERROR: locale en_US.UTF-8 is not installed but Xilinx 2025.2 tools require it." >&2
+        echo "       Run:  sudo locale-gen en_US.UTF-8" >&2
+        echo "       Then re-run make.sh." >&2
+        exit 1
+    fi
 fi
 
 # Build parameters — uncomment and edit to override the defaults in the TCL scripts.
