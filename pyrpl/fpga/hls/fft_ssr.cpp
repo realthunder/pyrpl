@@ -66,7 +66,18 @@ struct fft_config : ssr_fft_default_params {
 
 // FFT input type
 typedef std::complex<fft_calc_t> T_in;
+
+// Vitis_Libraries SSR FFT changed its interface between 2020.1 and 2025.2: the
+// array-based fft(in[R][N/R], out[R][N/R]) and the ssr_fft_output_type<> helper
+// were removed in favour of a stream-based fft(stream in[R], stream out[R]).
+// Default to the 2025.2 stream API; build with -DSSR_FFT_LEGACY_ARRAY for 2020.1.
+#ifdef SSR_FFT_LEGACY_ARRAY
 typedef ssr_fft_output_type<fft_config, T_in>::t_ssr_fft_out T_out;
+#else
+typedef typename FFTOutputTraits<fft_config::N, fft_config::R, fft_config::scaling_mode,
+                                 fft_config::transform_direction, fft_config::butterfly_rnd_mode,
+                                 typename FFTInputTraits<T_in>::T_castedType>::T_FFTOutType T_out;
+#endif
 
 
 // =====================================================
@@ -114,11 +125,19 @@ void fft_ssr(
 #pragma HLS INTERFACE ap_ctrl_none port=return
 #pragma HLS DATAFLOW
 
-    T_in fft_in[SSR][FFT_LEN / SSR];
+#ifdef SSR_FFT_LEGACY_ARRAY
+    T_in  fft_in [SSR][FFT_LEN / SSR];
     T_out fft_out[SSR][FFT_LEN / SSR];
-
-#pragma HLS ARRAY_PARTITION variable=fft_in complete
+#pragma HLS ARRAY_PARTITION variable=fft_in  complete
 #pragma HLS ARRAY_PARTITION variable=fft_out complete
+#else
+    hls::stream<T_in>  fft_in [SSR];
+    hls::stream<T_out> fft_out[SSR];
+#pragma HLS ARRAY_PARTITION variable=fft_in  complete
+#pragma HLS ARRAY_PARTITION variable=fft_out complete
+#pragma HLS STREAM variable=fft_in  depth = FFT_LEN / SSR
+#pragma HLS STREAM variable=fft_out depth = FFT_LEN / SSR
+#endif
 
     static bool frame_start_reg = false;
 #pragma HLS RESET variable=frame_start_reg
@@ -145,7 +164,11 @@ void fft_ssr(
 			fft_calc_t real = ((fft_calc_t)raw) >> FRAC;
 
             // Imag = 0 (unused)
+#ifdef SSR_FFT_LEGACY_ARRAY
             fft_in[s][i] = cmpx(real, 0);
+#else
+            fft_in[s].write(cmpx(real, 0));
+#endif
         }
     }
 
@@ -165,7 +188,12 @@ void fft_ssr(
         for (int s = 0; s < SSR; s++) {
 #pragma HLS UNROLL
 
+#ifdef SSR_FFT_LEGACY_ARRAY
             cmpx v = fft_out[s][i];
+#else
+            T_out o = fft_out[s].read();
+            cmpx v(o.real(), o.imag());
+#endif
 
             fft_calc_t re = v.real();
             fft_calc_t im = v.imag();
