@@ -389,13 +389,19 @@ if {[lsearch -exact {none off skip ""} $phys_opt_dir] >= 0} {
 # and let phys_opt place a local copy per consumer cluster. This is an adc-clock-
 # domain path (i_dsp is always on adc_clk), independent of the FFT clock mux, so run
 # it for any FFT_CLK_SEL — at FFT_CLK_SEL=1 this same loopback is the worst adc path.
-if {$fft_clk_sel == 0 || $fft_clk_sel == 1} {
+# SUM1_REPLICATE=0 disables this (default 1). Helps adc when the die has room
+# (SSR=2), but on a near-full die (SSR=4, 98% DSP) the extra copies compete for
+# scarce slices and may hurt — toggle to A/B it.
+set sum1_replicate [expr {[info exists env(SUM1_REPLICATE)] ? $env(SUM1_REPLICATE) : 1}]
+if {$sum1_replicate && ($fft_clk_sel == 0 || $fft_clk_sel == 1)} {
     set sum1_pins [get_pins -hier -quiet -filter {NAME =~ i_dsp/sum1_reg*/Q}]
     if {[llength $sum1_pins] > 0} {
         set sum1_nets [get_nets -of_objects $sum1_pins]
         phys_opt_design -force_replication_on_nets $sum1_nets
         puts "INFO: forced replication on [llength $sum1_nets] sum1 nets (adc)"
     }
+} else {
+    puts "INFO: sum1 force-replication disabled (SUM1_REPLICATE=$sum1_replicate)"
 }
 
 # [2020.1 levers — disabled on 2025.2; FFT is no longer critical]
