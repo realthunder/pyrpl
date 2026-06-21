@@ -371,7 +371,7 @@ script="${1:-red_pitaya_vivado.tcl}"
 # — and every out.d/ archive — is self-describing and reproducible from the
 # recorded git commit + params + seed.
 if [[ "$DETERMINISTIC" =~ ^[1-9][0-9]*$ ]]; then
-    det_dirs=(Explore ExtraNetDelay_high AltSpreadLogic_high WLDrivenBlockPlacement ExtraPostPlacementOpt EarlyBlockPlacement AltSpreadLogic_medium Default)
+    det_dirs=(Explore ExtraNetDelay_high AltSpreadLogic_high WLDrivenBlockPlacement ExtraPostPlacementOpt EarlyBlockPlacement AltSpreadLogic_medium Default ExtraTimingOpt)
     det_dir="${det_dirs[$(( (DETERMINISTIC-1) % ${#det_dirs[@]} ))]}"
     seed_str="$DETERMINISTIC (deterministic: maxThreads 1, place_design -directive $det_dir)"
 else
