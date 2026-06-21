@@ -176,9 +176,10 @@ export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
 # Default 0 = unchanged 250 MHz ser clock.
 export FFT_CLK_200=${FFT_CLK_200:-0}
 
-# DETERMINISTIC doubles as the Vivado placer seed (see red_pitaya_vivado.tcl):
-#   0 (default) = fast 8-thread P&R, NOT run-to-run reproducible
-#   >=1         = single-threaded P&R with that exact seed → bit-identical bitstream
+# DETERMINISTIC selects a place_design directive (see red_pitaya_vivado.tcl;
+# Vivado has no place_design -seed, so directives are the placement-variation lever):
+#   0 (default) = fast 8-thread P&R, Default directive, NOT run-to-run reproducible
+#   >=1         = single-threaded P&R, value mapped to a directive → bit-identical bitstream
 # e.g. DETERMINISTIC=1 ./make.sh   (or sweep DETERMINISTIC=1..N for the best WNS).
 export DETERMINISTIC=${DETERMINISTIC:-0}
 
@@ -302,7 +303,9 @@ script="${1:-red_pitaya_vivado.tcl}"
 # — and every out.d/ archive — is self-describing and reproducible from the
 # recorded git commit + params + seed.
 if [[ "$DETERMINISTIC" =~ ^[1-9][0-9]*$ ]]; then
-    seed_str="$DETERMINISTIC (deterministic: maxThreads 1, place_design -seed $DETERMINISTIC)"
+    det_dirs=(Explore ExtraNetDelay_high AltSpreadLogic_high WLDrivenBlockPlacement ExtraPostPlacementOpt EarlyBlockPlacement AltSpreadLogic_medium Default)
+    det_dir="${det_dirs[$(( (DETERMINISTIC-1) % ${#det_dirs[@]} ))]}"
+    seed_str="$DETERMINISTIC (deterministic: maxThreads 1, place_design -directive $det_dir)"
 else
     seed_str="default(1) — NOT reproducible (multithreaded, maxThreads 8)"
 fi
