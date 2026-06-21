@@ -27,6 +27,46 @@ Deterministic placement-directive sweep (`DETERMINISTIC=n`, single-threaded, rep
 
 ---
 
+## SSR=4 · NFFT=12 · FFT @ 178.571 MHz  ❌ does NOT close (adc congestion-bound)
+
+Settings: `FFT_SSR=4 FFT_NFFT=12 FFT_CLK_178=1 FFT_CLK_SEL=1`.
+Resources: **LUT 80% · FF 50% · BRAM 91% · DSP 98%** (near full). csim PASS.
+The **FFT (ser, 5.6 ns) closes** — 178 MHz relaxed the SSR=4 reorder enough (ser
+positive on most directives). **adc is the wall**: `i_dsp/sum1` loopback,
+congestion-bound at 98% DSP. No place/phys_opt combo found closes it.
+
+Placement-directive sweep (phys_opt = AggressiveExplore default) — **0/6 close**:
+
+| DET | place directive | adc | ser | worst |
+|---|---|---|---|---|
+| 1 | Explore | −0.344 | +0.013 | −0.344 |
+| 2 | ExtraNetDelay_high | −0.271 | −0.065 | −0.271 |
+| 3 | AltSpreadLogic_high | −0.796 | +0.074 | −0.796 |
+| 4 | WLDrivenBlockPlacement | −0.273 | −0.028 | −0.273 |
+| 5 | ExtraPostPlacementOpt | −0.174 | −0.191 | −0.191 |
+| 6 | EarlyBlockPlacement | **−0.140** | +0.072 | **−0.140** (best of sweep) |
+
+phys_opt sweep on the best place (DET=6 EarlyBlockPlacement), via `PHYS_OPT=`:
+
+| phys_opt directive | adc | ser | worst |
+|---|---|---|---|
+| **Explore** | **−0.099** | +0.002 | **−0.099** ← best overall |
+| AggressiveExplore (default) | −0.140 | +0.072 | −0.140 |
+| none (skipped) | −0.306 | −0.158 | −0.306 |
+| AggressiveFanoutOpt | −0.319 | −0.022 | −0.319 |
+| AlternateReplication | −0.319 | −0.022 | −0.319 |
+
+place=`ExtraTimingOpt` (DET=9): + Explore −0.579, + AggressiveFanoutOpt −0.568 — worse.
+
+**Verdict:** best achievable = EarlyBlockPlacement + `PHYS_OPT=Explore` = **worst −0.099**
+(adc). Does not close. adc is genuinely congestion-bound (98% DSP, no stray
+constraint — audited). Softer phys_opt (Explore) beats AggressiveExplore by +0.04,
+but fanout/replication/timing-opt variants all *regress* adc: on the full die the
+extra restructuring displaces the sum1 consumers. **SSR=2 is the viable fast-FFT path;
+SSR=4 won't close on this device regardless of FFT clock.** Archives: `out.d/sweep-ssr4n12-178-det*`.
+
+---
+
 ## Other attempts (not closed / rejected)
 
 | Config | place | adc WNS | ser WNS | Result |
