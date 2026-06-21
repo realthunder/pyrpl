@@ -58,6 +58,9 @@ phys_opt sweep on the best place (DET=6 EarlyBlockPlacement), via `PHYS_OPT=`:
 
 place=`ExtraTimingOpt` (DET=9): + Explore −0.579, + AggressiveFanoutOpt −0.568 — worse.
 
+sum1 force-replication A/B (DET=6 + Explore): ON adc −0.099 / OFF adc −0.177 — the
+replication **helps** adc even on the full die (`SUM1_REPLICATE` knob; keep it on).
+
 **Verdict:** best achievable = EarlyBlockPlacement + `PHYS_OPT=Explore` = **worst −0.099**
 (adc). Does not close. adc is genuinely congestion-bound (98% DSP, no stray
 constraint — audited). Softer phys_opt (Explore) beats AggressiveExplore by +0.04,
