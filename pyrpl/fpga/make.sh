@@ -182,7 +182,12 @@ case "${PROFILE:-}" in
         export FFT_CLK_200=${FFT_CLK_200:-1}
         export FFT_CLK_SEL=${FFT_CLK_SEL:-1}
         export DETERMINISTIC=${DETERMINISTIC:-5}
-        echo "==> PROFILE=fft200ssr2: SSR=2 NFFT=13 FFT@200MHz, place ExtraPostPlacementOpt (DETERMINISTIC=5)"
+        # The closing build was placed WITH the adc sum1 force-replication on and the
+        # AggressiveExplore phys_opt; pin both so the profile reproduces the
+        # +0.083/+0.101 result regardless of the global defaults.
+        export SUM1_REPLICATE=${SUM1_REPLICATE:-1}
+        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
+        echo "==> PROFILE=fft200ssr2: SSR=2 NFFT=13 FFT@200MHz, place ExtraPostPlacementOpt (DETERMINISTIC=5), phys_opt AggressiveExplore, sum1 replicate ON"
         ;;
     *)
         echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2)" >&2; exit 1 ;;
@@ -391,7 +396,8 @@ manifest="$WORKROOT/out/BUILD_INFO.txt"
     echo "placer_seed   = $seed_str"
     echo "# Build params (empty => tcl default at the above git_commit):"
     for v in FPGA_PART ADC_SZ CLK_MULT CLK_ADC_DIV FFT_IMPL FFT_SSR FFT_NFFT \
-             FFT_WIDTH FFT_SCALED FFT_CLK_PERIOD FFT_CLK_SEL FFT_CLK_200 FFT_CLK_178 FFT_MULT_LUT FFT_USE_APPROX HIST_BLOCK_SIZE; do
+             FFT_WIDTH FFT_SCALED FFT_CLK_PERIOD FFT_CLK_SEL FFT_CLK_200 FFT_CLK_178 \
+             FFT_MULT_LUT FFT_USE_APPROX HIST_BLOCK_SIZE SUM1_REPLICATE PHYS_OPT; do
         printf '%-14s= %s\n' "$v" "${!v:-}"
     done
 } > "$manifest"
