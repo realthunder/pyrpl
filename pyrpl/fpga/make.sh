@@ -176,6 +176,17 @@ export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
 # Default 0 = unchanged 250 MHz ser clock.
 export FFT_CLK_200=${FFT_CLK_200:-0}
 
+# FFT_CLK_178: retune the PLL VCO from 1000 to 1250 MHz (CLKFBOUT_MULT 8->10) and
+# scale every output divider x1.25, so adc/dac/pwm clocks stay byte-identical while
+# CLKOUT4 (the FFT clock mux input) becomes VCO/7 = 178.57 MHz (5.6 ns budget).
+# 178.57 MHz is the only integer-divider FFT clock strictly inside 170-200 MHz that
+# keeps adc/dac unchanged (the shared 1000 MHz VCO only offers 200 or 166.67).
+# Affects red_pitaya_pll.sv (`define) + the pll_ser_clk constraint (red_pitaya_vivado.tcl).
+# Pair with FFT_CLK_SEL=1 to actually run the FFT at 178.57 MHz, e.g.:
+#   FFT_CLK_178=1 FFT_CLK_SEL=1 ./make.sh
+# Takes precedence over FFT_CLK_200; do not set both.  Default 0 = unchanged 250 MHz.
+export FFT_CLK_178=${FFT_CLK_178:-0}
+
 # DETERMINISTIC doubles as the Vivado placer seed (see red_pitaya_vivado.tcl):
 #   0 (default) = fast 8-thread P&R, NOT run-to-run reproducible
 #   >=1         = single-threaded P&R with that exact seed → bit-identical bitstream
@@ -320,7 +331,7 @@ manifest="$ROOT/out/BUILD_INFO.txt"
     echo "placer_seed   = $seed_str"
     echo "# Build params (empty => tcl default at the above git_commit):"
     for v in FPGA_PART ADC_SZ CLK_MULT CLK_ADC_DIV FFT_IMPL FFT_SSR FFT_NFFT \
-             FFT_WIDTH FFT_SCALED FFT_CLK_PERIOD FFT_CLK_SEL FFT_CLK_200 FFT_MULT_LUT FFT_USE_APPROX HIST_BLOCK_SIZE; do
+             FFT_WIDTH FFT_SCALED FFT_CLK_PERIOD FFT_CLK_SEL FFT_CLK_200 FFT_CLK_178 FFT_MULT_LUT FFT_USE_APPROX HIST_BLOCK_SIZE; do
         printf '%-14s= %s\n' "$v" "${!v:-}"
     done
 } > "$manifest"
