@@ -449,12 +449,14 @@ write_bitstream -force $path_out/red_pitaya.bit
 
 set_property BITSTREAM.GENERAL.COMPRESS FALSE [current_design]
 write_bitstream -force $path_out/red_pitaya_uncompressed.bit
-# Write the .bin into out/ so it is archived alongside the .bit when out/ is
-# rotated to out.d/, then copy it to the repo root for flashing
-# (cat red_pitaya.bin > /dev/xdevcfg). The .bin is derived from the
-# uncompressed .bit, so any archived build's .bin can be regenerated from it.
+# Write the .bin into out/ only (archived alongside the .bit when out/ rotates to
+# out.d/). It is intentionally NOT copied to the repo root: that path is the
+# git-tracked red_pitaya.bin, and clobbering it on every build dirtied the working
+# tree (and risked accidental commits). Flash from out/red_pitaya.bin, or copy it
+# to the root manually when you actually want to ship a new tracked bitstream.
+# The .bin is derived from the uncompressed .bit, so any archived build's .bin can
+# be regenerated from it.
 write_cfgmem -force -format BIN -size 4 -interface SMAPx32 -disablebitswap -loadbit "up 0x0 $path_out/red_pitaya_uncompressed.bit" $path_out/red_pitaya.bin
-file copy -force $path_out/red_pitaya.bin red_pitaya.bin
 
 ################################################################################
 # generate hardware platform (XSA) — replaces write_hwdef/write_sysdef (removed 2020.2+)
