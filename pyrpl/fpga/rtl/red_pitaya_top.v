@@ -375,7 +375,7 @@ red_pitaya_pll #(.DIV(CLK_DIV), .MULT(CLK_MULT), .DIV_ADC(CLK_ADC_DIV)) pll (
   .clk_dac_1x  (pll_dac_clk_1x),  // DAC clock 125MHz
   .clk_dac_2x  (pll_dac_clk_2x),  // DAC clock 250MHz
   .clk_dac_2p  (pll_dac_clk_2p),  // DAC clock 250MHz -45DGR
-  .clk_ser     (pll_ser_clk   ),  // fast serial clock
+  .clk_ser     (pll_ser_clk   ),  // fast serial clock (FFT_CLK_200 -> 200 MHz)
   .clk_pwm     (pll_pwm_clk   ),  // PWM clock
   // status outputs
   .pll_locked  (pll_locked)

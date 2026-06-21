@@ -63,6 +63,12 @@ set fft_use_approx    [expr {[info exists env(FFT_USE_APPROX)]    ? $env(FFT_USE
 # fft_proc.sv connects it. Global var name (lowercase) is read by fft_hls_direct_bd.tcl.
 set fft_runtime_nfft  [expr {[info exists env(FFT_RUNTIME_NFFT)]  ? $env(FFT_RUNTIME_NFFT)  : 0}]
 set hist_block_size   [expr {[info exists env(HIST_BLOCK_SIZE)]   ? $env(HIST_BLOCK_SIZE)   : 183}]
+# FFT_CLK_200: retune the PLL's CLKOUT4 (clk_ser, which currently feeds only the
+# FFT clock mux) from VCO/4 = 250 MHz to VCO/5 = 200 MHz.  Drives a Verilog define
+# read by red_pitaya_pll.sv and redefines the pll_ser_clk generated clock below so
+# the FFT is timed at 200 MHz (5 ns).  Use with FFT_CLK_SEL=1 to route it into the
+# FFT.  Default 0 = unchanged 250 MHz build.
+set fft_clk_200    [expr {[info exists env(FFT_CLK_200)]    ? $env(FFT_CLK_200)    : 0}]
 # fft_width = DSZ (magnitude output bits). Override with FFT_WIDTH env var if needed.
 if {[info exists env(FFT_WIDTH)]} {
     set fft_width $env(FFT_WIDTH)
@@ -216,6 +222,7 @@ read_xdc                          $path_sdc/red_pitaya.xdc
 # Verilog define gating the IMPL=5 runtime-nfft port connection in fft_proc.sv;
 # must match the IP/BD build (same fft_runtime_nfft env var).
 set verilog_defines [expr {$fft_runtime_nfft ? "-verilog_define FFT_RUNTIME_NFFT" : ""}]
+if {$fft_clk_200} { lappend verilog_defines -verilog_define FFT_CLK_200 }
 synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivalent_registers \
     {*}$verilog_defines \
     -generic ADC_SZ=$adc_sz \
@@ -241,6 +248,17 @@ if {$fft_impl == 3} {
 }
 if {$fft_impl == 4} {
     read_xdc                      $path_sdc/fft_impl4_pblock.xdc
+}
+
+# FFT_CLK_200: red_pitaya.xdc declares pll_ser_clk as VCO/4 = 250 MHz, but with
+# FFT_CLK_200 the PLL's CLKOUT4 is rebuilt as VCO/5 = 200 MHz (red_pitaya_pll.sv).
+# Redefine the generated clock so the FFT is analysed at the real 200 MHz / 5 ns
+# (re-issuing create_generated_clock with the same -name replaces the prior one).
+# Done in tcl (not the static xdc) because read_xdc rejects the `if` guard.
+if {$fft_clk_200} {
+    create_generated_clock -name pll_ser_clk -source [get_pins pll/clk] \
+        -multiply_by 8 -divide_by 5 [get_pins pll/clk_ser]
+    puts "INFO: FFT_CLK_200 — pll_ser_clk redefined to 200 MHz (VCO/5, 5 ns)"
 }
 
 # set debug_nets {asg_trig_n asg_trig2_p fft_dvalid fft_a_enable fft_b_enable}
@@ -305,8 +323,9 @@ if {$fft_clk_sel == 0 || $fft_clk_sel == 1} {
     set sel_q [get_pins -hier -quiet -filter {NAME =~ *fft_clk_sel_i_reg/Q}]
     if {[llength $sel_q] > 0} {
         set_case_analysis $fft_clk_sel $sel_q
+        set sel1_freq [expr {$fft_clk_200 ? {200 MHz fft_clk} : {250 MHz fft_clk}}]
         puts "INFO: FFT clock pinned via set_case_analysis fft_clk_sel=$fft_clk_sel \
-              ([expr {$fft_clk_sel == 0 ? {125 MHz adc_clk} : {250 MHz fft_clk}}])"
+              ([expr {$fft_clk_sel == 0 ? {125 MHz adc_clk} : $sel1_freq}])"
     } else {
         puts "WARNING: FFT_CLK_SEL set but fft_clk_sel_i_reg/Q pin not found"
     }
@@ -336,8 +355,10 @@ phys_opt_design -directive AggressiveExplore
 # pyrpl output-bus loopback (sum1 -> dac_saturate -> dat_a -> iq/trigger/... inputs).
 # Its route to the IQ input-filter is the lone adc violation (~-0.022); pinning one
 # consumer just displaces the others, so instead replicate the high-fanout sum1 nets
-# and let phys_opt place a local copy per consumer cluster. FFT@125 only (CLK_SEL=0).
-if {$fft_clk_sel == 0} {
+# and let phys_opt place a local copy per consumer cluster. This is an adc-clock-
+# domain path (i_dsp is always on adc_clk), independent of the FFT clock mux, so run
+# it for any FFT_CLK_SEL — at FFT_CLK_SEL=1 this same loopback is the worst adc path.
+if {$fft_clk_sel == 0 || $fft_clk_sel == 1} {
     set sum1_pins [get_pins -hier -quiet -filter {NAME =~ i_dsp/sum1_reg*/Q}]
     if {[llength $sum1_pins] > 0} {
         set sum1_nets [get_nets -of_objects $sum1_pins]

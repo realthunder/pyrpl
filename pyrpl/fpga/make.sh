@@ -162,9 +162,19 @@ fi
 # See HANDOFF.md / memory project-hls-direct-fft.
 export FFT_IMPL=${FFT_IMPL:-5}
 export FFT_SSR=${FFT_SSR:-4}
-# FFT clock for timing closure: 0 = 125 MHz / 8 ns (default), 1 = 250 MHz / 4 ns.
-# Override on the command line:  FFT_CLK_SEL=1 ./make.sh   (4 ns FFT clock build).
+# FFT clock for timing closure: 0 = 125 MHz / 8 ns (default), 1 = the I1 mux clock
+# (250 MHz / 4 ns, or 200 MHz / 5 ns when FFT_CLK_200=1 — see below).
+# Override on the command line:  FFT_CLK_SEL=1 ./make.sh
 export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
+
+# FFT_CLK_200: retune the PLL CLKOUT4 (clk_ser, which currently feeds only the FFT
+# clock mux) from 250 MHz to 200 MHz, giving the FFT a 5 ns budget instead of 4 ns.
+# Affects RTL synthesis (red_pitaya_pll.sv `define) + the pll_ser_clk timing
+# constraint (red_pitaya_vivado.tcl). Pair with FFT_CLK_SEL=1 to actually run the
+# FFT at 200 MHz, e.g.:  FFT_CLK_200=1 FFT_CLK_SEL=1 ./make.sh
+# (Optional: also FFT_CLK_PERIOD=5.0 to let HLS re-synth the FFT IP for 5 ns.)
+# Default 0 = unchanged 250 MHz ser clock.
+export FFT_CLK_200=${FFT_CLK_200:-0}
 
 # DETERMINISTIC doubles as the Vivado placer seed (see red_pitaya_vivado.tcl):
 #   0 (default) = fast 8-thread P&R, NOT run-to-run reproducible
@@ -310,7 +320,7 @@ manifest="$ROOT/out/BUILD_INFO.txt"
     echo "placer_seed   = $seed_str"
     echo "# Build params (empty => tcl default at the above git_commit):"
     for v in FPGA_PART ADC_SZ CLK_MULT CLK_ADC_DIV FFT_IMPL FFT_SSR FFT_NFFT \
-             FFT_WIDTH FFT_SCALED FFT_CLK_PERIOD FFT_CLK_SEL FFT_MULT_LUT FFT_USE_APPROX HIST_BLOCK_SIZE; do
+             FFT_WIDTH FFT_SCALED FFT_CLK_PERIOD FFT_CLK_SEL FFT_CLK_200 FFT_MULT_LUT FFT_USE_APPROX HIST_BLOCK_SIZE; do
         printf '%-14s= %s\n' "$v" "${!v:-}"
     done
 } > "$manifest"
