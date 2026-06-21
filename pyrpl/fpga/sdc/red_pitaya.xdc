@@ -232,11 +232,13 @@ create_clock -period 4.000 -name rx_clk  [get_ports daisy_p_i[1]]
 set_false_path -from [get_clocks clk_fpga_0]  -to [get_clocks adc_clk]
 # set_false_path -from [get_clocks clk_fpga_0]  -to [get_clocks par_clk]
 
-# FFT CDC: all data crossing between pll_ser_clk (250 MHz, clk_i) and
+# FFT CDC: all data crossing between pll_ser_clk (the FFT clock when
+# FFT_CLK_SEL=1: 250 MHz default, or 200 MHz with FFT_CLK_200) and
 # pll_adc_clk (125 MHz, adc_clk_i) goes through xpm_cdc_* primitives or
-# xpm_memory_sdpram independent-clock BRAMs, which apply their own
+# xpm_memory_sdpram / xpm_fifo independent-clock BRAMs, which apply their own
 # set_max_delay -datapath_only constraints internally.  Suppress Vivado's
 # exhaustive inter-clock analysis of the full 76k-endpoint domain product.
+# (Frequency-independent: the crossing is asynchronous either way.)
 set_false_path -from [get_clocks pll_ser_clk] -to [get_clocks pll_adc_clk]
 set_false_path -from [get_clocks pll_adc_clk] -to [get_clocks pll_ser_clk]
 

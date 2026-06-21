@@ -4,6 +4,14 @@ set -euo pipefail
 # Script lives in the fpga/ directory; all paths are relative to it.
 ROOT=$(cd "$(dirname "$0")" && pwd)
 
+# BUILD_DIR: run Vivado place&route in an isolated working directory (its own
+# out/, .Xil, sdk) with the read-only source/cache dirs symlinked back to $ROOT.
+# Lets several deterministic (single-threaded) builds run in parallel without
+# colliding on out/ or Vivado temp files (see seed_sweep.sh). HLS is shared via
+# $ROOT/.hls and must be pre-built — isolated workers skip the HLS step. Default:
+# build in place at $ROOT (unchanged behaviour).
+WORKROOT="${BUILD_DIR:-$ROOT}"
+
 # ---- Remote build dispatch -------------------------------------------------
 # Usage: make.sh remote [-p PATCH] [make.sh args...]
 #   rsync the whole git repo to ${REMOTE_HOST:-oplab} at the same absolute path
@@ -285,18 +293,34 @@ if [[ "${1:-}" == "hls" ]]; then
     exit 0
 fi
 
-# Archive the previous build output before wiping (keep at most 10 snapshots).
-if [[ -d "$ROOT/out" ]]; then
-    mkdir -p "$ROOT/out.d"
-    mv "$ROOT/out" "$ROOT/out.d/$(date +%Y%m%d-%H%M%S)"
-    ls -1dt "$ROOT/out.d"/[0-9]*-[0-9]* 2>/dev/null | tail -n +11 | xargs rm -rf
+# Isolated build dir: symlink shared read-only sources/cache; keep out/.Xil/sdk local.
+if [[ "$WORKROOT" != "$ROOT" ]]; then
+    mkdir -p "$WORKROOT"
+    for d in rtl ip sdc elements hls .hls Vitis_Libraries; do
+        [[ -e "$ROOT/$d" ]] && ln -sfn "$ROOT/$d" "$WORKROOT/$d"
+    done
 fi
-rm -rf "$ROOT/.Xil" "$ROOT/.srcs" "$ROOT/.gen" "$ROOT/sdk"
 
-check_hls
+# Archive the previous build output before wiping (keep at most 10 snapshots).
+if [[ -d "$WORKROOT/out" ]]; then
+    mkdir -p "$WORKROOT/out.d"
+    mv "$WORKROOT/out" "$WORKROOT/out.d/$(date +%Y%m%d-%H%M%S)"
+    ls -1dt "$WORKROOT/out.d"/[0-9]*-[0-9]* 2>/dev/null | tail -n +11 | xargs rm -rf
+fi
+rm -rf "$WORKROOT/.Xil" "$WORKROOT/.srcs" "$WORKROOT/.gen" "$WORKROOT/sdk"
+
+# HLS is shared via $ROOT/.hls. Build it only for in-place builds; isolated parallel
+# workers assume it is already built (pre-warm with `./make.sh hls`) so concurrent
+# workers never race on the shared HLS cache.
+if [[ "$WORKROOT" == "$ROOT" ]]; then
+    check_hls
+fi
 
 script="${1:-red_pitaya_vivado.tcl}"
 [[ $# -gt 0 ]] && shift
+# Resolve to absolute so it can be sourced from an isolated WORKROOT cwd (its
+# internal relative paths rtl/ ip/ sdc/ out/ then resolve against the symlinks).
+[[ "$script" != /* ]] && script="$ROOT/$script"
 
 # ---- Build provenance manifest ---------------------------------------------
 # Written into out/ (which red_pitaya_vivado.tcl also writes to) so every build
@@ -310,8 +334,8 @@ else
     seed_str="default(1) — NOT reproducible (multithreaded, maxThreads 8)"
 fi
 git_dirty=$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)
-mkdir -p "$ROOT/out"
-manifest="$ROOT/out/BUILD_INFO.txt"
+mkdir -p "$WORKROOT/out"
+manifest="$WORKROOT/out/BUILD_INFO.txt"
 {
     echo "build_date    = $(date -Is)"
     echo "host          = $(hostname)"
@@ -329,16 +353,16 @@ manifest="$ROOT/out/BUILD_INFO.txt"
 } > "$manifest"
 
 vivado_start=$SECONDS
-(cd "$ROOT" && $VIVADO -nolog -nojournal -mode tcl -source "$script" -tclargs "$@")
+(cd "$WORKROOT" && $VIVADO -nolog -nojournal -mode tcl -source "$script" -tclargs "$@")
 echo "==> Vivado done in $(fmt_elapsed $((SECONDS - vivado_start)))."
 
 # Append the post-route WNS so the manifest captures the build's actual result.
-if [[ -f "$ROOT/out/post_route_timing_summary.rpt" ]]; then
+if [[ -f "$WORKROOT/out/post_route_timing_summary.rpt" ]]; then
     {
         echo ""
         echo "# post-route intra-clock WNS (ns):"
         grep -E "^  (pll_adc_clk|pll_ser_clk|pll_dac_clk_1x) " \
-            "$ROOT/out/post_route_timing_summary.rpt" | awk '{printf "    %-16s%s\n", $1, $2}'
+            "$WORKROOT/out/post_route_timing_summary.rpt" | awk '{printf "    %-16s%s\n", $1, $2}'
     } >> "$manifest"
 fi
 
