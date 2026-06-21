@@ -370,7 +370,17 @@ if {$deterministic} { place_design -directive $det_dir } else { place_design }
 
 # phys_opt_design
 # phys_opt_design -directive AggressivePhysOptimization  (Vivado 2021+)
-phys_opt_design -directive AggressiveExplore
+# PHYS_OPT env selects the main post-place phys_opt directive; PHYS_OPT=none|off|skip
+# disables this pass entirely (the adc sum1 force-replication pass below still runs).
+# Default AggressiveExplore. On a congestion-bound design an aggressive pass can
+# perturb the floorplan and regress the worst clock — use this to A/B it.
+set phys_opt_dir [expr {[info exists env(PHYS_OPT)] ? $env(PHYS_OPT) : "AggressiveExplore"}]
+if {[lsearch -exact {none off skip ""} $phys_opt_dir] >= 0} {
+    puts "INFO: PHYS_OPT=$phys_opt_dir — skipping the main phys_opt_design pass"
+} else {
+    puts "INFO: phys_opt_design -directive $phys_opt_dir"
+    phys_opt_design -directive $phys_opt_dir
+}
 
 # adc: i_dsp/sum1_reg (the DSP output summer) is a high-fanout source feeding the
 # pyrpl output-bus loopback (sum1 -> dac_saturate -> dat_a -> iq/trigger/... inputs).
