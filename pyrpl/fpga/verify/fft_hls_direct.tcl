@@ -11,11 +11,12 @@ set fft_scaled [getp fft_scaled 2]
 set fft_width  [getp fft_width  [expr {$fft_scaled == 1 ? 16 : ($fft_scaled == 2 ? 20 : 28)}]]
 set fft_size   [expr {1 << $fft_nfft}]
 
-# twiddle ROM must match FFT_SSR (gen if missing/mismatched) — same as the build
+# twiddle ROM must match FFT_SSR (gen if missing/mismatched) — same as the build.
+# SSR=1 uses no twiddles (no DIF pre-stage), so it needs no ROM.
 set hls_dir [file normalize [file join [file dirname [info script]] .. hls]]
 set lut [file join $hls_dir fft_ip_ssr_twiddle.hpp]
-set need 1
-if {[file exists $lut]} {
+set need [expr {$fft_ssr >= 2}]
+if {$need && [file exists $lut]} {
     set fh [open $lut r]; set h [read $fh 256]; close $fh
     if {[string match "*FFT_SIZE=$fft_size *FFT_SSR=$fft_ssr *" $h]} { set need 0 }
 }
@@ -28,7 +29,12 @@ if {$need} {
     cd $o
 }
 
+# Default ON here so csim exercises the run-time configurable length (the max
+# length it sweeps also covers the fixed-length path). Set FFT_RUNTIME_NFFT=0 to
+# verify the fixed-length build instead.
+set fft_runtime [getp fft_runtime_nfft 1]
 set defs "-DFFT_SSR=$fft_ssr -DFFT_NFFT=$fft_nfft -DASZ=14 -DDSZ=$fft_width"
+if {$fft_runtime} { append defs " -DFFT_RUNTIME_NFFT" }
 file mkdir .hls; cd .hls
 open_project -reset fft_hls_direct_verify
 add_files     ../hls/fft_hls_direct.cpp    -cflags "-I../hls $defs"

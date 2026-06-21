@@ -18,6 +18,9 @@ proc getparam {name default} {
 set part        [getparam part        xc7z020clg400-1]
 set fft_ssr     [getparam fft_ssr     2]
 set fft_scaled  [getparam fft_scaled  2]
+# Must match the HLS build: the nfft pin only exists on the IP when built with
+# FFT_RUNTIME_NFFT, so add the BD port under the same condition.
+set fft_runtime [getparam fft_runtime_nfft 0]
 set fft_width   [getparam fft_width   [expr {$fft_scaled == 1 ? 16 : ($fft_scaled == 2 ? 20 : 28)}]]
 
 # s_axis: fft_ssr ADC samples (ASZ=14), byte-rounded
@@ -45,6 +48,12 @@ create_bd_design "fft_hls_direct_bd"
 create_bd_port -dir I -type clk -freq_hz 250000000 aclk
 create_bd_port -dir I -type rst                     aresetn
 create_bd_port -dir O -type intr                    event_frame_started
+if {$fft_runtime} {
+    # Runtime sub-FFT length exponent (log2 of the per-lane transform size),
+    # driven from fft_proc.sv's fft_nfft. Stable per frame; selects the run-time
+    # configurable transform length inside the hls::fft core.
+    create_bd_port -dir I -from 4 -to 0             nfft
+}
 
 create_bd_intf_port -mode Slave  -vlnv xilinx.com:interface:axis_rtl:1.0 s_axis
 set_property -dict [list \
@@ -61,6 +70,9 @@ create_bd_cell -type ip -vlnv xilinx.com:hls:fft_hls_direct:1.0 fft_0
 
 connect_bd_net [get_bd_ports aclk]    [get_bd_pins fft_0/ap_clk]
 connect_bd_net [get_bd_ports aresetn] [get_bd_pins fft_0/ap_rst_n]
+if {$fft_runtime} {
+    connect_bd_net [get_bd_ports nfft] [get_bd_pins fft_0/nfft]
+}
 
 connect_bd_intf_net [get_bd_intf_ports s_axis]       [get_bd_intf_pins fft_0/s_axis]
 connect_bd_intf_net [get_bd_intf_pins fft_0/m_axis]  [get_bd_intf_ports m_axis]

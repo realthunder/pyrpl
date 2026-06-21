@@ -28,6 +28,11 @@ set fft_size       [expr {1 << $fft_nfft}]
 # FFT_MULT_LUT=1: build the FFT complex multipliers/butterflies in LUTs, not DSP.
 set fft_mult_lut   [getparam fft_mult_lut    0]
 set mult_lut_flag  [expr {$fft_mult_lut ? "-DFFT_MULT_LUT" : ""}]
+# FFT_RUNTIME_NFFT=1: run-time configurable transform length (PS can change the
+# FFT size on the fly via fft_nfft). Adds ~2700 LUTs; off by default so the
+# shipping fixed-length build keeps its smaller footprint and adc/dac timing.
+set fft_runtime    [getparam fft_runtime_nfft 0]
+set runtime_flag   [expr {$fft_runtime ? "-DFFT_RUNTIME_NFFT" : ""}]
 
 # ---- Generate twiddle LUT if not present (shared with FFT_IMPL=3) ----------
 set hls_dir [file normalize [file dirname [info script]]]
@@ -37,8 +42,11 @@ set gen_exe [file join $hls_dir gen_twiddle_lut_exe]
 # Regenerate when missing, when the generator changed, OR when the header's
 # params (FFT_SIZE/FFT_SSR in its comment) don't match this build — the ROM
 # layout differs by SSR (e.g. SSR=4 adds twid_re_2/twid_re_3 rows).
+# SSR=1 uses no twiddles (no DIF pre-stage), so it needs no ROM.
 set need_gen 0
-if {![file exists $lut_hdr] || [file mtime $gen_src] > [file mtime $lut_hdr]} {
+if {$fft_ssr < 2} {
+    set need_gen 0
+} elseif {![file exists $lut_hdr] || [file mtime $gen_src] > [file mtime $lut_hdr]} {
     set need_gen 1
 } else {
     set fh [open $lut_hdr r]; set hdr [read $fh 256]; close $fh
@@ -72,7 +80,8 @@ add_files ../hls/fft_hls_direct.cpp \
              -DFFT_NFFT=$fft_nfft \
              -DASZ=14 \
              -DDSZ=$fft_width \
-             $mult_lut_flag"
+             $mult_lut_flag \
+             $runtime_flag"
 
 set_top fft_hls_direct
 
