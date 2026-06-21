@@ -220,6 +220,14 @@ export FFT_CLK_200=${FFT_CLK_200:-0}
 # Takes precedence over FFT_CLK_200; do not set both.  Default 0 = unchanged 250 MHz.
 export FFT_CLK_178=${FFT_CLK_178:-0}
 
+# The two FFT-clock retunes are mutually exclusive (both drive the same CLKOUT4 /
+# pll_ser_clk). Setting both would silently use 178 (RTL `ifdef precedence) — fail
+# loudly instead so the intended clock is never ambiguous.
+if [[ "$FFT_CLK_178" != "0" && "$FFT_CLK_200" != "0" ]]; then
+    echo "ERROR: FFT_CLK_178 and FFT_CLK_200 are mutually exclusive — set only one." >&2
+    exit 1
+fi
+
 # DETERMINISTIC selects a place_design directive (see red_pitaya_vivado.tcl;
 # Vivado has no place_design -seed, so directives are the placement-variation lever):
 #   0 (default) = fast 8-thread P&R, Default directive, NOT run-to-run reproducible
