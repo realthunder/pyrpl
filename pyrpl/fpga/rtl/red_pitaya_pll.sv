@@ -31,6 +31,17 @@ module red_pitaya_pll #(
 
 logic clk_fb;
 
+// CLKOUT4 (clk_ser) divide.  clk_ser is currently consumed only by the FFT clock
+// mux (see red_pitaya_top.v: `fft_clk = ser_clk`), so we reuse it as the FFT
+// clock.  VCO = CLKIN*MULT/DIV = 125*8/1 = 1000 MHz.
+//   default          : /4 -> 250 MHz
+//   `define FFT_CLK_200: /5 -> 200 MHz   (relaxes the FFT timing budget to 5 ns)
+`ifdef FFT_CLK_200
+localparam CLKOUT4_DIV = 5;   // 1000/5 = 200 MHz FFT clock
+`else
+localparam CLKOUT4_DIV = 4;   // 1000/4 = 250 MHz (original ser clock)
+`endif
+
 PLLE2_ADV #(
    .BANDWIDTH            ("OPTIMIZED"),
    .COMPENSATION         ("ZHOLD"    ),
@@ -49,7 +60,7 @@ PLLE2_ADV #(
    .CLKOUT3_DIVIDE       ( 4         ),
    .CLKOUT3_PHASE        (-45.000    ),
    .CLKOUT3_DUTY_CYCLE   ( 0.5       ),
-   .CLKOUT4_DIVIDE       ( 4         ),  // 4->250MHz, 2->500MHz
+   .CLKOUT4_DIVIDE       ( CLKOUT4_DIV ),  // 4->250MHz, 5->200MHz (FFT_CLK_200)
    .CLKOUT4_PHASE        ( 0.000     ),
    .CLKOUT4_DUTY_CYCLE   ( 0.5       ),
    .CLKOUT5_DIVIDE       ( 4         ),
