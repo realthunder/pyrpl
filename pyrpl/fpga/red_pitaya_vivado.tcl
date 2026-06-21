@@ -359,8 +359,12 @@ set_false_path -from [get_cells -hier -filter {NAME =~ *fft_peak_start_arg*}] \
 set_false_path -from [get_cells -hier -filter {NAME =~ *fft_peak_minimum_arg*}] \
 				-to   [get_cells -hier -filter {NAME =~ *pd_i*}]
 
-# opt_design
-opt_design -directive NoBramPowerOpt
+# opt_design. OPT_DIRECTIVE env overrides the directive (default NoBramPowerOpt).
+# Area-reducing variants (ExploreArea/ExploreSequentialArea) can relieve congestion;
+# AddRemap reduces logic levels; Explore is general. Sweep to A/B on a tight design.
+set opt_dir [expr {[info exists env(OPT_DIRECTIVE)] ? $env(OPT_DIRECTIVE) : "NoBramPowerOpt"}]
+puts "INFO: opt_design -directive $opt_dir"
+opt_design -directive $opt_dir
 # power_opt_design
 # NOTE: place_design -directive Explore was tried and regressed both clocks
 # (adc -0.483->-0.593, ser -0.674->-0.771). The default placer finds a better
