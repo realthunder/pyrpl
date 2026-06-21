@@ -937,6 +937,16 @@ end else if (FFT_IMPL == 5) begin : gen_fft_hls_direct
         .aclk                   (clk_i),
         .aresetn                (fft_rstn_i),
 
+        // Runtime sub-FFT length (per-lane log2 size). Stable after the one-time
+        // post-reset reconfigure, so the hls::fft core's run-time configurable
+        // transform length tracks fft_nfft just like the IMPL==1 xfft config word.
+        // The nfft pin only exists when the IP is built with FFT_RUNTIME_NFFT
+        // (build knob, off by default); the BD/wrapper and this define are driven
+        // by the same env var so the port set stays consistent.
+`ifdef FFT_RUNTIME_NFFT
+        .nfft                   (fft_nfft),
+`endif
+
         .s_axis_tdata           (fft_data_i),
         .s_axis_tvalid          (fft_saxi_valid),
         .s_axis_tready          (fft_saxi_rdy),

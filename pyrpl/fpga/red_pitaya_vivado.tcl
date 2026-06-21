@@ -57,6 +57,11 @@ set fft_impl       [expr {[info exists env(FFT_IMPL)]       ? $env(FFT_IMPL)    
 #             2=saturating 20-bit (default, fits xc7z020, ~90 dB small-signal detection)
 set fft_scaled     [expr {[info exists env(FFT_SCALED)]     ? $env(FFT_SCALED)     : 2}]
 set fft_use_approx    [expr {[info exists env(FFT_USE_APPROX)]    ? $env(FFT_USE_APPROX)    : 1}]
+# FFT_RUNTIME_NFFT (IMPL=5 only): run-time configurable FFT transform length.
+# Off by default — adds ~2700 LUTs and regresses adc/dac fabric timing on the
+# 88%-full xc7z020. When on, drives the nfft port on the BD + a Verilog define so
+# fft_proc.sv connects it. Global var name (lowercase) is read by fft_hls_direct_bd.tcl.
+set fft_runtime_nfft  [expr {[info exists env(FFT_RUNTIME_NFFT)]  ? $env(FFT_RUNTIME_NFFT)  : 0}]
 set hist_block_size   [expr {[info exists env(HIST_BLOCK_SIZE)]   ? $env(HIST_BLOCK_SIZE)   : 183}]
 # fft_width = DSZ (magnitude output bits). Override with FFT_WIDTH env var if needed.
 if {[info exists env(FFT_WIDTH)]} {
@@ -208,7 +213,11 @@ read_xdc                          $path_sdc/red_pitaya.xdc
 ################################################################################
 
 #synth_design -top red_pitaya_top
+# Verilog define gating the IMPL=5 runtime-nfft port connection in fft_proc.sv;
+# must match the IP/BD build (same fft_runtime_nfft env var).
+set verilog_defines [expr {$fft_runtime_nfft ? "-verilog_define FFT_RUNTIME_NFFT" : ""}]
 synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivalent_registers \
+    {*}$verilog_defines \
     -generic ADC_SZ=$adc_sz \
     -generic CLK_DIFF=$clk_diff \
     -generic CLK_MULT=$clk_mult \

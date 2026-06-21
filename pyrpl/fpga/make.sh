@@ -183,7 +183,7 @@ export CPATH=/usr/include/x86_64-linux-gnu:${CPATH:-}
 # Stored alongside each stamp so that changing FFT_SSR (or any other param)
 # invalidates the cached output even when source files haven't changed.
 hls_fingerprint() {
-    echo "FPGA_PART=${FPGA_PART:-} FFT_IMPL=${FFT_IMPL:-} FFT_SSR=${FFT_SSR:-} FFT_NFFT=${FFT_NFFT:-} FFT_WIDTH=${FFT_WIDTH:-} FFT_SCALED=${FFT_SCALED:-} FFT_CLK_PERIOD=${FFT_CLK_PERIOD:-} FFT_USE_APPROX=${FFT_USE_APPROX:-} FFT_MULT_LUT=${FFT_MULT_LUT:-} HIST_BLOCK_SIZE=${HIST_BLOCK_SIZE:-}"
+    echo "FPGA_PART=${FPGA_PART:-} FFT_IMPL=${FFT_IMPL:-} FFT_SSR=${FFT_SSR:-} FFT_NFFT=${FFT_NFFT:-} FFT_WIDTH=${FFT_WIDTH:-} FFT_SCALED=${FFT_SCALED:-} FFT_CLK_PERIOD=${FFT_CLK_PERIOD:-} FFT_USE_APPROX=${FFT_USE_APPROX:-} FFT_MULT_LUT=${FFT_MULT_LUT:-} FFT_RUNTIME_NFFT=${FFT_RUNTIME_NFFT:-} HIST_BLOCK_SIZE=${HIST_BLOCK_SIZE:-}"
 }
 
 fmt_elapsed() {
