@@ -25,6 +25,9 @@ set fft_scaled     [getparam fft_scaled     2]
 # fft_width = DSZ (magnitude output bits): 0->28, 1->16, 2->20
 set fft_width      [getparam fft_width      [expr {$fft_scaled == 1 ? 16 : ($fft_scaled == 2 ? 20 : 28)}]]
 set fft_size       [expr {1 << $fft_nfft}]
+# FFT_MULT_LUT=1: build the FFT complex multipliers/butterflies in LUTs, not DSP.
+set fft_mult_lut   [getparam fft_mult_lut    0]
+set mult_lut_flag  [expr {$fft_mult_lut ? "-DFFT_MULT_LUT" : ""}]
 
 # ---- Generate twiddle LUT if not present (shared with FFT_IMPL=3) ----------
 set hls_dir [file normalize [file dirname [info script]]]
@@ -68,7 +71,8 @@ add_files ../hls/fft_hls_direct.cpp \
              -DFFT_SSR=$fft_ssr \
              -DFFT_NFFT=$fft_nfft \
              -DASZ=14 \
-             -DDSZ=$fft_width"
+             -DDSZ=$fft_width \
+             $mult_lut_flag"
 
 set_top fft_hls_direct
 

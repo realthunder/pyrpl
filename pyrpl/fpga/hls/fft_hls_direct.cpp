@@ -105,6 +105,15 @@ struct fft_params_t : hls::ip_fft::params_t {
     static const unsigned config_width       = ((2*((SUB_NFFT+1)/2)+1+7)/8)*8;
     static const unsigned phase_factor_width = TWID_W;
     static const unsigned stages_block_ram   = (SUB_NFFT < 10) ? 0 : SUB_NFFT - 9;
+#ifdef FFT_MULT_LUT
+    // DSP->LUT trade: implement the twiddle complex multipliers and butterflies
+    // in CLB/LUT logic instead of XtremeDSP. Frees DSP48 (relieves the ~98% DSP
+    // wall at SSR=4) at the cost of more LUTs and lower per-mult Fmax. Default
+    // (unset) keeps DSP-based mults: complex_mult_type=use_mults_resources,
+    // butterfly_type=use_xtremedsp.
+    static const unsigned complex_mult_type = hls::ip_fft::use_luts;
+    static const unsigned butterfly_type    = hls::ip_fft::use_luts;
+#endif
 };
 
 typedef hls::ip_fft::config_t<fft_params_t> fft_config_t;

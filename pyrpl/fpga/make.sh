@@ -128,6 +128,21 @@ fi
 # FFT_CLK_PERIOD: HLS synthesis target clock period in ns (4.0 = 250 MHz).
 #export FFT_CLK_PERIOD=4.0
 
+# FFT_CLK_SEL: which fabric clock the FFT clock mux is pinned to for timing
+#   analysis (set_case_analysis on i_scope/fft_clk_sel). This is the "FFT clock
+#   period" knob for the placed/routed design:
+#     0 = adc_clk, 125 MHz  -> 8 ns FFT clock (default; SSR=4 closes here)
+#     1 = fft_clk, 250 MHz  -> 4 ns FFT clock (analyse/close the FFT at 250 MHz)
+#export FFT_CLK_SEL=1
+
+# FFT_MULT_LUT (FFT_IMPL=5 only): DSP->LUT trade for the FFT.
+#   0 = DSP48 complex multipliers/butterflies (default).
+#   1 = implement them in LUT logic (complex_mult_type/butterfly_type=use_luts).
+#   Frees DSP48 (relieves the ~98% DSP wall at SSR=4) but uses many more LUTs and
+#   lowers per-mult Fmax; on the near-full xc7z020 it tends to become slice/route
+#   bound (see project_lut_fft_nofit). Experimental.
+#export FFT_MULT_LUT=1
+
 # FFT_IMPL: FFT implementation selector.
 #   1 = plain LogiCORE IP (no HLS FFT build needed)
 #   2 = Vitis HLS SSR FFT, Decimation-In-Time (DIT) — fft_ssr
@@ -147,6 +162,8 @@ fi
 # See HANDOFF.md / memory project-hls-direct-fft.
 export FFT_IMPL=${FFT_IMPL:-5}
 export FFT_SSR=${FFT_SSR:-4}
+# FFT clock for timing closure: 0 = 125 MHz / 8 ns (default), 1 = 250 MHz / 4 ns.
+# Override on the command line:  FFT_CLK_SEL=1 ./make.sh   (4 ns FFT clock build).
 export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
 
 # DETERMINISTIC doubles as the Vivado placer seed (see red_pitaya_vivado.tcl):
@@ -166,7 +183,7 @@ export CPATH=/usr/include/x86_64-linux-gnu:${CPATH:-}
 # Stored alongside each stamp so that changing FFT_SSR (or any other param)
 # invalidates the cached output even when source files haven't changed.
 hls_fingerprint() {
-    echo "FPGA_PART=${FPGA_PART:-} FFT_IMPL=${FFT_IMPL:-} FFT_SSR=${FFT_SSR:-} FFT_NFFT=${FFT_NFFT:-} FFT_WIDTH=${FFT_WIDTH:-} FFT_SCALED=${FFT_SCALED:-} FFT_CLK_PERIOD=${FFT_CLK_PERIOD:-} FFT_USE_APPROX=${FFT_USE_APPROX:-} HIST_BLOCK_SIZE=${HIST_BLOCK_SIZE:-}"
+    echo "FPGA_PART=${FPGA_PART:-} FFT_IMPL=${FFT_IMPL:-} FFT_SSR=${FFT_SSR:-} FFT_NFFT=${FFT_NFFT:-} FFT_WIDTH=${FFT_WIDTH:-} FFT_SCALED=${FFT_SCALED:-} FFT_CLK_PERIOD=${FFT_CLK_PERIOD:-} FFT_USE_APPROX=${FFT_USE_APPROX:-} FFT_MULT_LUT=${FFT_MULT_LUT:-} HIST_BLOCK_SIZE=${HIST_BLOCK_SIZE:-}"
 }
 
 fmt_elapsed() {
@@ -293,7 +310,7 @@ manifest="$ROOT/out/BUILD_INFO.txt"
     echo "placer_seed   = $seed_str"
     echo "# Build params (empty => tcl default at the above git_commit):"
     for v in FPGA_PART ADC_SZ CLK_MULT CLK_ADC_DIV FFT_IMPL FFT_SSR FFT_NFFT \
-             FFT_WIDTH FFT_SCALED FFT_CLK_PERIOD FFT_CLK_SEL FFT_USE_APPROX HIST_BLOCK_SIZE; do
+             FFT_WIDTH FFT_SCALED FFT_CLK_PERIOD FFT_CLK_SEL FFT_MULT_LUT FFT_USE_APPROX HIST_BLOCK_SIZE; do
         printf '%-14s= %s\n' "$v" "${!v:-}"
     done
 } > "$manifest"
