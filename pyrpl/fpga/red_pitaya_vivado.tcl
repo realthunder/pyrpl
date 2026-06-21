@@ -74,6 +74,14 @@ set hist_block_size   [expr {[info exists env(HIST_BLOCK_SIZE)]   ? $env(HIST_BL
 # the FFT is timed at 200 MHz (5 ns).  Use with FFT_CLK_SEL=1 to route it into the
 # FFT.  Default 0 = unchanged 250 MHz build.
 set fft_clk_200    [expr {[info exists env(FFT_CLK_200)]    ? $env(FFT_CLK_200)    : 0}]
+# FFT_CLK_178: retune the PLL VCO from 1000 -> 1250 MHz (CLKFBOUT_MULT 8->10) and
+# scale every output divider x1.25 so adc/dac/pwm stay byte-identical, then take
+# CLKOUT4 = VCO/7 = 178.57 MHz for the FFT (5.6 ns).  178.57 MHz cannot be reached
+# from the 1000 MHz VCO by an integer divider, so this is the only way to land the
+# FFT clock strictly in 170-200 MHz.  Drives a Verilog define (red_pitaya_pll.sv)
+# and redefines pll_ser_clk below.  Use with FFT_CLK_SEL=1 to route it into the FFT.
+# Takes precedence over FFT_CLK_200; do not set both.  Default 0.
+set fft_clk_178    [expr {[info exists env(FFT_CLK_178)]    ? $env(FFT_CLK_178)    : 0}]
 # fft_width = DSZ (magnitude output bits). Override with FFT_WIDTH env var if needed.
 if {[info exists env(FFT_WIDTH)]} {
     set fft_width $env(FFT_WIDTH)
@@ -228,6 +236,7 @@ read_xdc                          $path_sdc/red_pitaya.xdc
 # must match the IP/BD build (same fft_runtime_nfft env var).
 set verilog_defines [expr {$fft_runtime_nfft ? "-verilog_define FFT_RUNTIME_NFFT" : ""}]
 if {$fft_clk_200} { lappend verilog_defines -verilog_define FFT_CLK_200 }
+if {$fft_clk_178} { lappend verilog_defines -verilog_define FFT_CLK_178 }
 synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivalent_registers \
     {*}$verilog_defines \
     -generic ADC_SZ=$adc_sz \
@@ -260,7 +269,14 @@ if {$fft_impl == 4} {
 # Redefine the generated clock so the FFT is analysed at the real 200 MHz / 5 ns
 # (re-issuing create_generated_clock with the same -name replaces the prior one).
 # Done in tcl (not the static xdc) because read_xdc rejects the `if` guard.
-if {$fft_clk_200} {
+if {$fft_clk_178} {
+    # VCO retuned to 1250 MHz (CLKFBOUT_MULT 10), CLKOUT4 = VCO/7.  Relative to the
+    # 125 MHz source: 125 * 10/7 = 178.57 MHz (5.6 ns).  adc/dac generated clocks are
+    # unchanged (their literal ratios still evaluate to 125/250).
+    create_generated_clock -name pll_ser_clk -source [get_pins pll/clk] \
+        -multiply_by 10 -divide_by 7 [get_pins pll/clk_ser]
+    puts "INFO: FFT_CLK_178 — pll_ser_clk redefined to 178.57 MHz (VCO 1250/7, 5.6 ns)"
+} elseif {$fft_clk_200} {
     create_generated_clock -name pll_ser_clk -source [get_pins pll/clk] \
         -multiply_by 8 -divide_by 5 [get_pins pll/clk_ser]
     puts "INFO: FFT_CLK_200 — pll_ser_clk redefined to 200 MHz (VCO/5, 5 ns)"
@@ -328,7 +344,7 @@ if {$fft_clk_sel == 0 || $fft_clk_sel == 1} {
     set sel_q [get_pins -hier -quiet -filter {NAME =~ *fft_clk_sel_i_reg/Q}]
     if {[llength $sel_q] > 0} {
         set_case_analysis $fft_clk_sel $sel_q
-        set sel1_freq [expr {$fft_clk_200 ? {200 MHz fft_clk} : {250 MHz fft_clk}}]
+        set sel1_freq [expr {$fft_clk_178 ? {178.57 MHz fft_clk} : ($fft_clk_200 ? {200 MHz fft_clk} : {250 MHz fft_clk})}]
         puts "INFO: FFT clock pinned via set_case_analysis fft_clk_sel=$fft_clk_sel \
               ([expr {$fft_clk_sel == 0 ? {125 MHz adc_clk} : $sel1_freq}])"
     } else {
