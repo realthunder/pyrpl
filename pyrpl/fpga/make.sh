@@ -163,6 +163,31 @@ fi
 #   Default 183 → 184 * 8 = 1472 B = one standard Ethernet MTU (no fragmentation).
 #export HIST_BLOCK_SIZE=183
 
+# ---- Named build profiles -------------------------------------------------
+# PROFILE=<name> ./make.sh applies a known-good combination of FFT_*/DETERMINISTIC
+# settings as the defaults. Individual vars on the command line still override the
+# profile (the active defaults below use ${VAR:-...}, and the profile only seeds
+# those, so e.g. PROFILE=fft200 DETERMINISTIC=0 ./make.sh = the fft200 config but
+# fast/non-reproducible). Profiles:
+#   fft200ssr2 — SSR=2, NFFT=13 (8192-pt), FFT clock retuned to 200 MHz (FFT_CLK_200=1,
+#             FFT_CLK_SEL=1), placed with ExtraPostPlacementOpt (DETERMINISTIC=5).
+#             Closes timing reproducibly: pll_adc +0.083, pll_ser(FFT@200) +0.101,
+#             0 failing endpoints. Archive: out.d/2025.2-ssr2n13-fft200-closed-*.
+case "${PROFILE:-}" in
+    ""|none) ;;
+    fft200ssr2)
+        export FFT_IMPL=${FFT_IMPL:-5}
+        export FFT_SSR=${FFT_SSR:-2}
+        export FFT_NFFT=${FFT_NFFT:-13}
+        export FFT_CLK_200=${FFT_CLK_200:-1}
+        export FFT_CLK_SEL=${FFT_CLK_SEL:-1}
+        export DETERMINISTIC=${DETERMINISTIC:-5}
+        echo "==> PROFILE=fft200ssr2: SSR=2 NFFT=13 FFT@200MHz, place ExtraPostPlacementOpt (DETERMINISTIC=5)"
+        ;;
+    *)
+        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2)" >&2; exit 1 ;;
+esac
+
 # ---- Active build defaults (override on the command line, e.g. FFT_IMPL=3 ./make.sh) ----
 # Default build: direct hls::fft (FFT_IMPL=5), SSR=4, FFT clock pinned to 125 MHz
 # (FFT_CLK_SEL=0). SSR=4 @ 125 MHz = same 500 Msps as SSR=2 @ 250 MHz but an 8 ns
