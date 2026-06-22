@@ -181,15 +181,15 @@ case "${PROFILE:-}" in
         export FFT_NFFT=${FFT_NFFT:-13}
         export FFT_CLK_200=${FFT_CLK_200:-1}
         export FFT_CLK_SEL=${FFT_CLK_SEL:-1}
-        # Best of the full rep-OFF place×phys_opt matrix: EarlyBlockPlacement (DET=6)
-        # + AggressiveExplore phys_opt + sum1 replication OFF → adc +0.156, ser +0.156
-        # (2x the margin of the old rep-ON/ExtraPostPlacementOpt point-build +0.083).
+        # Best of the rep-OFF place×phys_opt matrix (re-swept after the nfft-constant
+        # refactor changed the netlist): ExtraNetDelay_low (DET=10) + AggressiveExplore
+        # phys_opt + sum1 replication OFF → adc +0.135, ser +0.131, 0 failing.
         # The SSR=2 design is roomy (63% DSP) so the adc sum1 force-replication is not
         # needed here and actually hurt — keep it OFF.
-        export DETERMINISTIC=${DETERMINISTIC:-6}
+        export DETERMINISTIC=${DETERMINISTIC:-10}
         export SUM1_REPLICATE=${SUM1_REPLICATE:-0}
         export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
-        echo "==> PROFILE=fft200ssr2: SSR=2 NFFT=13 FFT@200MHz, place EarlyBlockPlacement (DETERMINISTIC=6), phys_opt AggressiveExplore, sum1 replicate OFF"
+        echo "==> PROFILE=fft200ssr2: SSR=2 NFFT=13 FFT@200MHz, place ExtraNetDelay_low (DETERMINISTIC=10), phys_opt AggressiveExplore, sum1 replicate OFF"
         ;;
     fft178ssr4n11)
         # Highest-throughput closing config: SSR=4 NFFT=11 (2048-pt) FFT @ 178.57 MHz.
