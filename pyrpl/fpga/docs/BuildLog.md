@@ -112,11 +112,19 @@ AggressiveExplore −0.105→−0.329; ExtraNetDelay_high × Explore −0.125→
 hurts the AltSpreadLogic placements (spread directive + replicated copies =
 over-spread on the full die).
 
+**Exhaustive coverage (both replication states, 8 places × 3 phys_opt ≈ 48 builds):**
+- **rep OFF** best = AltSpreadLogic_medium × AggressiveFanoutOpt = **−0.028**.
+- **rep ON** full 7×3 matrix best = EarlyBlockPlacement × Explore = **−0.099** (worse than
+  rep OFF in every cell). Replication is **placement-dependent**: helps EarlyBlockPlacement,
+  hurts spread/net-delay placements.
+- AltSpreadLogic_low (gentlest spread): rep OFF −0.282…−0.360, rep ON −0.086…−0.890 —
+  no better than `_medium`. So `_medium` is the spread sweet spot.
+
 **Verdict:** best achievable = AltSpreadLogic_medium + AggressiveFanoutOpt + **rep
-OFF** = **worst −0.028** (adc). Does not close. adc is genuinely congestion-bound
-(98% DSP, no stray constraint — audited). At **N12** SSR=4 stays ~30 ps short
-regardless of placement / phys_opt / replication — **but at N11 it CLOSES** (see the
-SSR=4·N11 section above). So SSR=4/178 is viable only at NFFT≤11 on this device.
+OFF** = **worst −0.028** (adc). Does not close in *any* of ~48 combos. adc is genuinely
+congestion-bound (98% DSP, no stray constraint — audited). At **N12** SSR=4 stays
+~30 ps short regardless of placement / phys_opt / replication — **but at N11 it CLOSES**
+(see the SSR=4·N11 section above). So SSR=4/178 is viable only at NFFT≤11 on this device.
 Archives: `out.d/sweep-ssr4n12-178-det*`.
 
 ---
