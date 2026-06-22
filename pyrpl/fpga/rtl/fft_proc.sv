@@ -65,6 +65,26 @@ module fft_proc #(
 
 localparam SSR_BITS = $clog2(FSSR);
 
+// Runtime FFT length is supported only by the LogiCORE IP (FFT_IMPL==1), or when
+// explicitly opted in via the FFT_RUNTIME_NFFT define. Otherwise nfft and every
+// derived size fold to compile-time constants via the real_nfft() function below:
+// when RUNTIME_NFFT is 0 (a localparam) the function returns the constant NFFT_FIXED
+// regardless of its argument, so all the `1<<real_nfft(...)` shifts and fft_shift
+// collapse at elaboration and the runtime decode logic / fft_nfft register are pruned.
+`ifdef FFT_RUNTIME_NFFT
+localparam FFT_RT_DEF = 1;
+`else
+localparam FFT_RT_DEF = 0;
+`endif
+localparam RUNTIME_NFFT = (FFT_IMPL == 1) || FFT_RT_DEF;
+localparam [5-1:0] NFFT_FIXED = FSZ - SSR_BITS;   // internal (sub-FFT) nfft at full size
+
+// Effective internal (sub-FFT) nfft: the runtime value rt when runtime length is
+// enabled, else the compile-time constant. Inlined + constant-folded by synthesis.
+function automatic [5-1:0] real_nfft(input [5-1:0] rt);
+    real_nfft = RUNTIME_NFFT ? rt : NFFT_FIXED;
+endfunction
+
 localparam READ_A_DELAY = READ_DELAY - 3;
 localparam READ_B_DELAY = READ_DELAY - 3;
 
@@ -518,26 +538,28 @@ logic [ FSZ-1:0] padding_up_, padding_down_;
 // Only allow one-time re-configuration after reset to avoid synchronization issue
 always @(posedge clk_i) begin
     if (conf_req) begin
-        fft_nfft_ <= conf_data[5-1:0] - SSR_BITS;
+        // real_nfft() folds to NFFT_FIXED when !RUNTIME_NFFT (the conf_data decode is
+        // then dead and pruned); the LogiCORE/opt-in runtime path keeps the live value.
+        fft_nfft_ <= real_nfft(conf_data[5-1:0] - SSR_BITS);
         acq_up_ <= conf_data[16+FSZ+FSZ-1:16+FSZ];
         acq_down_ <= conf_data[16+FSZ-1:16];
         fft_conf_data_ <= conf_data[16-1:0];
     end
 
-    fft_length_ <= 1<<fft_nfft;
-    fft_shift_ <= FSZ - fft_nfft;
+    fft_length_ <= 1 << real_nfft(fft_nfft);
+    fft_shift_ <= FSZ - real_nfft(fft_nfft);
     // Stage 1 does the shift only (same op as fft_length_); the +2 add moves
     // to stage 2 below, breaking the shift+adder carry chain from fft_nfft.
-    fft_length_plus_two_ <= 1<<fft_nfft;
-    padding_up_ <= (1<<fft_nfft) - acq_up;
-    padding_down_ <= (1<<fft_nfft) - acq_down;
+    fft_length_plus_two_ <= 1 << real_nfft(fft_nfft);
+    padding_up_ <= (1 << real_nfft(fft_nfft)) - acq_up;
+    padding_down_ <= (1 << real_nfft(fft_nfft)) - acq_down;
 
     // We need 2x amount of samples, one for Fup and one for Fdown
     if (!fft_parallel) begin
-        fft_length2_ <= 1<<(fft_nfft+1);
+        fft_length2_ <= 1 << (real_nfft(fft_nfft) + 1'b1);
         up_toggle_ <= 1;
     end else begin
-        fft_length2_ <= 1<<fft_nfft;
+        fft_length2_ <= 1 << real_nfft(fft_nfft);
         up_toggle_ <= 0;
     end
 
