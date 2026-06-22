@@ -15,8 +15,8 @@ def main():
     fft_ssr  = int(sys.argv[2])
     twid_w   = int(sys.argv[3])
 
-    if fft_ssr not in (2, 4):
-        print("ERROR: FFT_SSR must be 2 or 4", file=sys.stderr)
+    if fft_ssr not in (2, 4, 8):
+        print("ERROR: FFT_SSR must be 2, 4, or 8", file=sys.stderr)
         sys.exit(1)
 
     sub_size   = fft_size // fft_ssr

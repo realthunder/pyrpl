@@ -74,6 +74,7 @@ module red_pitaya_scope #(
   parameter HSZ  = 14,  // fft history buffer size 2^HSZ
   parameter FSSR     = 1, // FFT super sample rate (parallel channels)
   parameter FFT_IMPL = 3,  // 1=LogiCORE, 2=HLS SSR (DIT), 3=IP SSR (DIF)
+  parameter FFT_SINGLE = 0, // 1 = build only fft_a, omit fft_b (e.g. SSR=8 to fit)
   parameter HIST_BLOCK_SIZE = 128
 )(
 
@@ -788,6 +789,26 @@ fft_a (
    .overflow_cnt_o (fft_overflow_cnt)
 );
 
+if (FFT_SINGLE) begin : gen_no_fft_b
+   // Single-FFT build (e.g. SSR=8): fft_b is omitted to fit the device. Tie off
+   // all of its outputs so the surrounding logic still functions on fft_a alone.
+   // done/peak_ready forced high so the &-reductions depend only on channel A.
+   assign fft_rdata_up_b_        = '0;
+   assign fft_rdata_down_b_      = '0;
+   assign fft_hist_rdata_up_b_   = '0;
+   assign fft_hist_rdata_down_b_ = '0;
+   assign fft_status[1]          = '0;
+   assign fft_done[1]            = 1'b1;
+   assign fft_peak_ready_b       = 1'b1;
+   assign fft_peak_index_up_b    = '0;
+   assign fft_peak_index_down_b  = '0;
+   assign fft_peak_up_b          = '0;
+   assign fft_peak_down_b        = '0;
+   assign fft_we_cnt[1]          = '0;
+   assign dma_b_tdata            = '0;
+   assign dma_b_tvalid           = 1'b0;
+   assign dma_b_tlast            = 1'b0;
+end else begin : gen_fft_b
 fft_proc #(.ASZ(ASZ),
            .QSZ(QSZ),
            .DSZ(DSZ),
@@ -849,6 +870,7 @@ fft_proc #(.ASZ(ASZ),
 
    .fft_conf_data_in (fft_conf_data)
 );
+end
 
 always @(posedge adc_clk_i)
 if (adc_rstn_i == 1'b0) begin

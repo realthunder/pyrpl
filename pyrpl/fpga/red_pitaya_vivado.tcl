@@ -58,6 +58,10 @@ set fft_clk_period [expr {[info exists env(FFT_CLK_PERIOD)] ? $env(FFT_CLK_PERIO
 # FFT_IMPL: 1=plain LogiCORE, 2=HLS SSR (Vitis library), 3=IP SSR (LogiCORE sub-FFTs),
 #           4=native-SSR xfft, 5=direct hls::fft (default; SSR=4 @ 125 MHz)
 set fft_impl       [expr {[info exists env(FFT_IMPL)]       ? $env(FFT_IMPL)       : 5}]
+# FFT_SINGLE: 1=build only the fft_a channel and omit fft_b. Halves FFT resource
+#   usage so wide configurations (e.g. SSR=8) fit; channel B peak/readout regs
+#   then read back zero. Auto-enabled for SSR>=8 unless explicitly overridden.
+set fft_single     [expr {[info exists env(FFT_SINGLE)]     ? $env(FFT_SINGLE)     : ($fft_ssr >= 8)}]
 # FFT_SCALED: 0=unscaled 28-bit (~140 dB, needs large device), 1=scaled 16-bit (~72 dB),
 #             2=saturating 20-bit (default, fits xc7z020, ~90 dB small-signal detection)
 set fft_scaled     [expr {[info exists env(FFT_SCALED)]     ? $env(FFT_SCALED)     : 2}]
@@ -247,6 +251,7 @@ synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivale
     -generic FFT_SSR=$fft_ssr \
     -generic FFT_WIDTH=$fft_width \
     -generic FFT_IMPL=$fft_impl \
+    -generic FFT_SINGLE=$fft_single \
     -generic HIST_BLOCK_SIZE=$hist_block_size
 
 # Per-FFT-implementation constraints.  read_xdc's restricted interpreter rejects
