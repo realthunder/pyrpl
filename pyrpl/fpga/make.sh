@@ -189,8 +189,24 @@ case "${PROFILE:-}" in
         export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
         echo "==> PROFILE=fft200ssr2: SSR=2 NFFT=13 FFT@200MHz, place ExtraPostPlacementOpt (DETERMINISTIC=5), phys_opt AggressiveExplore, sum1 replicate ON"
         ;;
+    fft178ssr4n11)
+        # Highest-throughput closing config: SSR=4 NFFT=11 (2048-pt) FFT @ 178.57 MHz.
+        # N12 stays ~30 ps short on adc; dropping to N11 frees enough congestion that
+        # SSR=4 closes. Placed EarlyBlockPlacement (DET=6) + Explore phys_opt, rep OFF.
+        # Post-route: adc +0.037, ser +0.130, all dac positive. DSP 98%/BRAM 82%/LUT 75%.
+        # Tradeoff vs fft200ssr2: 2048-pt = coarser range res but ~1.8x the point rate.
+        export FFT_IMPL=${FFT_IMPL:-5}
+        export FFT_SSR=${FFT_SSR:-4}
+        export FFT_NFFT=${FFT_NFFT:-11}
+        export FFT_CLK_178=${FFT_CLK_178:-1}
+        export FFT_CLK_SEL=${FFT_CLK_SEL:-1}
+        export DETERMINISTIC=${DETERMINISTIC:-6}
+        export PHYS_OPT=${PHYS_OPT:-Explore}
+        export SUM1_REPLICATE=${SUM1_REPLICATE:-0}
+        echo "==> PROFILE=fft178ssr4n11: SSR=4 NFFT=11 FFT@178.57MHz, place EarlyBlockPlacement (DETERMINISTIC=6), phys_opt Explore, sum1 replicate OFF"
+        ;;
     *)
-        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2)" >&2; exit 1 ;;
+        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 fft178ssr4n11)" >&2; exit 1 ;;
 esac
 
 # ---- Active build defaults (override on the command line, e.g. FFT_IMPL=3 ./make.sh) ----
