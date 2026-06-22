@@ -77,10 +77,19 @@ Best = **AltSpreadLogic_medium × AggressiveFanoutOpt = −0.028** (adc −0.028
 rep OFF — the *medium* spread relieves adc congestion without starving the FFT (where
 `_high` is worst). 28 ps short.
 
-**Verdict:** best achievable = AltSpreadLogic_medium + AggressiveFanoutOpt = **worst
-−0.028** (adc). Does not close. adc is genuinely congestion-bound (98% DSP, no stray
-constraint — audited). **SSR=2 is the viable fast-FFT path; SSR=4 stays ~30 ps short
-regardless of FFT clock.** Archives: `out.d/sweep-ssr4n12-178-det*`, `out.d/matrix-*` (via .sweep/).
+Closing attempt — top adc-bound cells retried with **rep ON** (rep helps on
+EarlyBlockPlacement, so worth a shot): all *regressed*. AltSpreadLogic_medium ×
+AggressiveFanoutOpt −0.028→−0.161; × Explore −0.049→−0.454; ExtraNetDelay_low ×
+AggressiveExplore −0.105→−0.329; ExtraNetDelay_high × Explore −0.125→−0.216.
+⇒ replication's effect is **placement-dependent**: helps EarlyBlockPlacement,
+hurts the AltSpreadLogic placements (spread directive + replicated copies =
+over-spread on the full die).
+
+**Verdict:** best achievable = AltSpreadLogic_medium + AggressiveFanoutOpt + **rep
+OFF** = **worst −0.028** (adc). Does not close. adc is genuinely congestion-bound
+(98% DSP, no stray constraint — audited). **SSR=2 is the viable fast-FFT path; SSR=4
+stays ~30 ps short regardless of FFT clock / placement / phys_opt / replication.**
+Archives: `out.d/sweep-ssr4n12-178-det*`.
 
 ---
 
