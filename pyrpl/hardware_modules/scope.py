@@ -416,6 +416,11 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_enable = BoolRegister(0x0, 5, doc="Enable fft")
 
+    dma_enabled = BoolProperty(default=True,
+                               doc="Stream FFT peak history over the "
+                                   "point-cloud DMA/UDP client. Disable for "
+                                   "FPGA binaries built without the DMA path.")
+
     fft_parallel = BoolRegister(0x0, 4, doc="Running dual fft in parallel for up and down")
 
     fft_trigger_sync = BoolRegister(0x0, 6, doc='Sync fft trigger to scope')
@@ -804,7 +809,7 @@ class Scope(HardwareModule, AcquisitionModule):
         """
         Start acquisition of a curve in rolling_mode=False
         """
-        if self.fft_enable and not self._dma_udp_client._running:
+        if self.fft_enable and self.dma_enabled and not self._dma_udp_client._running:
             self._dma_udp_client.start()
         autosave_backup = self._autosave_active
         self._autosave_active = False  # Don't save anything in config file

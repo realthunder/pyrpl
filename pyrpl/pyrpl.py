@@ -224,6 +224,12 @@ port     port for redpitaya_client, default is 2222
 
 gui      one of [True, False], to en- or disable GUI
 loglevel logging level, one of [debug, info, warning, error]
+
+disabled_modules
+         names of hardware modules absent from the FPGA bitstream, so they are
+         not instantiated (makes the client safe on reduced bitstreams). Pass a
+         list from Python, e.g. disabled_modules=['iir','pid1','pid2','iq1','iq2'],
+         or a comma-separated string via the REDPITAYA_DISABLED_MODULES env var.
 """%(__version__)
 
 
@@ -244,7 +250,10 @@ class Pyrpl(object):
     **kwargs: dict
         Additional arguments can be passed and will be written to the
         redpitaya branch of the config file. See class definition of
-        RedPitaya for possible keywords.
+        RedPitaya for possible keywords. For example,
+        disabled_modules=['iir','pid1','pid2','iq1','iq2'] skips hardware
+        modules absent from a reduced FPGA bitstream so the client does not
+        touch their (unmapped) register space.
     """
     def __init__(self,
                  config=None,
