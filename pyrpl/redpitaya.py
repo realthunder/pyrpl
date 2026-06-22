@@ -59,7 +59,12 @@ defaultparameters = dict(
     timeout=1,  # timeout in seconds for ssh communication
     monitor_server_name='monitor_server',  # name of the server program on redpitaya
     silence_env=False,   # suppress all environment variables that may override the configuration?
-    gui=True  # show graphical user interface or work on command-line only?
+    gui=True,  # show graphical user interface or work on command-line only?
+    disabled_modules=[],  # module names absent from the FPGA bitstream, e.g.
+                          # ['iir','pid1','pid2','iq1','iq2']. Listed modules are
+                          # not instantiated, so the client never touches their
+                          # (unmapped) register space. Accepts a list or a
+                          # comma/space-separated string (for env/config use).
     )
 
 
@@ -125,7 +130,13 @@ class RedPitaya(object):
                 if "REDPITAYA_"+k.upper() in os.environ:
                     newvalue = os.environ["REDPITAYA_"+k.upper()]
                     oldvalue = self.parameters[k]
-                    self.parameters[k] = type(oldvalue)(newvalue)
+                    if isinstance(oldvalue, list):
+                        # list-valued params (e.g. disabled_modules) are given
+                        # as a comma/space-separated string in the environment
+                        self.parameters[k] = [s.strip() for s in
+                                              newvalue.replace(',', ' ').split()]
+                    else:
+                        self.parameters[k] = type(oldvalue)(newvalue)
                     if k == "password": # do not show the password on the screen
                         oldvalue = "********"
                         newvalue = "********"
@@ -520,9 +531,24 @@ class RedPitaya(object):
     def makemodules(self):
         """
         Automatically generates modules from the list RedPitaya.cls_modules
+
+        Modules whose name is listed in the 'disabled_modules' parameter are
+        skipped (not instantiated and not added to self.modules), which makes
+        the client safe to run against reduced FPGA bitstreams that omit them
+        (e.g. ['iir','pid1','pid2','iq1','iq2']). Names are generated from the
+        full class list first, so numbering is preserved (skipping 'pid1' still
+        leaves the remaining module named 'pid2').
         """
         names = get_unique_name_list_from_class_list(self.cls_modules)
+        disabled = self.parameters.get('disabled_modules', []) or []
+        if isinstance(disabled, str):  # tolerate "iir,pid1" from env/config
+            disabled = [s.strip() for s in disabled.replace(',', ' ').split()]
+        disabled = set(disabled)
         for cls, name in zip(self.cls_modules, names):
+            if name in disabled:
+                self.logger.info("Skipping module '%s' (listed in "
+                                 "disabled_modules).", name)
+                continue
             self.makemodule(name, cls)
 
     def make_a_slave(self, port=None, monitor_server_name=None, gui=False):
