@@ -256,6 +256,27 @@ fi
 # e.g. DETERMINISTIC=1 ./make.sh   (or sweep DETERMINISTIC=1..N for the best WNS).
 export DETERMINISTIC=${DETERMINISTIC:-0}
 
+# ---- Resolved build settings banner ---------------------------------------
+# Print the EFFECTIVE configuration after profile + command-line overrides
+# resolve, so every build self-documents the actual values handed to Vivado.
+# Unlike the per-profile echo above (static text, wrong when a profile var is
+# overridden), this is derived from the live variables. For any var a non-profile
+# build leaves unset, mirror the downstream default (red_pitaya_vivado.tcl).
+_ssr=${FFT_SSR:-4}
+if [[ "$FFT_CLK_SEL" == "0" ]]; then
+    _fftclk="125MHz (SEL=0, pinned to adc_clk)"
+elif [[ "$FFT_CLK_178" != "0" ]]; then
+    _fftclk="178.57MHz (SEL=1, CLK_178)"
+elif [[ "$FFT_CLK_200" != "0" ]]; then
+    _fftclk="200MHz (SEL=1, CLK_200)"
+else
+    _fftclk="250MHz (SEL=1)"
+fi
+if [[ $_ssr -ge 8 ]]; then _single_def=1; else _single_def=0; fi
+echo "==> Build config: IMPL=${FFT_IMPL} SSR=${_ssr} NFFT=${FFT_NFFT:-12} SCALED=${FFT_SCALED:-2} WIDTH=${FFT_WIDTH:-auto} SINGLE=${FFT_SINGLE:-$_single_def}"
+echo "                  FFT_CLK=${_fftclk} | DET=${DETERMINISTIC} PHYS_OPT=${PHYS_OPT:-AggressiveExplore} SUM1_REP=${SUM1_REPLICATE:-1}"
+unset _ssr _fftclk _single_def
+
 mkdir -p "$ROOT/.hls"
 
 # Vivado HLS csim uses a bundled GCC 6.2.0 that doesn't know Ubuntu 24.04's
