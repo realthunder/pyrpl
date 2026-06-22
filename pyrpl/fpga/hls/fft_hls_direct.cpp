@@ -19,7 +19,7 @@
 //   DIF lanes hold bins by residue mod FSSR: channel = k[SSR_BITS-1:0].
 //   FFT_IMPL==2 (DIT) uses channel = k[MSB] instead. See fft_proc.sv.
 //
-// Compile flags: -DFFT_SSR=<1|2|4> -DFFT_NFFT=<log2(N)>
+// Compile flags: -DFFT_SSR=<1|2|4|8> -DFFT_NFFT=<log2(N)>
 
 #include <hls_stream.h>
 #include <ap_axi_sdata.h>
@@ -46,8 +46,10 @@
   #define SSR_LOG2 1
 #elif FFT_SSR == 4
   #define SSR_LOG2 2
+#elif FFT_SSR == 8
+  #define SSR_LOG2 3
 #else
-  #error "FFT_SSR must be 1, 2, or 4"
+  #error "FFT_SSR must be 1, 2, 4, or 8"
 #endif
 
 #define FFT_SIZE (1 << FFT_NFFT)
@@ -196,6 +198,12 @@ struct par_data4 {
 };
 #endif
 
+#if FFT_SSR == 8
+struct par_data8 {
+    cfixed_t data[8];
+};
+#endif
+
 // ============================================================
 // Shared helpers
 // ============================================================
@@ -224,6 +232,47 @@ static inline cfixed_twid_t get_twiddle2(int k) {
     w.real(twid_re_2[k]);
     w.imag(twid_im_2[k]);
     return w;
+}
+#endif
+
+#if FFT_SSR == 8
+// Per-row twiddle accessors for the SSR=8 output stage. Row r stores W_N^{r*k}
+// (twid_re_r/twid_im_r[k], k in [0, N/8)); sub-FFT lane r multiplies A_r by it.
+static inline cfixed_twid_t get_twiddle_row(int row, int k) {
+#pragma HLS INLINE
+    cfixed_twid_t w;
+    switch (row) {
+        case 1: w.real(twid_re_1[k]); w.imag(twid_im_1[k]); break;
+        case 2: w.real(twid_re_2[k]); w.imag(twid_im_2[k]); break;
+        case 3: w.real(twid_re_3[k]); w.imag(twid_im_3[k]); break;
+        case 4: w.real(twid_re_4[k]); w.imag(twid_im_4[k]); break;
+        case 5: w.real(twid_re_5[k]); w.imag(twid_im_5[k]); break;
+        case 6: w.real(twid_re_6[k]); w.imag(twid_im_6[k]); break;
+        default:w.real(twid_re_7[k]); w.imag(twid_im_7[k]); break;
+    }
+    return w;
+}
+
+// Multiply by W_8^2 = -j: (a + jb) -> (b - ja). Pure wiring, no multiplier.
+static inline cfixed_t mul_neg_j(cfixed_t d) {
+#pragma HLS INLINE
+    cfixed_t r;
+    r.real( d.imag());
+    r.imag(-d.real());
+    return r;
+}
+
+// Constant 8th-root twiddles for the radix-8 sub-DFT butterfly network.
+// W_8^1 = (√2/2)(1 - j),  W_8^3 = (√2/2)(-1 - j).  W_8^0/2 are handled as
+// pass-through / mul_neg_j, so only these two need a real complex multiply.
+static const double SQRT1_2 = 0.70710678118654752;
+static inline cfixed_twid_t w8_1() {
+#pragma HLS INLINE
+    cfixed_twid_t w; w.real( SQRT1_2); w.imag(-SQRT1_2); return w;
+}
+static inline cfixed_twid_t w8_3() {
+#pragma HLS INLINE
+    cfixed_twid_t w; w.real(-SQRT1_2); w.imag(-SQRT1_2); return w;
 }
 #endif
 
@@ -647,6 +696,200 @@ static void output_ssr4(hls::stream<cfixed_t>   &fft0_out,
 #endif // FFT_SSR == 4
 
 // ============================================================
+// SSR = 8  (DIF: three radix-2 stages + eight serial sub-FFTs)
+// ============================================================
+// Per beat k the network gathers the eight samples {x[k+q·N/8]}_{q=0..7} and
+// computes their 8-point DFT A_r = Σ_q x[k+q·N/8]·W_8^{qr}, then forms the
+// sub-FFT input g_r = A_r·W_N^{kr}.  Sub-FFT r (length N/8) then produces the
+// output bins ≡ r mod 8.  The 8-point DFT is a radix-2 DIF flowgraph (3 stages,
+// each scaled >>1 → total /8), so only the constant W_8^{1,3} rotations need a
+// real multiply; W_8^{0,2}=1,-j are pass-through / swap.  The beat-dependent
+// W_N^{kr} multiplies (ROM rows 1..7) are folded into the final stage.
+#if FFT_SSR == 8
+
+// Scaled radix-2 butterfly: sum=(a+b)/2, dif=(a-b)/2.  Done in wide_t so the
+// pre-shift a±b can reach [-2,2) without overflow, then >>1 back into [-1,1).
+static inline void bfly8(cfixed_t a, cfixed_t b, cfixed_t &sum, cfixed_t &dif) {
+#pragma HLS INLINE
+    typedef ap_fixed<INT_W+1, 2> wide_t;
+    wide_t sr = a.real() + b.real();
+    wide_t si = a.imag() + b.imag();
+    wide_t dr = a.real() - b.real();
+    wide_t di = a.imag() - b.imag();
+    sum.real(sr >> 1); sum.imag(si >> 1);
+    dif.real(dr >> 1); dif.imag(di >> 1);
+}
+
+// Unpack eight ASZ-bit ADC samples per beat → par_data8 stream
+static void input_ssr8(hls::stream<axis_in_t>  &s_axis,
+                       hls::stream<par_data8>  &out,
+                       int n) {
+    for (int i = 0; i < RT_N(n, SUB_SIZE); i++) {
+#pragma HLS PIPELINE II=1
+#pragma HLS LOOP_TRIPCOUNT min=8 max=SUB_SIZE
+        auto d = s_axis.read().data;
+        par_data8 t;
+        for (int q = 0; q < 8; q++) {
+#pragma HLS UNROLL
+            t.data[q].real(adc_to_fixed((ap_int<ASZ>)d.range((q+1)*ASZ-1, q*ASZ)));
+            t.data[q].imag(0);
+        }
+        out.write(t);
+    }
+}
+
+// Reorder {x[8k]..x[8k+7]} → {x[k], x[k+N/8], ..., x[k+7N/8]} (eight-way analog
+// of reorder_ssr4).  buff[eighth][bank][depth] with the two leading dims fully
+// partitioned, so writes index only by depth and reads by a depth + 8:1 bank mux.
+static void reorder_ssr8(hls::stream<par_data8> &din,
+                         hls::stream<par_data8> &dout,
+                         int n,
+                         int sub_nfft) {
+    static const int MAX_DEPTH = SUB_SIZE / 8;
+    int DEPTH = RT_N(n, SUB_SIZE) >> 3;
+    cfixed_t buff[8][8][MAX_DEPTH];
+#pragma HLS ARRAY_PARTITION variable=buff complete dim=1
+#pragma HLS ARRAY_PARTITION variable=buff complete dim=2
+
+    // Write: beat i → eighth q (top 3 bits of i), depth d (low bits); its eight
+    // samples land in the eight banks at the same depth.
+    for (int i = 0; i < RT_N(n, SUB_SIZE); i++) {
+#pragma HLS PIPELINE II=1
+#pragma HLS LOOP_TRIPCOUNT min=8 max=SUB_SIZE
+        par_data8 t = din.read();
+        ap_uint<3> q = i >> (RT_NFFT(sub_nfft, SUB_NFFT) - 3);
+        int        d = i & (DEPTH - 1);
+        for (int b = 0; b < 8; b++) {
+#pragma HLS UNROLL
+            buff[q][b][d] = t.data[b];
+        }
+    }
+    // Output beat k = {x[k+q·N/8]}: position k sits at bank k%8, depth k/8.
+    for (int k = 0; k < RT_N(n, SUB_SIZE); k++) {
+#pragma HLS PIPELINE II=1
+#pragma HLS LOOP_TRIPCOUNT min=8 max=SUB_SIZE
+        ap_uint<3> bank  = k & 0x7;
+        int        depth = k >> 3;
+        par_data8 t;
+        for (int qq = 0; qq < 8; qq++) {
+#pragma HLS UNROLL
+            t.data[qq] = buff[qq][bank][depth];
+        }
+        dout.write(t);
+    }
+}
+
+// 8-point DFT stage 1: radix-2 butterfly on (q, q+4), q=0..3, with the constant
+// W_8^q rotation applied to the difference lane.
+static void dft8_stage1(hls::stream<par_data8> &din,
+                        hls::stream<par_data8> &dout,
+                        int n) {
+    for (int i = 0; i < RT_N(n, SUB_SIZE); i++) {
+#pragma HLS PIPELINE II=1
+#pragma HLS LOOP_TRIPCOUNT min=8 max=SUB_SIZE
+        par_data8 t = din.read();
+        par_data8 s;
+        cfixed_t sum, dif;
+        bfly8(t.data[0], t.data[4], sum, dif); s.data[0] = sum; s.data[4] = dif;                 // W_8^0 = 1
+        bfly8(t.data[1], t.data[5], sum, dif); s.data[1] = sum; s.data[5] = cmul(dif, w8_1());    // W_8^1
+        bfly8(t.data[2], t.data[6], sum, dif); s.data[2] = sum; s.data[6] = mul_neg_j(dif);       // W_8^2 = -j
+        bfly8(t.data[3], t.data[7], sum, dif); s.data[3] = sum; s.data[7] = cmul(dif, w8_3());    // W_8^3
+        dout.write(s);
+    }
+}
+
+// 8-point DFT stage 2: radix-2 butterfly on (q, q+2) within each half {0..3},
+// {4..7}, with the constant W_4^i rotation (i=0→1, i=1→-j) on the difference.
+static void dft8_stage2(hls::stream<par_data8> &din,
+                        hls::stream<par_data8> &dout,
+                        int n) {
+    for (int i = 0; i < RT_N(n, SUB_SIZE); i++) {
+#pragma HLS PIPELINE II=1
+#pragma HLS LOOP_TRIPCOUNT min=8 max=SUB_SIZE
+        par_data8 t = din.read();
+        par_data8 s;
+        cfixed_t sum, dif;
+        for (int base = 0; base < 8; base += 4) {
+#pragma HLS UNROLL
+            bfly8(t.data[base+0], t.data[base+2], sum, dif); s.data[base+0] = sum; s.data[base+2] = dif;             // W_4^0 = 1
+            bfly8(t.data[base+1], t.data[base+3], sum, dif); s.data[base+1] = sum; s.data[base+3] = mul_neg_j(dif);  // W_4^1 = -j
+        }
+        dout.write(s);
+    }
+}
+
+// 8-point DFT stage 3 + output twiddle: radix-2 butterfly on (q, q+1), then the
+// DIF bit-reversal A[r]=s3[bitrev3(r)], then g_r = A_r·W_N^{kr} (ROM rows 1..7,
+// lane 0 has no twiddle).  Each g_r feeds its serial sub-FFT.
+static void dft8_stage3_twiddle(hls::stream<par_data8> &din,
+                                hls::stream<cfixed_t>  &fft0_in,
+                                hls::stream<cfixed_t>  &fft1_in,
+                                hls::stream<cfixed_t>  &fft2_in,
+                                hls::stream<cfixed_t>  &fft3_in,
+                                hls::stream<cfixed_t>  &fft4_in,
+                                hls::stream<cfixed_t>  &fft5_in,
+                                hls::stream<cfixed_t>  &fft6_in,
+                                hls::stream<cfixed_t>  &fft7_in,
+                                int n,
+                                int tw_shift) {
+    for (int i = 0; i < RT_N(n, SUB_SIZE); i++) {
+#pragma HLS PIPELINE II=1
+#pragma HLS LOOP_TRIPCOUNT min=8 max=SUB_SIZE
+        par_data8 t = din.read();
+        cfixed_t s3[8];
+        cfixed_t sum, dif;
+        for (int base = 0; base < 8; base += 2) {
+#pragma HLS UNROLL
+            bfly8(t.data[base], t.data[base+1], sum, dif);
+            s3[base] = sum; s3[base+1] = dif;
+        }
+        // DIF natural-order outputs: A[r] = s3[bitrev3(r)].
+        cfixed_t a0 = s3[0], a1 = s3[4], a2 = s3[2], a3 = s3[6];
+        cfixed_t a4 = s3[1], a5 = s3[5], a6 = s3[3], a7 = s3[7];
+        int tw = RT_TW(i, tw_shift);
+        fft0_in.write(a0);                                     // lane 0: W_N^0 = 1
+        fft1_in.write(cmul(a1, get_twiddle_row(1, tw)));
+        fft2_in.write(cmul(a2, get_twiddle_row(2, tw)));
+        fft3_in.write(cmul(a3, get_twiddle_row(3, tw)));
+        fft4_in.write(cmul(a4, get_twiddle_row(4, tw)));
+        fft5_in.write(cmul(a5, get_twiddle_row(5, tw)));
+        fft6_in.write(cmul(a6, get_twiddle_row(6, tw)));
+        fft7_in.write(cmul(a7, get_twiddle_row(7, tw)));
+    }
+}
+
+// Joiner + magnitude: eight sub-FFT outputs → m_axis.
+//   beat b = {|X[8·bit_rev(b,SUB_NFFT)+lane]|} for lane = 0..7
+static void output_ssr8(hls::stream<cfixed_t>   &fft0_out,
+                        hls::stream<cfixed_t>   &fft1_out,
+                        hls::stream<cfixed_t>   &fft2_out,
+                        hls::stream<cfixed_t>   &fft3_out,
+                        hls::stream<cfixed_t>   &fft4_out,
+                        hls::stream<cfixed_t>   &fft5_out,
+                        hls::stream<cfixed_t>   &fft6_out,
+                        hls::stream<cfixed_t>   &fft7_out,
+                        hls::stream<axis_out_t> &m_axis,
+                        int n) {
+    for (int i = 0; i < RT_N(n, SUB_SIZE); i++) {
+#pragma HLS PIPELINE II=1
+#pragma HLS LOOP_TRIPCOUNT min=8 max=SUB_SIZE
+        axis_out_t pkt;
+        pkt.data.range(  DSZ-1,     0) = magnitude(fft0_out.read());
+        pkt.data.range(2*DSZ-1,   DSZ) = magnitude(fft1_out.read());
+        pkt.data.range(3*DSZ-1, 2*DSZ) = magnitude(fft2_out.read());
+        pkt.data.range(4*DSZ-1, 3*DSZ) = magnitude(fft3_out.read());
+        pkt.data.range(5*DSZ-1, 4*DSZ) = magnitude(fft4_out.read());
+        pkt.data.range(6*DSZ-1, 5*DSZ) = magnitude(fft5_out.read());
+        pkt.data.range(7*DSZ-1, 6*DSZ) = magnitude(fft6_out.read());
+        pkt.data.range(8*DSZ-1, 7*DSZ) = magnitude(fft7_out.read());
+        pkt.last = (i == RT_N(n, SUB_SIZE) - 1);
+        m_axis.write(pkt);
+    }
+}
+
+#endif // FFT_SSR == 8
+
+// ============================================================
 // Top-level function
 // ============================================================
 
@@ -793,6 +1036,68 @@ void fft_hls_direct(hls::stream<axis_in_t>  &s_axis,
     hls::fft<fft_params_t>(xn3, xk3, &sts3, &cfg3);
     fft_drain(xk3, fft3_out, &sts3, sub_size);
     output_ssr4 (fft0_out, fft1_out, fft2_out, fft3_out, m_axis, sub_size);
+
+#elif FFT_SSR == 8
+
+    hls::stream<par_data8>  raw_par8    ("raw_par8");
+    hls::stream<par_data8>  reorder_out ("reorder_out");
+    hls::stream<par_data8>  s1_out      ("s1_out");
+    hls::stream<par_data8>  s2_out      ("s2_out");
+    hls::stream<cfixed_t>   fft_in[8];
+    hls::stream<cfixed_t>   fft_out[8];
+#pragma HLS STREAM variable=raw_par8    depth=16
+#pragma HLS STREAM variable=reorder_out depth=16
+#pragma HLS STREAM variable=s1_out      depth=16
+#pragma HLS STREAM variable=s2_out      depth=16
+#pragma HLS STREAM variable=fft_in      depth=16
+#pragma HLS STREAM variable=fft_out     depth=16
+#pragma HLS ARRAY_PARTITION variable=fft_in  complete dim=1
+#pragma HLS ARRAY_PARTITION variable=fft_out complete dim=1
+    cfixed_t     xn0[SUB_SIZE], xk0[SUB_SIZE];
+    cfixed_t     xn1[SUB_SIZE], xk1[SUB_SIZE];
+    cfixed_t     xn2[SUB_SIZE], xk2[SUB_SIZE];
+    cfixed_t     xn3[SUB_SIZE], xk3[SUB_SIZE];
+    cfixed_t     xn4[SUB_SIZE], xk4[SUB_SIZE];
+    cfixed_t     xn5[SUB_SIZE], xk5[SUB_SIZE];
+    cfixed_t     xn6[SUB_SIZE], xk6[SUB_SIZE];
+    cfixed_t     xn7[SUB_SIZE], xk7[SUB_SIZE];
+    fft_config_t cfg0, cfg1, cfg2, cfg3, cfg4, cfg5, cfg6, cfg7;
+    fft_status_t sts0, sts1, sts2, sts3, sts4, sts5, sts6, sts7;
+
+    input_ssr8  (s_axis, raw_par8, sub_size);
+    reorder_ssr8(raw_par8, reorder_out, sub_size, sub_nfft);
+    dft8_stage1 (reorder_out, s1_out, sub_size);
+    dft8_stage2 (s1_out, s2_out, sub_size);
+    dft8_stage3_twiddle(s2_out,
+                        fft_in[0], fft_in[1], fft_in[2], fft_in[3],
+                        fft_in[4], fft_in[5], fft_in[6], fft_in[7],
+                        sub_size, tw_shift);
+    fft_feed (fft_in[0], xn0, &cfg0, sub_size, sub_nfft);
+    hls::fft<fft_params_t>(xn0, xk0, &sts0, &cfg0);
+    fft_drain(xk0, fft_out[0], &sts0, sub_size);
+    fft_feed (fft_in[1], xn1, &cfg1, sub_size, sub_nfft);
+    hls::fft<fft_params_t>(xn1, xk1, &sts1, &cfg1);
+    fft_drain(xk1, fft_out[1], &sts1, sub_size);
+    fft_feed (fft_in[2], xn2, &cfg2, sub_size, sub_nfft);
+    hls::fft<fft_params_t>(xn2, xk2, &sts2, &cfg2);
+    fft_drain(xk2, fft_out[2], &sts2, sub_size);
+    fft_feed (fft_in[3], xn3, &cfg3, sub_size, sub_nfft);
+    hls::fft<fft_params_t>(xn3, xk3, &sts3, &cfg3);
+    fft_drain(xk3, fft_out[3], &sts3, sub_size);
+    fft_feed (fft_in[4], xn4, &cfg4, sub_size, sub_nfft);
+    hls::fft<fft_params_t>(xn4, xk4, &sts4, &cfg4);
+    fft_drain(xk4, fft_out[4], &sts4, sub_size);
+    fft_feed (fft_in[5], xn5, &cfg5, sub_size, sub_nfft);
+    hls::fft<fft_params_t>(xn5, xk5, &sts5, &cfg5);
+    fft_drain(xk5, fft_out[5], &sts5, sub_size);
+    fft_feed (fft_in[6], xn6, &cfg6, sub_size, sub_nfft);
+    hls::fft<fft_params_t>(xn6, xk6, &sts6, &cfg6);
+    fft_drain(xk6, fft_out[6], &sts6, sub_size);
+    fft_feed (fft_in[7], xn7, &cfg7, sub_size, sub_nfft);
+    hls::fft<fft_params_t>(xn7, xk7, &sts7, &cfg7);
+    fft_drain(xk7, fft_out[7], &sts7, sub_size);
+    output_ssr8 (fft_out[0], fft_out[1], fft_out[2], fft_out[3],
+                 fft_out[4], fft_out[5], fft_out[6], fft_out[7], m_axis, sub_size);
 
 #endif
 }

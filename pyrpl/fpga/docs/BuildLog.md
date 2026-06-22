@@ -54,6 +54,30 @@ intake → ~156 k pts/s (N11, −10%), ~1.8× the fft200ssr2 build; tradeoff = 2
 
 ---
 
+## SSR=8 · NFFT=11 · FFT @ 178.571 MHz · SINGLE  ✅ CLOSES (highest throughput)
+
+**Single-channel** build (the only non-`fft_a+fft_b` config here): `FFT_SINGLE=1`
+disables `fft_b` so one SSR=8 FFT fits where two SSR=4 channels did. SSR=8 needed a
+new radix-8 DIF path in `fft_hls_direct.cpp` (3 radix-2 stages + 8 sub-FFTs); IMPL=5
+previously did 1/2/4 only. Settings: `FFT_SSR=8 FFT_NFFT=11 FFT_SINGLE=1 FFT_CLK_178=1
+FFT_CLK_SEL=1 SUM1_REPLICATE=0`. csim PASS (tones at N=4096/1024/64).
+Build: `PROFILE=fft178ssr8n11 ./make.sh` → DET=6 (EarlyBlockPlacement) + Explore phys_opt.
+
+Resources (whole design): **LUT 68% (36381) · FF 44% · BRAM ~61% · DSP 77% (169/220)**.
+NB the HLS per-IP csynth LUT *estimate* was 120% — Vivado mapping brought it to 68%;
+trust post-route, not the HLS estimate.
+
+| FFT clock | adc WNS | ser WNS | hold | closes | archive (`out.d/`) |
+|---|---|---|---|---|---|
+| **178.571 MHz** | **+0.097** | **+0.123** | + | ✓ **best** | **fft178ssr8n11-closed** |
+| 200 MHz | −0.114 (1 ep) | −0.229 (408 ep) | + | ✗ | (not archived) |
+
+ ~2× the SSR=4/178 point rate (8 samples/clk @ 178 = 1.43 Gsps intake). 200 MHz fails
+broadly on the FFT datapath (ser −0.229, 408 eps; HLS est. 5.091 ns > 5.0) — would need
+RTL pipelining of the butterfly stages. 178 is the sweet spot.
+
+---
+
 ## SSR=4 · NFFT=12 · FFT @ 178.571 MHz  ❌ does NOT close (adc congestion-bound)
 
 Settings: `FFT_SSR=4 FFT_NFFT=12 FFT_CLK_178=1 FFT_CLK_SEL=1`.

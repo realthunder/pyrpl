@@ -4,6 +4,7 @@
 //
 // For SSR=2 DIF: needs W_{FFT_SIZE}^k for k=0..FFT_SIZE/2-1.
 // For SSR=4 DIF: needs W_{FFT_SIZE}^{r*k} for r=1..3, k=0..FFT_SIZE/4-1.
+// For SSR=8 DIF: needs W_{FFT_SIZE}^{r*k} for r=1..7, k=0..FFT_SIZE/8-1.
 
 #include <cstdio>
 #include <cstdlib>
@@ -21,8 +22,8 @@ int main(int argc, char** argv) {
     int fft_ssr  = atoi(argv[2]);
     int twid_w   = atoi(argv[3]);
 
-    if (fft_ssr != 2 && fft_ssr != 4) {
-        fprintf(stderr, "ERROR: FFT_SSR must be 2 or 4\n");
+    if (fft_ssr != 2 && fft_ssr != 4 && fft_ssr != 8) {
+        fprintf(stderr, "ERROR: FFT_SSR must be 2, 4, or 8\n");
         return 1;
     }
 

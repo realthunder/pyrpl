@@ -205,8 +205,24 @@ case "${PROFILE:-}" in
         export SUM1_REPLICATE=${SUM1_REPLICATE:-0}
         echo "==> PROFILE=fft178ssr4n11: SSR=4 NFFT=11 FFT@178.57MHz, place EarlyBlockPlacement (DETERMINISTIC=6), phys_opt Explore, sum1 replicate OFF"
         ;;
+    fft178ssr8n11)
+        # Experimental SSR=8 single-FFT build: only fft_a is synthesised (FFT_SINGLE=1,
+        # fft_b omitted) to halve FFT resource use so SSR=8 has a chance to fit. NFFT=11
+        # (2048-pt) @ 178.57 MHz, mirroring fft178ssr4n11. Doubles the SSR=4 point rate
+        # if it closes; timing is UNPROVEN — adjust DETERMINISTIC/PHYS_OPT as needed.
+        export FFT_IMPL=${FFT_IMPL:-5}
+        export FFT_SSR=${FFT_SSR:-8}
+        export FFT_NFFT=${FFT_NFFT:-11}
+        export FFT_SINGLE=${FFT_SINGLE:-1}
+        export FFT_CLK_178=${FFT_CLK_178:-1}
+        export FFT_CLK_SEL=${FFT_CLK_SEL:-1}
+        export DETERMINISTIC=${DETERMINISTIC:-6}
+        export PHYS_OPT=${PHYS_OPT:-Explore}
+        export SUM1_REPLICATE=${SUM1_REPLICATE:-0}
+        echo "==> PROFILE=fft178ssr8n11: SSR=8 NFFT=11 FFT@178.57MHz, fft_b disabled (FFT_SINGLE=1), place EarlyBlockPlacement (DETERMINISTIC=6), phys_opt Explore — EXPERIMENTAL"
+        ;;
     *)
-        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 fft178ssr4n11)" >&2; exit 1 ;;
+        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 fft178ssr4n11 fft178ssr8n11)" >&2; exit 1 ;;
 esac
 
 # ---- Active build defaults (override on the command line, e.g. FFT_IMPL=3 ./make.sh) ----
