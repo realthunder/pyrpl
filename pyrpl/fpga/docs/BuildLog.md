@@ -61,12 +61,26 @@ place=`ExtraTimingOpt` (DET=9): + Explore −0.579, + AggressiveFanoutOpt −0.5
 sum1 force-replication A/B (DET=6 + Explore): ON adc −0.099 / OFF adc −0.177 — the
 replication **helps** adc even on the full die (`SUM1_REPLICATE` knob; keep it on).
 
-**Verdict:** best achievable = EarlyBlockPlacement + `PHYS_OPT=Explore` = **worst −0.099**
-(adc). Does not close. adc is genuinely congestion-bound (98% DSP, no stray
-constraint — audited). Softer phys_opt (Explore) beats AggressiveExplore by +0.04,
-but fanout/replication/timing-opt variants all *regress* adc: on the full die the
-extra restructuring displaces the sum1 consumers. **SSR=2 is the viable fast-FFT path;
-SSR=4 won't close on this device regardless of FFT clock.** Archives: `out.d/sweep-ssr4n12-178-det*`.
+place × phys_opt matrix (7 place × 3 phys_opt, **SUM1_REPLICATE=0**), worst-slack:
+
+| place \ phys_opt | AggressiveExplore | Explore | AggressiveFanoutOpt |
+|---|---|---|---|
+| Explore | −0.174 | −0.163 | −0.314 |
+| ExtraNetDelay_high | −0.288 | −0.125 | −0.156 |
+| ExtraNetDelay_low | −0.105 | −0.265 | −0.379 |
+| **AltSpreadLogic_medium** | −0.207 | −0.049 | **−0.028** ⭐ |
+| WLDrivenBlockPlacement | −0.196 | −0.452 | −0.433 |
+| EarlyBlockPlacement | −0.246 | −0.177 | −0.232 |
+| ExtraPostPlacementOpt | −0.180 (adc −0.041) | −0.286 | −0.194 |
+
+Best = **AltSpreadLogic_medium × AggressiveFanoutOpt = −0.028** (adc −0.028, ser +0.012),
+rep OFF — the *medium* spread relieves adc congestion without starving the FFT (where
+`_high` is worst). 28 ps short.
+
+**Verdict:** best achievable = AltSpreadLogic_medium + AggressiveFanoutOpt = **worst
+−0.028** (adc). Does not close. adc is genuinely congestion-bound (98% DSP, no stray
+constraint — audited). **SSR=2 is the viable fast-FFT path; SSR=4 stays ~30 ps short
+regardless of FFT clock.** Archives: `out.d/sweep-ssr4n12-178-det*`, `out.d/matrix-*` (via .sweep/).
 
 ---
 
