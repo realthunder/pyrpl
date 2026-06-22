@@ -83,11 +83,14 @@ trust post-route, not the HLS estimate.
 | FFT clock | adc WNS | ser WNS | hold | closes | archive (`out.d/`) |
 |---|---|---|---|---|---|
 | **178.571 MHz** | **+0.097** | **+0.123** | + | ✓ **best** | **fft178ssr8n11-closed** |
-| 200 MHz | −0.114 (1 ep) | −0.229 (408 ep) | + | ✗ | (not archived) |
+| 200 MHz | best a−0.026 | best s−0.217 | + | ✗ **0/24** | (not archived) |
 
- ~2× the SSR=4/178 point rate (8 samples/clk @ 178 = 1.43 Gsps intake). 200 MHz fails
-broadly on the FFT datapath (ser −0.229, 408 eps; HLS est. 5.091 ns > 5.0) — would need
-RTL pipelining of the butterfly stages. 178 is the sweet spot.
+ ~2× the SSR=4/178 point rate (8 samples/clk @ 178 = 1.43 Gsps intake). 200 MHz does
+NOT close — full rep-OFF place×phys_opt sweep (8 place × 3 phys_opt) **0/24 cells**, ser
+binds everywhere (best worst-slack −0.233 = ExtraNetDelay_low×Explore; best ser alone
+−0.217). The FFT-internal datapath needs ~5.6 ns at SSR=8; the 5.0 ns/200 MHz budget is
+~0.22 ns too tight regardless of placement. Would need RTL pipelining of the butterfly
+stages. **178 MHz (5.6 ns) is the SSR=8 ceiling.**
 
 ---
 
