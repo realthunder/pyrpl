@@ -18,7 +18,7 @@
 # a directive from det_place_dirs below (1->first, wrapping). Sweep DETERMINISTIC=1..N
 # to search placements for one that closes; the winner is reproducible and shippable.
 # Set via DETERMINISTIC=<n> ./make.sh; the directive is echoed and recorded in BUILD_INFO.
-set det_place_dirs {Explore ExtraNetDelay_high AltSpreadLogic_high WLDrivenBlockPlacement ExtraPostPlacementOpt EarlyBlockPlacement AltSpreadLogic_medium Default ExtraTimingOpt}
+set det_place_dirs {Explore ExtraNetDelay_high AltSpreadLogic_high WLDrivenBlockPlacement ExtraPostPlacementOpt EarlyBlockPlacement AltSpreadLogic_medium Default ExtraTimingOpt ExtraNetDelay_low AltSpreadLogic_low}
 set det_seed 0
 if {[info exists env(DETERMINISTIC)] && [string is integer -strict $env(DETERMINISTIC)] \
         && $env(DETERMINISTIC) >= 1} {
