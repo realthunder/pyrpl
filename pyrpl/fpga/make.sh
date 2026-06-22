@@ -452,7 +452,7 @@ manifest="$WORKROOT/out/BUILD_INFO.txt"
     echo "# Build params (empty => tcl default at the above git_commit):"
     for v in FPGA_PART ADC_SZ CLK_MULT CLK_ADC_DIV FFT_IMPL FFT_SSR FFT_NFFT \
              FFT_WIDTH FFT_SCALED FFT_CLK_PERIOD FFT_CLK_SEL FFT_CLK_200 FFT_CLK_178 \
-             FFT_MULT_LUT FFT_USE_APPROX HIST_BLOCK_SIZE SUM1_REPLICATE PHYS_OPT OPT_DIRECTIVE; do
+             FFT_MULT_LUT FFT_USE_APPROX HIST_BLOCK_SIZE SUM1_REPLICATE PHYS_OPT OPT_DIRECTIVE FFT_SINGLE; do
         printf '%-14s= %s\n' "$v" "${!v:-}"
     done
 } > "$manifest"
