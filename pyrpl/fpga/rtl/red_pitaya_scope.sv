@@ -678,6 +678,16 @@ always @(posedge adc_clk_i) begin
 end
 `endif
 
+// Runtime FFT length is only for the LogiCORE IP (FFT_IMPL==1) or the explicit
+// FFT_RUNTIME_NFFT opt-in. Otherwise fft_nfft is fixed at FSZ (the sysbus write at
+// 0x88 is compiled out below), so fft_conf_data / fft_wp_last fold to constants.
+`ifdef FFT_RUNTIME_NFFT
+localparam FFT_RT_DEF = 1;
+`else
+localparam FFT_RT_DEF = 0;
+`endif
+localparam RUNTIME_NFFT = (FFT_IMPL == 1) || FFT_RT_DEF;
+
 logic [ 5-1: 0] fft_nfft = FSZ;
 logic           fft_parallel;
 logic           fft_fwd_inv = 1;
@@ -898,7 +908,9 @@ end else if (sys_wen) begin
     if (sys_addr[19:0]==20'h5C) fft_wait2_cnt <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h60) fft_acq1_cnt <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h64) fft_acq2_cnt <= sys_wdata[FSZ-1:0];
-    if (sys_addr[19:0]==20'h88) begin
+    // Only writable when runtime FFT length is enabled; otherwise this decode is
+    // constant-false and pruned, leaving fft_nfft fixed at its FSZ init value.
+    if (RUNTIME_NFFT && sys_addr[19:0]==20'h88) begin
         if (sys_wdata > FSZ)
             fft_nfft <= FSZ;
         else if (sys_wdata < 3)
