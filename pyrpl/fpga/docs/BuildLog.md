@@ -11,19 +11,28 @@ WNS in ns (post-route, intra-clock). All FFT builds are `FFT_IMPL=5` (direct
 ## SSR=2 · NFFT=13 · FFT @ 200 MHz  ✅ CLOSES
 
 Settings: `FFT_SSR=2 FFT_NFFT=13 FFT_CLK_200=1 FFT_CLK_SEL=1` (runtime-nfft off).
-Resources (placement-only variation): **LUT ~30.5k (57%) · FF ~35.8k (34%) · BRAM 120 (86%) · DSP 139 (63%)**.
-csim PASS (II=1) for all. Build: `PROFILE=fft200ssr2 ./make.sh` → DET=5.
+Resources: **LUT 57% · FF 34% · BRAM 86% · DSP 63%** (roomy). csim PASS (II=1).
+Build: `PROFILE=fft200ssr2 ./make.sh` → DET=6 + AggressiveExplore + **rep OFF**.
 
-Deterministic placement-directive sweep (`DETERMINISTIC=n`, single-threaded, reproducible):
+Full rep-OFF place × phys_opt matrix (7 place × 3 phys_opt) — **12/21 close**, worst-slack:
 
-| DET | place_design directive | adc WNS | ser WNS | worst | closes | archive (`out.d/`) |
-|---|---|---|---|---|---|---|
-| 1 | Explore | +0.178 | +0.048 | +0.048 | ✓ | sweep-ssr2n13-200-det1-Explore |
-| 2 | ExtraNetDelay_high | −0.154 | +0.039 | −0.154 | ✗ | sweep-ssr2n13-200-det2-ExtraNetDelay_high |
-| 3 | AltSpreadLogic_high | +0.050 | +0.179 | +0.050 | ✓ | sweep-ssr2n13-200-det3-AltSpreadLogic_high |
-| 4 | WLDrivenBlockPlacement | +0.085 | +0.039 | +0.039 | ✓ | sweep-ssr2n13-200-det4-WLDrivenBlockPlacement |
-| **5** | **ExtraPostPlacementOpt** | **+0.083** | **+0.101** | **+0.083** | ✓ **best** | **2025.2-ssr2n13-fft200-closed-adc0.083-ser0.101** |
-| 6 | EarlyBlockPlacement | +0.014 | +0.142 | +0.014 | ✓ | sweep-ssr2n13-200-det6-EarlyBlockPlacement |
+| place \ phys_opt | AggressiveExplore | Explore | AggressiveFanoutOpt |
+|---|---|---|---|
+| Explore | +0.120 ✅ | +0.108 ✅ | −0.020 |
+| ExtraNetDelay_high | +0.049 ✅ | +0.077 ✅ | −0.032 |
+| ExtraNetDelay_low | −0.086 | −0.006 | −0.089 |
+| AltSpreadLogic_medium | −0.336 | −0.004 | +0.029 ✅ |
+| WLDrivenBlockPlacement | +0.003 ✅ | +0.054 ✅ | +0.010 ✅ |
+| **EarlyBlockPlacement** | **+0.156** ✅ | −0.009 | −0.262 |
+| ExtraPostPlacementOpt | +0.137 ✅ | +0.008 ✅ | +0.041 ✅ |
+
+**Winner: EarlyBlockPlacement × AggressiveExplore, rep OFF = adc +0.156, ser +0.156**
+(all dac +). Archive: `out.d/2025.2-ssr2n13-fft200-closed-adc0.156-ser0.156`.
+
+Supersedes the original point-build (the first sweep was rep-ON / AggressiveExplore;
+its best was DET=5 ExtraPostPlacementOpt +0.083). **rep OFF closes better than rep ON
+here** (63% DSP is roomy — the adc sum1 force-replication is unneeded and hurt), so the
+profile now pins rep OFF. Old archive `…-adc0.083-ser0.101` kept for reference.
 
 ---
 
