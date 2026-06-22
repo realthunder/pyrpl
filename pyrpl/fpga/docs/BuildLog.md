@@ -27,6 +27,33 @@ Deterministic placement-directive sweep (`DETERMINISTIC=n`, single-threaded, rep
 
 ---
 
+## SSR=4 · NFFT=11 · FFT @ 178.571 MHz  ✅ CLOSES (highest-throughput closing config)
+
+Settings: `FFT_SSR=4 FFT_NFFT=11 FFT_CLK_178=1 FFT_CLK_SEL=1 SUM1_REPLICATE=0`.
+Resources: **LUT 75% · FF 47% · BRAM 82% · DSP 98%** (215/220). csim PASS.
+Build: `PROFILE=fft178ssr4n11 ./make.sh` → DET=6 (EarlyBlockPlacement) + Explore phys_opt.
+Dropping N12→N11 halves the FFT data mem / reorder buffer, freeing the congestion
+that held N12 at −0.028. Full 7×3 place×phys_opt matrix (rep OFF) — **6/21 close**:
+
+| place \ phys_opt | AggressiveExplore | Explore | AggressiveFanoutOpt |
+|---|---|---|---|
+| Explore | −0.046 | +0.029 ✅ | −0.265 |
+| ExtraNetDelay_high | −0.086 | −0.080 | −0.140 |
+| ExtraNetDelay_low | −0.187 | +0.002 ✅ | −0.018 |
+| AltSpreadLogic_medium | −0.151 | −0.031 | −0.236 |
+| WLDrivenBlockPlacement | −0.013 | −0.061 | −0.109 |
+| **EarlyBlockPlacement** | +0.018 ✅ | **+0.037** ✅ | +0.029 ✅ |
+| ExtraPostPlacementOpt | −0.183 | −0.261 | −0.182 |
+
+**Winner: EarlyBlockPlacement × Explore = +0.037** (adc +0.037, ser +0.130, all dac +).
+The whole EarlyBlockPlacement row closes (robust). Archive:
+`out.d/2025.2-ssr4n11-fft178-closed-adc0.037-ser0.130`. Throughput: SSR=4/178 = 712 Msps
+intake → ~156 k pts/s (N11, −10%), ~1.8× the fft200ssr2 build; tradeoff = 2048-pt
+(coarser range res). Note N12-best cells did NOT transfer to N11 (different floorplan
+→ different directive ranking); the full matrix was needed.
+
+---
+
 ## SSR=4 · NFFT=12 · FFT @ 178.571 MHz  ❌ does NOT close (adc congestion-bound)
 
 Settings: `FFT_SSR=4 FFT_NFFT=12 FFT_CLK_178=1 FFT_CLK_SEL=1`.
@@ -87,8 +114,9 @@ over-spread on the full die).
 
 **Verdict:** best achievable = AltSpreadLogic_medium + AggressiveFanoutOpt + **rep
 OFF** = **worst −0.028** (adc). Does not close. adc is genuinely congestion-bound
-(98% DSP, no stray constraint — audited). **SSR=2 is the viable fast-FFT path; SSR=4
-stays ~30 ps short regardless of FFT clock / placement / phys_opt / replication.**
+(98% DSP, no stray constraint — audited). At **N12** SSR=4 stays ~30 ps short
+regardless of placement / phys_opt / replication — **but at N11 it CLOSES** (see the
+SSR=4·N11 section above). So SSR=4/178 is viable only at NFFT≤11 on this device.
 Archives: `out.d/sweep-ssr4n12-178-det*`.
 
 ---
