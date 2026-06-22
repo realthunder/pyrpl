@@ -14,25 +14,29 @@ Settings: `FFT_SSR=2 FFT_NFFT=13 FFT_CLK_200=1 FFT_CLK_SEL=1` (runtime-nfft off)
 Resources: **LUT 57% · FF 34% · BRAM 86% · DSP 63%** (roomy). csim PASS (II=1).
 Build: `PROFILE=fft200ssr2 ./make.sh` → DET=6 + AggressiveExplore + **rep OFF**.
 
-Full rep-OFF place × phys_opt matrix (7 place × 3 phys_opt) — **12/21 close**, worst-slack:
+Full rep-OFF place × phys_opt matrix, **re-swept after the nfft-constant refactor**
+(commit 091512d6 changed the netlist; the prior winner EarlyBlockPlacement regressed
+to −0.154, so DET was re-picked) — **6/21 close**, worst-slack:
 
 | place \ phys_opt | AggressiveExplore | Explore | AggressiveFanoutOpt |
 |---|---|---|---|
-| Explore | +0.120 ✅ | +0.108 ✅ | −0.020 |
-| ExtraNetDelay_high | +0.049 ✅ | +0.077 ✅ | −0.032 |
-| ExtraNetDelay_low | −0.086 | −0.006 | −0.089 |
-| AltSpreadLogic_medium | −0.336 | −0.004 | +0.029 ✅ |
-| WLDrivenBlockPlacement | +0.003 ✅ | +0.054 ✅ | +0.010 ✅ |
-| **EarlyBlockPlacement** | **+0.156** ✅ | −0.009 | −0.262 |
-| ExtraPostPlacementOpt | +0.137 ✅ | +0.008 ✅ | +0.041 ✅ |
+| Explore | −0.113 | −0.113 | −0.138 |
+| ExtraNetDelay_high | −0.029 | −0.031 | −0.037 |
+| **ExtraNetDelay_low** | **+0.131** ✅ | +0.006 ✅ | −0.105 |
+| AltSpreadLogic_medium | +0.086 ✅ | +0.121 ✅ | +0.091 ✅ |
+| WLDrivenBlockPlacement | +0.103 ✅ | −0.037 | −0.035 |
+| EarlyBlockPlacement | −0.154 | −0.143 | −0.156 |
+| ExtraPostPlacementOpt | −0.125 | −0.061 | −0.039 |
 
-**Winner: EarlyBlockPlacement × AggressiveExplore, rep OFF = adc +0.156, ser +0.156**
-(all dac +). Archive: `out.d/2025.2-ssr2n13-fft200-closed-adc0.156-ser0.156`.
+**Winner: ExtraNetDelay_low × AggressiveExplore, rep OFF = adc +0.135, ser +0.131**
+(0 failing). `PROFILE=fft200ssr2` → DET=10. Archive:
+`out.d/2025.2-ssr2n13-fft200-closed-adc0.135-ser0.131`.
 
-Supersedes the original point-build (the first sweep was rep-ON / AggressiveExplore;
-its best was DET=5 ExtraPostPlacementOpt +0.083). **rep OFF closes better than rep ON
-here** (63% DSP is roomy — the adc sum1 force-replication is unneeded and hurt), so the
-profile now pins rep OFF. Old archive `…-adc0.083-ser0.101` kept for reference.
+History: the original point-build was rep-ON/ExtraPostPlacementOpt (+0.083). The first
+full rep-OFF matrix (pre-refactor netlist) closed 12/21, best EarlyBlockPlacement +0.156.
+After the nfft-constant refactor the netlist shifted (EarlyBlockPlacement → −0.154, an
+FFT-internal path, not an nfft defect), so re-swept to the DET=10 winner above. **rep OFF
+remains best** (63% DSP is roomy; the adc sum1 force-replication is unneeded here).
 
 ---
 
