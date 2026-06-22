@@ -92,21 +92,23 @@ ceiling scales with `SSR·f_fft`; e.g. SSR=4/125 (500 Msps) already beats SSR=2/
   independent** — if you run full-length ramps for resolution, the FFT clock/SSR
   choice does not change your point rate; it only matters in the short-padded regime.
 
-## SSR=8 estimate (single channel, NFFT=11) — throughput only, NOT proven buildable
+## SSR=8 (single channel, NFFT=11) — BUILT & CLOSES (`PROFILE=fft178ssr8n11`)
 
 Intake = SSR·f_fft = 8·f_fft. FFT-bound pts/s = `8·f_fft/(2N)` = `f_fft/512` (N=2048).
 
 | FFT clock | Intake | FFT-bound pts/s | −10% | Short threshold | Acq-bound (full ramp) |
 |---|---|---|---|---|---|
 | 125 MHz | 1000 Msps | 244.1 k | 219.7 k | 12.5 % | 30.5 k |
-| 178.571 MHz | 1429 Msps | 348.8 k | 313.9 k | 8.75 % | 30.5 k |
+| **178.571 MHz** (built) | 1429 Msps | 348.8 k | **313.9 k** | 8.75 % | 30.5 k |
 | 200 MHz | 1600 Msps | 390.6 k | 351.6 k | 7.81 % | 30.5 k |
 
-**Caveats — estimate only:** (1) **fit is marginal** — SSR=8 single-channel ≈ 98 % DSP
-(DSP scales with SSR, not N; N11 only lowers BRAM), zero headroom, LUT/congestion the
-wildcard. (2) **Likely won't close** — SSR=4/N12 didn't; SSR=8 doubles FFT congestion.
-(3) Needs **RTL change** to instantiate only fft_a. (4) Per-frame readout / detector
-capacity becomes the gate (see below).
+**Status: REAL — closes at 178.571 MHz** (adc +0.097, ser +0.123, 0 fail; LUT 68% /
+DSP 77% / BRAM 61%; csim PASS — see `BuildLog.md`). Built via the `FFT_SINGLE=1` knob
+that drops the second FFT channel (fft_b), so one SSR=8 FFT fits where two SSR=4
+channels did — DSP came in at **77%, not the ~98% first estimated** (dropping fft_b
+frees more than a per-instance model predicts). So this **~314 k pts/s** (N11, −10%)
+config is achievable, **single channel only** (no fft_b). Per-frame readout / detector
+capacity is the remaining gate (see below) — and the detector copes (~6% margin).
 
 ## Peak detector capacity (from `hls/peak_detector.cpp` + csynth)
 
@@ -122,8 +124,8 @@ frame** (the single max peak: value+valid+bin). Per-frame cost ≈ `N/SSR + ~24`
 - **The detector is matched to FFT line rate by construction** — it is not the throughput
   limiter. Real limits: (a) **one peak per frame** (max bin per ramp; cannot report
   multi-target-per-ramp); (b) the ~24-cycle restart overhead grows proportionally at
-  small N; (c) the 8-wide BEAT unroll must close timing at the target clock (proven at
-  SSR=4/178 in `fft178ssr4n11`; unproven at SSR=8).
+  small N; (c) the 8-wide BEAT unroll closes timing at 178 MHz — **proven** in the
+  built `fft178ssr8n11` (whole design closes with the detector included).
 
 ## Reference numbers
 
@@ -131,4 +133,5 @@ frame** (the single max peak: value+valid+bin). Per-frame cost ≈ `N/SSR + ~24`
   1250/7), 200 (FFT_CLK_200, VCO 1000/5), 250 MHz (default ser).
 - "178 MHz" figures above use the nominal 712 Msps intake; the implemented clock is
   178.571 MHz (intake 714.3 Msps), a ~0.3 % difference — negligible for estimates.
-- Closing builds: `fft200ssr2` (SSR=2/N13/200), `fft178ssr4n11` (SSR=4/N11/178).
+- Closing builds: `fft200ssr2` (SSR=2/N13/200), `fft178ssr4n11` (SSR=4/N11/178),
+  `fft178ssr8n11` (SSR=8/N11/178, single channel).
