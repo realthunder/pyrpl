@@ -72,8 +72,10 @@ proportionally shorter / more-padded ramps to actually reach it.)
 
 Each NFFT step down doubles both rates (half the samples per frame). The FFT-bound
 ceiling scales with `SSR·f_fft`; e.g. SSR=4/125 (500 Msps) already beats SSR=2/200
-(400 Msps), and SSR=4/178 (712 Msps) is highest — but only SSR=2 actually closes
-timing on the xc7z020 (SSR=4 is congestion-bound; see `BuildLog.md`).
+(400 Msps), and SSR=4/178 (712 Msps) is highest. Timing closure on the xc7z020
+(see `BuildLog.md`): **SSR=2/N13/200 closes** (`fft200ssr2`); **SSR=4/N11/178 closes**
+(`fft178ssr4n11`, the highest-throughput closing build); SSR=4/N12 does NOT close
+(congestion-bound, ~30 ps short at any clock).
 
 ## Caveats
 
@@ -90,9 +92,43 @@ timing on the xc7z020 (SSR=4 is congestion-bound; see `BuildLog.md`).
   independent** — if you run full-length ramps for resolution, the FFT clock/SSR
   choice does not change your point rate; it only matters in the short-padded regime.
 
+## SSR=8 estimate (single channel, NFFT=11) — throughput only, NOT proven buildable
+
+Intake = SSR·f_fft = 8·f_fft. FFT-bound pts/s = `8·f_fft/(2N)` = `f_fft/512` (N=2048).
+
+| FFT clock | Intake | FFT-bound pts/s | −10% | Short threshold | Acq-bound (full ramp) |
+|---|---|---|---|---|---|
+| 125 MHz | 1000 Msps | 244.1 k | 219.7 k | 12.5 % | 30.5 k |
+| 178.571 MHz | 1429 Msps | 348.8 k | 313.9 k | 8.75 % | 30.5 k |
+| 200 MHz | 1600 Msps | 390.6 k | 351.6 k | 7.81 % | 30.5 k |
+
+**Caveats — estimate only:** (1) **fit is marginal** — SSR=8 single-channel ≈ 98 % DSP
+(DSP scales with SSR, not N; N11 only lowers BRAM), zero headroom, LUT/congestion the
+wildcard. (2) **Likely won't close** — SSR=4/N12 didn't; SSR=8 doubles FFT congestion.
+(3) Needs **RTL change** to instantiate only fft_a. (4) Per-frame readout / detector
+capacity becomes the gate (see below).
+
+## Peak detector capacity (from `hls/peak_detector.cpp` + csynth)
+
+The detector's `STREAM` loop is **II=1 with the BEAT loop unrolled over SSR** → it
+consumes **SSR bins/clock = the FFT's exact output line rate**. It **emits 1 word per
+frame** (the single max peak: value+valid+bin). Per-frame cost ≈ `N/SSR + ~24` cycles
+(the ~24 = `ap_ctrl_hs` per-frame restart).
+
+- **SSR=8 / N11 / 178 MHz:** 256 beats + 24 = ~280 cyc = 1.57 µs/frame → 638 k frames/s
+  → **~319 k pts/s** detector capacity. So it **copes with ~300 k pts/s (~6 % margin)**.
+- Output bandwidth = 1 word/frame ≈ **~5 MB/s** — trivial for the HP DMA; readout is not
+  the bottleneck.
+- **The detector is matched to FFT line rate by construction** — it is not the throughput
+  limiter. Real limits: (a) **one peak per frame** (max bin per ramp; cannot report
+  multi-target-per-ramp); (b) the ~24-cycle restart overhead grows proportionally at
+  small N; (c) the 8-wide BEAT unroll must close timing at the target clock (proven at
+  SSR=4/178 in `fft178ssr4n11`; unproven at SSR=8).
+
 ## Reference numbers
 
 - ADC: 125 Msps · 14-bit. FFT clocks: 125 (FFT_CLK_SEL=0), 178.571 (FFT_CLK_178, VCO
   1250/7), 200 (FFT_CLK_200, VCO 1000/5), 250 MHz (default ser).
 - "178 MHz" figures above use the nominal 712 Msps intake; the implemented clock is
   178.571 MHz (intake 714.3 Msps), a ~0.3 % difference — negligible for estimates.
+- Closing builds: `fft200ssr2` (SSR=2/N13/200), `fft178ssr4n11` (SSR=4/N11/178).
