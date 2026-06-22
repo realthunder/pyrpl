@@ -1,3 +1,0 @@
-[submodule "pyrpl/fpga/elements"]
-	path = pyrpl/fpga/elements
-	url = git@github.com:realthunder/FPGADesignElements.git
