@@ -140,8 +140,8 @@ logic               out_recv, out_send, out_send_;
 
 logic [ FSZ-1: 0]   buf_a_waddr;
 logic [ FSZ-1: 0]   buf_b_waddr;
-logic [ DSZ-1: 0]   buf_a_wdata;
-logic [ DSZ-1: 0]   buf_b_wdata;
+logic [ DSZ-1: 0]   buf_a_wdata [0:FSSR-1];
+logic [ DSZ-1: 0]   buf_b_wdata [0:FSSR-1];
 logic               buf_a_we   ;
 logic               buf_b_we   ;
 logic [ FSZ-1: 0]   buf_a_raddr;
