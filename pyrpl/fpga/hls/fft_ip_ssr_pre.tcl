@@ -80,7 +80,7 @@ add_files ../hls/fft_ip_ssr.cpp \
              -DFFT_SSR=$fft_ssr \
              -DFFT_NFFT=$fft_nfft \
              -DASZ=14 \
-             -DINT_W=16 \
+             -DINTERNAL_W=16 \
              -DTWID_W=18 \
              -DDSZ=16 \
              -DSUB_NFFT=$sub_nfft \

@@ -26,7 +26,7 @@
 //   FFT_SSR     super-sample rate (1, 2, or 4; default 2)
 //   FFT_NFFT    log2(full FFT size)   (default 12)
 //   ASZ         ADC input bit width   (default 14)
-//   INT_W       complex word width    (default 16)
+//   INTERNAL_W       complex word width    (default 16)
 //   TWID_W      twiddle factor width  (default 18)
 //   DSZ         magnitude output bits (default 28)
 //   SUB_NFFT    FFT_NFFT - log2(FFT_SSR)  (set by TCL)
@@ -46,8 +46,8 @@
 #ifndef ASZ
 #define ASZ 14
 #endif
-#ifndef INT_W
-#define INT_W 16
+#ifndef INTERNAL_W
+#define INTERNAL_W 16
 #endif
 #ifndef TWID_W
 #define TWID_W 18
@@ -73,13 +73,13 @@
 #endif
 
 // xfft output I/Q width per component:
-//   scaled:   INT_W bits (÷2 per butterfly stage keeps output in input range)
-//   unscaled: INT_W+SUB_NFFT bits (accumulates over 2^SUB_NFFT points, no discarding)
+//   scaled:   INTERNAL_W bits (÷2 per butterfly stage keeps output in input range)
+//   unscaled: INTERNAL_W+SUB_NFFT bits (accumulates over 2^SUB_NFFT points, no discarding)
 // XFFT_IQ_BYTES is the byte-rounded slot width; XCMPX_W is the full complex AXIS width.
 #if FFT_SCALED
-#define XFFT_IQ_W   INT_W
+#define XFFT_IQ_W   INTERNAL_W
 #else
-#define XFFT_IQ_W   (INT_W + SUB_NFFT)
+#define XFFT_IQ_W   (INTERNAL_W + SUB_NFFT)
 #endif
 #define XFFT_IQ_BYTES ((XFFT_IQ_W + 7) / 8)
 #define XCMPX_W       (XFFT_IQ_BYTES * 8 * 2)
@@ -107,18 +107,18 @@
 // -------------------------------------------------------------------------
 
 // Internal complex: values in [-1, 1) as signed fixed-point, 1 int bit
-typedef ap_fixed<INT_W, 1>           intern_t;
+typedef ap_fixed<INTERNAL_W, 1>           intern_t;
 typedef std::complex<intern_t>       cmpx_t;
 
 // Twiddle factor: range [-2, 2)
 typedef ap_fixed<TWID_W, 2>          twid_t;
 
 // Scalar multiply result (bug fix: NOT complex — avoids accumulator overflow)
-typedef ap_fixed<INT_W + TWID_W + 1, 4> mul_t;
+typedef ap_fixed<INTERNAL_W + TWID_W + 1, 4> mul_t;
 
 // AXIS types
 #define IN_W    (((FFT_SSR * ASZ + 7) / 8) * 8)      // byte-rounded ADC input
-#define CMPX_W  (2 * INT_W)                           // complex sample to/from xfft
+#define CMPX_W  (2 * INTERNAL_W)                           // complex sample to/from xfft
 #define OUT_W   (((FFT_SSR * DSZ + 7) / 8) * 8)      // byte-rounded magnitude output
 
 typedef ap_axiu<IN_W,   0, 0, 0>  axis_in_t;
@@ -146,11 +146,11 @@ static void cmul(intern_t a_re, intern_t a_im,
 }
 
 // CORDIC vectoring-mode magnitude (more accurate, ~0.6% relative error).
-// Adapted from fft_ssr.cpp cordic_mag; inputs are raw xfft INT_W-bit integers.
-// Internal type: INT_W+2 integer bits + 6 fractional bits for gain precision.
+// Adapted from fft_ssr.cpp cordic_mag; inputs are raw xfft INTERNAL_W-bit integers.
+// Internal type: INTERNAL_W+2 integer bits + 6 fractional bits for gain precision.
 // Compile with -D USE_APPROXIMATION to use the faster alpha-max-beta-min path.
 #ifndef USE_APPROXIMATION
-// INT_W+2 integer bits (headroom for CORDIC growth factor ~1.647×),
+// INTERNAL_W+2 integer bits (headroom for CORDIC growth factor ~1.647×),
 // 12 fractional bits → gain constant 0.607252935 represented to <0.02% error.
 typedef ap_fixed<XFFT_IQ_W+14, XFFT_IQ_W+2> cord_t;
 
@@ -248,12 +248,12 @@ void fft_ip_ssr_pre(
         axis_in_t pkt = s_axis.read();
         ap_int<ASZ> samp = pkt.data.range(ASZ-1, 0);
         intern_t val;
-        val.range(INT_W-1, INT_W-ASZ)   = samp;
-        if (INT_W > ASZ) val.range(INT_W-ASZ-1, 0) = 0;
+        val.range(INTERNAL_W-1, INTERNAL_W-ASZ)   = samp;
+        if (INTERNAL_W > ASZ) val.range(INTERNAL_W-ASZ-1, 0) = 0;
 
         axis_cmpx_t out;
-        out.data.range(INT_W-1, 0)      = val.range(INT_W-1, 0);
-        out.data.range(CMPX_W-1, INT_W) = 0;
+        out.data.range(INTERNAL_W-1, 0)      = val.range(INTERNAL_W-1, 0);
+        out.data.range(CMPX_W-1, INTERNAL_W) = 0;
         out.last = (i == FFT_SIZE - 1);
         m_axis_data0.write(out);
     }
@@ -304,10 +304,10 @@ void fft_ip_ssr_pre(
 #pragma HLS UNROLL
             ap_int<ASZ> samp = pkt.data.range((ch+1)*ASZ - 1, ch*ASZ);
             intern_t val;
-            // Sign-extend into the high INT_W bits, zero-pad the rest.
-            val.range(INT_W-1, INT_W-ASZ)   = samp;
-            if (INT_W > ASZ)
-                val.range(INT_W-ASZ-1, 0) = 0;
+            // Sign-extend into the high INTERNAL_W bits, zero-pad the rest.
+            val.range(INTERNAL_W-1, INTERNAL_W-ASZ)   = samp;
+            if (INTERNAL_W > ASZ)
+                val.range(INTERNAL_W-ASZ-1, 0) = 0;
             buf_first[b*FFT_SSR + ch] = cmpx_t(val, intern_t(0));
         }
     }
@@ -334,8 +334,8 @@ void fft_ip_ssr_pre(
             // Second-half sample (sign-extended)
             ap_int<ASZ> samp2 = pkt.data.range((ch+1)*ASZ - 1, ch*ASZ);
             intern_t x2_re;
-            x2_re.range(INT_W-1, INT_W-ASZ) = samp2;
-            if (INT_W > ASZ) x2_re.range(INT_W-ASZ-1, 0) = 0;
+            x2_re.range(INTERNAL_W-1, INTERNAL_W-ASZ) = samp2;
+            if (INTERNAL_W > ASZ) x2_re.range(INTERNAL_W-ASZ-1, 0) = 0;
             intern_t x2_im(0);
 
             // DIF butterfly (>>1 prevents overflow; matches avnet radix2p)
@@ -362,13 +362,13 @@ void fft_ip_ssr_pre(
         bool last = (k == SUB_SIZE - 1);
 
         axis_cmpx_t p0, p1;
-        p0.data.range(INT_W-1, 0)       = out_buf0[k].real().range(INT_W-1, 0);
-        p0.data.range(CMPX_W-1, INT_W)  = out_buf0[k].imag().range(INT_W-1, 0);
+        p0.data.range(INTERNAL_W-1, 0)       = out_buf0[k].real().range(INTERNAL_W-1, 0);
+        p0.data.range(CMPX_W-1, INTERNAL_W)  = out_buf0[k].imag().range(INTERNAL_W-1, 0);
         p0.last = last;
         m_axis_data0.write(p0);
 
-        p1.data.range(INT_W-1, 0)       = out_buf1[k].real().range(INT_W-1, 0);
-        p1.data.range(CMPX_W-1, INT_W)  = out_buf1[k].imag().range(INT_W-1, 0);
+        p1.data.range(INTERNAL_W-1, 0)       = out_buf1[k].real().range(INTERNAL_W-1, 0);
+        p1.data.range(CMPX_W-1, INTERNAL_W)  = out_buf1[k].imag().range(INTERNAL_W-1, 0);
         p1.last = last;
         m_axis_data1.write(p1);
     }
@@ -445,8 +445,8 @@ void fft_ip_ssr_pre(
 #pragma HLS UNROLL
             ap_int<ASZ> samp = pkt.data.range((ch+1)*ASZ - 1, ch*ASZ);
             intern_t val;
-            val.range(INT_W-1, INT_W-ASZ) = samp;
-            if (INT_W > ASZ) val.range(INT_W-ASZ-1, 0) = 0;
+            val.range(INTERNAL_W-1, INTERNAL_W-ASZ) = samp;
+            if (INTERNAL_W > ASZ) val.range(INTERNAL_W-ASZ-1, 0) = 0;
             buf[0][b*FFT_SSR + ch] = cmpx_t(val, intern_t(0));
         }
     }
@@ -458,8 +458,8 @@ void fft_ip_ssr_pre(
 #pragma HLS UNROLL
             ap_int<ASZ> samp = pkt.data.range((ch+1)*ASZ - 1, ch*ASZ);
             intern_t val;
-            val.range(INT_W-1, INT_W-ASZ) = samp;
-            if (INT_W > ASZ) val.range(INT_W-ASZ-1, 0) = 0;
+            val.range(INTERNAL_W-1, INTERNAL_W-ASZ) = samp;
+            if (INTERNAL_W > ASZ) val.range(INTERNAL_W-ASZ-1, 0) = 0;
             buf[1][b*FFT_SSR + ch] = cmpx_t(val, intern_t(0));
         }
     }
@@ -471,8 +471,8 @@ void fft_ip_ssr_pre(
 #pragma HLS UNROLL
             ap_int<ASZ> samp = pkt.data.range((ch+1)*ASZ - 1, ch*ASZ);
             intern_t val;
-            val.range(INT_W-1, INT_W-ASZ) = samp;
-            if (INT_W > ASZ) val.range(INT_W-ASZ-1, 0) = 0;
+            val.range(INTERNAL_W-1, INTERNAL_W-ASZ) = samp;
+            if (INTERNAL_W > ASZ) val.range(INTERNAL_W-ASZ-1, 0) = 0;
             buf[2][b*FFT_SSR + ch] = cmpx_t(val, intern_t(0));
         }
     }
@@ -484,8 +484,8 @@ void fft_ip_ssr_pre(
 #pragma HLS UNROLL
             ap_int<ASZ> samp = pkt.data.range((ch+1)*ASZ - 1, ch*ASZ);
             intern_t val;
-            val.range(INT_W-1, INT_W-ASZ) = samp;
-            if (INT_W > ASZ) val.range(INT_W-ASZ-1, 0) = 0;
+            val.range(INTERNAL_W-1, INTERNAL_W-ASZ) = samp;
+            if (INTERNAL_W > ASZ) val.range(INTERNAL_W-ASZ-1, 0) = 0;
             buf[3][b*FFT_SSR + ch] = cmpx_t(val, intern_t(0));
         }
     }
@@ -549,20 +549,20 @@ void fft_ip_ssr_pre(
         bool last = (k == SUB_SIZE - 1);
 
         axis_cmpx_t p0, p1, p2, p3;
-        p0.data.range(INT_W-1, 0)      = out_buf0[k].real().range(INT_W-1, 0);
-        p0.data.range(CMPX_W-1, INT_W) = out_buf0[k].imag().range(INT_W-1, 0);
+        p0.data.range(INTERNAL_W-1, 0)      = out_buf0[k].real().range(INTERNAL_W-1, 0);
+        p0.data.range(CMPX_W-1, INTERNAL_W) = out_buf0[k].imag().range(INTERNAL_W-1, 0);
         p0.last = last; m_axis_data0.write(p0);
 
-        p1.data.range(INT_W-1, 0)      = out_buf1[k].real().range(INT_W-1, 0);
-        p1.data.range(CMPX_W-1, INT_W) = out_buf1[k].imag().range(INT_W-1, 0);
+        p1.data.range(INTERNAL_W-1, 0)      = out_buf1[k].real().range(INTERNAL_W-1, 0);
+        p1.data.range(CMPX_W-1, INTERNAL_W) = out_buf1[k].imag().range(INTERNAL_W-1, 0);
         p1.last = last; m_axis_data1.write(p1);
 
-        p2.data.range(INT_W-1, 0)      = out_buf2[k].real().range(INT_W-1, 0);
-        p2.data.range(CMPX_W-1, INT_W) = out_buf2[k].imag().range(INT_W-1, 0);
+        p2.data.range(INTERNAL_W-1, 0)      = out_buf2[k].real().range(INTERNAL_W-1, 0);
+        p2.data.range(CMPX_W-1, INTERNAL_W) = out_buf2[k].imag().range(INTERNAL_W-1, 0);
         p2.last = last; m_axis_data2.write(p2);
 
-        p3.data.range(INT_W-1, 0)      = out_buf3[k].real().range(INT_W-1, 0);
-        p3.data.range(CMPX_W-1, INT_W) = out_buf3[k].imag().range(INT_W-1, 0);
+        p3.data.range(INTERNAL_W-1, 0)      = out_buf3[k].real().range(INTERNAL_W-1, 0);
+        p3.data.range(CMPX_W-1, INTERNAL_W) = out_buf3[k].imag().range(INTERNAL_W-1, 0);
         p3.last = last; m_axis_data3.write(p3);
     }
 }

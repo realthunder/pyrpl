@@ -21,7 +21,7 @@ set approx_flag    [expr {$fft_use_approx ? "-DUSE_APPROXIMATION" : ""}]
 set fft_scaled     [getparam fft_scaled     2]
 # scaled_flag: only mode 1 sets FFT_SCALED=1 in HLS; modes 0 and 2 both run unscaled xfft.
 # Mode 2 is unscaled-with-saturation, not a different scaling schedule — xfft scaled mode
-# always outputs exactly INT_W=16 bits regardless of schedule; there is no 20-bit scaled output.
+# always outputs exactly INTERNAL_W=16 bits regardless of schedule; there is no 20-bit scaled output.
 set scaled_flag    [expr {$fft_scaled == 1 ? "-DFFT_SCALED=1" : ""}]
 # fft_width = DSZ (magnitude output bits): 0→28, 1→16, 2→20
 set fft_width      [getparam fft_width      [expr {$fft_scaled == 1 ? 16 : ($fft_scaled == 2 ? 20 : 28)}]]
@@ -65,7 +65,7 @@ add_files ../hls/fft_ip_ssr.cpp \
              -DFFT_SSR=$fft_ssr \
              -DFFT_NFFT=$fft_nfft \
              -DASZ=14 \
-             -DINT_W=16 \
+             -DINTERNAL_W=16 \
              -DTWID_W=18 \
              -DSUB_NFFT=$sub_nfft \
              -DCFG_W=$cfg_w \
