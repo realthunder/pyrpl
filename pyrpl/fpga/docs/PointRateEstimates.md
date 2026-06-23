@@ -77,6 +77,70 @@ ceiling scales with `SSR·f_fft`; e.g. SSR=4/125 (500 Msps) already beats SSR=2/
 (`fft178ssr4n11`, the highest-throughput closing build); SSR=4/N12 does NOT close
 (congestion-bound, ~30 ps short at any clock).
 
+## fft_parallel — dual-engine, 1 FFT/point (doubles the FFT-bound ceiling)
+
+`scope.fft_parallel` (reg `0x0[4]`) is a **runtime** mode bit, not a build knob — it
+re-tasks the two existing FFT engines instead of changing the FFT architecture:
+
+| | `fft_parallel=0` (sequential, the model above) | `fft_parallel=1` (parallel) |
+|---|---|---|
+| fft_a | adc_A, **up + down** ramps (2 frames) | adc_A, **up ramp only** (1 frame) |
+| fft_b | adc_B, **up + down** ramps (2 frames) | **adc_A**, **down ramp only** (1 frame) |
+| frames streamed / point / engine | **2N** (`fft_length2=2N`) | **N** (`fft_length2=N`) |
+| ADC channels | 2 independent | **1** (both engines on adc_A) |
+
+Why it doubles the ceiling: in sequential mode one engine must stream the up-frame
+**and** the down-frame back-to-back — **2N** beats/point. The frame is the full padded
+window (`fft_proc.sv` injects the zero padding locally, so the engine clocks all N
+beats regardless of how few are real ADC samples). In parallel mode fft_a streams the
+up-frame (N) while fft_b streams the down-frame (N) **concurrently**, so the per-point
+FFT-pipeline cost is **N**, not 2N:
+
+| Regime | Sequential | Parallel | Gain |
+|---|---|---|---|
+| FFT-bound (short/padded ramp) | `SSR·f_fft / (2N)` | `SSR·f_fft / N` | **2×** |
+| Acquisition-bound (full ramp) | `f_adc / (2N)` | `f_adc / (2N)` | **1× (none)** |
+
+The acq floor is **unchanged**: in parallel mode both engines still pull real samples
+from the **single adc_A stream**, and the up-ramp and down-ramp samples physically
+arrive in sequence — so a full-length up+down pair still costs `2N/f_adc`. Parallel
+only buys the FFT-pipeline term, i.e. it helps **exactly when you are FFT-bound** (the
+short-ramp / zero-padded regime, below the "short threshold" %). Point rate is the
+slower of the two: `min(SSR·f_fft/N, f_adc/(2N))`.
+
+**Sanity anchor (your "double N for free" intuition):** parallel-N12 ≡ sequential-N11
+at the same config — e.g. SSR=4/125: parallel N12 = `500e6/4096` = **122.1 k** =
+sequential N11 = **122.1 k**. Same wall-clock, double the FFT window.
+
+### Parallel-mode point rates — all dual-channel configs that support fft_parallel
+
+fft_parallel requires **fft_b to exist**, i.e. any dual-channel (`FFT_SINGLE=0`) build:
+SSR ∈ {1,2,4}. **SSR=8 does NOT support it** (fft_b is dropped to fit — see below).
+FFT-bound column = `SSR·f_fft/N` (already the 2× value); acq floor = `62.5e6/N`,
+config-independent. `−10%` = 10 % derate for per-frame bubbles.
+
+| Config (SSR / FFT clk) | Intake | NFFT | N | FFT-bound pts/s | −10 % | Acq floor (full ramp) | Closes? |
+|---|---|---|---|---|---|---|---|
+| SSR=4 / 125 MHz (ships) | 500 Msps | 12 | 4096 | 122.1 k | 109.9 k | 15.3 k | ✅ |
+| SSR=4 / 125 MHz (ships) | 500 Msps | 11 | 2048 | 244.1 k | 219.7 k | 30.5 k | ✅ |
+| SSR=4 / 178.571 MHz | 712 Msps | 12 | 4096 | 173.8 k | 156.4 k | 15.3 k | ❌ (N12 congestion) |
+| SSR=4 / 178.571 MHz | 712 Msps | 11 | 2048 | 347.7 k | 312.9 k | 30.5 k | ✅ (`fft178ssr4n11`) |
+| SSR=2 / 200 MHz | 400 Msps | 13 | 8192 | 48.8 k | 43.9 k | 7.6 k | ✅ (`fft200ssr2`) |
+| SSR=2 / 200 MHz | 400 Msps | 12 | 4096 | 97.7 k | 87.9 k | 15.3 k | ✅ |
+| SSR=2 / 200 MHz | 400 Msps | 11 | 2048 | 195.3 k | 175.8 k | 30.5 k | ✅ |
+
+These FFT-bound rates are **2× the sequential figures** in the tables above. To actually
+reach them you must be below the config's short threshold (SSR=4/125 → 25 %, SSR=4/178 →
+17.6 %, SSR=2/200 → 31.25 %); at full-length ramps every config collapses to the shared
+acq floor (15.3 k @ N12, 30.5 k @ N11) and parallel mode gives no rate gain.
+
+**Cost of parallel mode:** it consumes the **second ADC channel** (both engines on adc_A),
+so you lose independent dual-channel acquisition; and it gives **zero** benefit in the
+acquisition-bound (full-ramp / resolution-maximised) regime. It also halves per-engine
+input buffering (N vs 2N) and lowers per-point latency. **SSR=8** can't use it at all —
+that build drops fft_b, so for SSR=8 the sequential 2-frame/point model is the only option
+(see next section).
+
 ## Caveats
 
 - **2 FFT/point** assumes a continuous triangle with **no flyback/settling dead time**
@@ -126,6 +190,43 @@ frame** (the single max peak: value+valid+bin). Per-frame cost ≈ `N/SSR + ~24`
   multi-target-per-ramp); (b) the ~24-cycle restart overhead grows proportionally at
   small N; (c) the 8-wide BEAT unroll closes timing at 178 MHz — **proven** in the
   built `fft178ssr8n11` (whole design closes with the detector included).
+
+### Detector capacity vs parallel-mode frame rate (dual-channel configs)
+
+Per-detector capacity = `f_fft / (N/SSR + 24)` frames/s (one detector per engine). The
+crucial point: **frame rate per engine is identical in both modes.** Parallel mode runs
+each engine at 1 frame/point but **2× the point rate**; sequential runs each engine at
+2 frames/point but **½ the point rate** — both demand `SSR·f_fft/N` frames/s/engine =
+the FFT line rate. So parallel mode adds **no new per-detector stress**; it just turns
+the detector's frame capacity into a **1:1** point-rate cap (vs ½:1 sequential).
+
+The detector sits a few % under the raw FFT-bound ceiling — the gap is purely the
+restart overhead `24·SSR / (N + 24·SSR)`. So the realistic **parallel** point-rate cap
+is the detector frame capacity below (slightly under the `SSR·f_fft/N` figures in the
+fft_parallel table):
+
+| Config (SSR / FFT clk) | NFFT | cyc/frame (N/SSR+24) | Detector cap = parallel pts/s | Restart derate | Sequential pts/s (½) |
+|---|---|---|---|---|---|
+| SSR=4 / 125 MHz (ships) | 12 | 1048 | 119.3 k | −2.3 % | 59.6 k |
+| SSR=4 / 125 MHz (ships) | 11 | 536 | 233.2 k | −4.5 % | 116.6 k |
+| SSR=4 / 178.571 MHz | 12 | 1048 | 170.4 k | −2.3 % | 85.2 k |
+| SSR=4 / 178.571 MHz | 11 | 536 | 333.2 k | −4.5 % | 166.6 k |
+| SSR=2 / 200 MHz | 13 | 4120 | 48.5 k | −0.6 % | 24.3 k |
+| SSR=2 / 200 MHz | 12 | 2072 | 96.5 k | −1.2 % | 48.3 k |
+| SSR=2 / 200 MHz | 11 | 1048 | 190.8 k | −2.3 % | 95.4 k |
+
+Takeaways:
+- **The detector keeps up in parallel mode** at every dual-channel config — it caps the
+  point rate only by the restart derate (≤4.5 %, worst at small N / high SSR). It is the
+  binding limit, but barely; it does not collapse the 2× parallel gain.
+- The derate **shrinks with larger N** (24·SSR amortised over more bins): N=13 → 0.6 %.
+  So heavily-padded large-N parallel configs are essentially detector-transparent.
+- Output bandwidth doubles vs sequential (parallel emits **2 words/point** — fft_a up +
+  fft_b down — instead of 1 combined word) but is still **~1 word/frame ≈ a few MB/s**,
+  trivial for the HP DMA at every rate in the table.
+- These are **FFT-bound** numbers. In the acq-bound (full-ramp) regime the frame rate
+  drops to 15.3 k / 30.5 k (N12 / N11), where the detector has >5× margin — never a
+  factor.
 
 ## Reference numbers
 
