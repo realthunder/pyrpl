@@ -291,7 +291,7 @@ else
     _fftclk="250MHz (SEL=1)"
 fi
 if [[ $_ssr -ge 8 ]]; then _single_def=1; else _single_def=0; fi
-echo "==> Build config: IMPL=${FFT_IMPL} SSR=${_ssr} NFFT=${FFT_NFFT:-12} SCALED=${FFT_SCALED:-2} WIDTH=${FFT_WIDTH:-auto} SINGLE=${FFT_SINGLE:-$_single_def}"
+echo "==> Build config: IMPL=${FFT_IMPL} SSR=${_ssr} NFFT=${FFT_NFFT:-12} SCALED=${FFT_SCALED:-2} WIDTH=${FFT_WIDTH:-auto} INTERNAL_W=${FFT_INTERNAL_W:-16} BFP=${FFT_BFP:-0} SINGLE=${FFT_SINGLE:-$_single_def}"
 echo "                  FFT_CLK=${_fftclk} | DET=${DETERMINISTIC} PHYS_OPT=${PHYS_OPT:-AggressiveExplore} SUM1_REP=${SUM1_REPLICATE:-1}"
 unset _ssr _fftclk _single_def
 
@@ -306,7 +306,7 @@ export CPATH=/usr/include/x86_64-linux-gnu:${CPATH:-}
 # Stored alongside each stamp so that changing FFT_SSR (or any other param)
 # invalidates the cached output even when source files haven't changed.
 hls_fingerprint() {
-    echo "FPGA_PART=${FPGA_PART:-} FFT_IMPL=${FFT_IMPL:-} FFT_SSR=${FFT_SSR:-} FFT_NFFT=${FFT_NFFT:-} FFT_WIDTH=${FFT_WIDTH:-} FFT_SCALED=${FFT_SCALED:-} FFT_INTERNAL_W=${FFT_INTERNAL_W:-} FFT_CLK_PERIOD=${FFT_CLK_PERIOD:-} FFT_USE_APPROX=${FFT_USE_APPROX:-} FFT_MULT_LUT=${FFT_MULT_LUT:-} FFT_RUNTIME_NFFT=${FFT_RUNTIME_NFFT:-} HIST_BLOCK_SIZE=${HIST_BLOCK_SIZE:-}"
+    echo "FPGA_PART=${FPGA_PART:-} FFT_IMPL=${FFT_IMPL:-} FFT_SSR=${FFT_SSR:-} FFT_NFFT=${FFT_NFFT:-} FFT_WIDTH=${FFT_WIDTH:-} FFT_SCALED=${FFT_SCALED:-} FFT_INTERNAL_W=${FFT_INTERNAL_W:-} FFT_BFP=${FFT_BFP:-} FFT_CLK_PERIOD=${FFT_CLK_PERIOD:-} FFT_USE_APPROX=${FFT_USE_APPROX:-} FFT_MULT_LUT=${FFT_MULT_LUT:-} FFT_RUNTIME_NFFT=${FFT_RUNTIME_NFFT:-} HIST_BLOCK_SIZE=${HIST_BLOCK_SIZE:-}"
 }
 
 fmt_elapsed() {
@@ -452,7 +452,7 @@ manifest="$WORKROOT/out/BUILD_INFO.txt"
     echo "# Build params explicitly set via env (empty => default; resolved values"
     echo "# and derived module parameters are appended below by red_pitaya_vivado.tcl):"
     for v in FPGA_PART ADC_SZ CLK_MULT CLK_ADC_DIV FFT_IMPL FFT_SSR FFT_NFFT \
-             FFT_WIDTH FFT_SCALED FFT_INTERNAL_W FFT_CLK_PERIOD FFT_CLK_SEL FFT_CLK_200 FFT_CLK_178 \
+             FFT_WIDTH FFT_SCALED FFT_INTERNAL_W FFT_BFP FFT_CLK_PERIOD FFT_CLK_SEL FFT_CLK_200 FFT_CLK_178 \
              FFT_MULT_LUT FFT_USE_APPROX HIST_BLOCK_SIZE SUM1_REPLICATE PHYS_OPT OPT_DIRECTIVE FFT_SINGLE; do
         printf '%-14s= %s\n' "$v" "${!v:-}"
     done

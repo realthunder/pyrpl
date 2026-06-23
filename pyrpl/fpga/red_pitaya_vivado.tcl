@@ -479,6 +479,7 @@ report_timing -slack_lesser_than 0 -max_paths 20000 -file $path_out/tns_failing_
 # parameters that derive from them, so an archived build is fully self-describing.
 ################################################################################
 set fft_internal_w [expr {[info exists env(FFT_INTERNAL_W)] ? $env(FFT_INTERNAL_W) : 16}]
+set fft_bfp        [expr {[info exists env(FFT_BFP)]        ? $env(FFT_BFP)        : 0}]
 set ssr_bits  [expr {int(log($fft_ssr)/log(2) + 0.5)}]
 set sub_nfft  [expr {$fft_nfft - $ssr_bits}]
 set bi_qsz    [expr {$fft_nfft - $ssr_bits - 1}]
@@ -493,7 +494,7 @@ if {![catch {open $path_out/BUILD_INFO.txt a} bi]} {
             fpga_part $part  adc_sz $adc_sz  clk_diff $clk_diff  clk_mult $clk_mult \
             clk_adc_div $clk_adc_div  fft_impl $fft_impl  fft_ssr $fft_ssr \
             fft_nfft $fft_nfft  fft_width $fft_width  fft_scaled $fft_scaled \
-            fft_internal_w $fft_internal_w  fft_single $fft_single \
+            fft_internal_w $fft_internal_w  fft_bfp $fft_bfp  fft_single $fft_single \
             fft_use_approx $fft_use_approx  fft_runtime_nfft $fft_runtime_nfft \
             fft_clk_period $fft_clk_period  fft_clk_sel $fft_clk_sel \
             fft_clk_200 $fft_clk_200  fft_clk_178 $fft_clk_178 \

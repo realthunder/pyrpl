@@ -36,6 +36,11 @@ set mult_lut_flag  [expr {$fft_mult_lut ? "-DFFT_MULT_LUT" : ""}]
 # shipping fixed-length build keeps its smaller footprint and adc/dac timing.
 set fft_runtime    [getparam fft_runtime_nfft 0]
 set runtime_flag   [expr {$fft_runtime ? "-DFFT_RUNTIME_NFFT" : ""}]
+# FFT_BFP=1: block floating point. Per-frame adaptive scaling in each hls::fft
+# sub-FFT recovers small-signal dynamic range at 16-bit storage; SSR>=2 reconciles
+# the independent per-lane block exponents in the output stage. Off by default.
+set fft_bfp        [getparam fft_bfp          0]
+set bfp_flag       [expr {$fft_bfp ? "-DFFT_BFP" : ""}]
 
 # ---- Generate twiddle LUT if not present (shared with FFT_IMPL=3) ----------
 set hls_dir [file normalize [file dirname [info script]]]
@@ -85,7 +90,8 @@ add_files ../hls/fft_hls_direct.cpp \
              -DDSZ=$fft_width \
              -DINTERNAL_W=$fft_internal_w \
              $mult_lut_flag \
-             $runtime_flag"
+             $runtime_flag \
+             $bfp_flag"
 
 set_top fft_hls_direct
 

@@ -152,6 +152,26 @@ struct fft_params_t : hls::ip_fft::params_t {
     static const unsigned input_width        = INTERNAL_W;
     static const unsigned output_width       = INTERNAL_W;
     static const unsigned status_width       = 8;
+#ifdef FFT_BFP
+    // Block floating point (build knob FFT_BFP): each sub-FFT auto-scales per frame
+    // to keep its strongest bin near full-scale, reporting the applied scaling as a
+    // block exponent in the status word (read via sts->getBlkExp() in fft_drain).
+    // This recovers the small-signal dynamic range of a wide datapath (INTERNAL_W=24)
+    // at 16-bit storage (BRAM-cheap). Three deltas vs scaled mode: (1) scaling_opt
+    // selects BFP, (2) the config word carries NO per-stage scaling schedule (the
+    // core picks its own), (3) fft_feed must NOT call setSch (invalid in BFP).
+    // SSR>=2 then reconciles the independent per-lane exponents in output_ssrN.
+    static const unsigned scaling_opt        = hls::ip_fft::block_floating_point;
+  #ifdef FFT_RUNTIME_NFFT
+    static const bool     has_nfft           = true;
+    // config word = NFFT field (8 bits, padded) + 1 direction bit, byte-rounded.
+    // No 2-bit/stage scaling schedule in BFP (else "Config channel width illegal").
+    static const unsigned config_width       = ((1+8+7)/8)*8;
+  #else
+    // Fixed-length BFP: config word is just the 1 direction bit (no sched, no nfft).
+    static const unsigned config_width       = ((1+7)/8)*8;
+  #endif
+#else
 #ifdef FFT_RUNTIME_NFFT
     // Run-time configurable transform length (build knob FFT_RUNTIME_NFFT): the
     // generated LogiCORE accepts an NFFT field in the config word, so one
@@ -167,6 +187,7 @@ struct fft_params_t : hls::ip_fft::params_t {
     // Fixed-length: NFFT baked in at max_nfft, no config NFFT field.
     static const unsigned config_width       = ((2*((SUB_NFFT+1)/2)+1+7)/8)*8;
 #endif
+#endif // FFT_BFP
     static const unsigned phase_factor_width = TWID_W;
     static const unsigned stages_block_ram   = (SUB_NFFT < 10) ? 0 : SUB_NFFT - 9;
 #ifdef FFT_MULT_LUT
@@ -307,6 +328,45 @@ static inline ap_uint<DSZ> magnitude(cfixed_t v) {
     return out.range(DSZ-1, 0);
 }
 
+#ifdef FFT_BFP
+// Per-lane drained sample under block floating point: the BFP mantissa plus the
+// block exponent of the sub-FFT that produced it. Each sub-FFT block-floats
+// independently, so its exponent is constant across the whole output frame; we
+// replicate it onto every beat (rather than a separate per-frame status stream)
+// so the joiner can reconcile lanes inline with no extra barrier/FIFO.
+struct drain_t {
+    cfixed_t   val;
+    ap_uint<8> blkexp;   // status_width=8; blk_exp range 0..~SUB_NFFT
+};
+
+// Reconcile FSSR sub-FFTs that block-floated independently. true magnitude of lane
+// r is |mantissa_r| * 2^blkexp_r; aligning all lanes to the common exponent
+// emax = max_r(blkexp_r) gives out_r = |mantissa_r| >> (emax - blkexp_r). The lane
+// holding the global peak (largest blkexp) keeps full precision; weaker lanes scale
+// down — exactly the relative ordering peak detection needs, and it preserves the
+// existing DSZ magnitude output format. (Absolute cross-frame scale would also need
+// emax exported to the PC; deferred — within-frame detection needs only this
+// relative alignment.) BFP scales by the strongest bin, so a strong reference in the
+// same frame steals bits from a weak target — acceptable for single-beat FMCW.
+template<int N>
+static inline void bfp_pack(const drain_t d[N], axis_out_t &pkt) {
+#pragma HLS INLINE
+    ap_uint<8> emax = 0;
+    for (int r = 0; r < N; r++) {
+#pragma HLS UNROLL
+        if (d[r].blkexp > emax) emax = d[r].blkexp;
+    }
+    for (int r = 0; r < N; r++) {
+#pragma HLS UNROLL
+        ap_uint<8>   sh  = emax - d[r].blkexp;   // >= 0: emax is the max
+        ap_uint<DSZ> mag = magnitude(d[r].val);
+        pkt.data.range(r*DSZ + DSZ - 1, r*DSZ) = mag >> sh;
+    }
+}
+#else
+typedef cfixed_t drain_t;
+#endif
+
 // Convert a raw signed ASZ-bit ADC sample to the internal ap_fixed<INTERNAL_W,1> value
 // in [-1,1) by MSB-aligning it into the top ASZ bits. A plain value cast
 // (ap_fixed<INTERNAL_W,1>(raw)) WRAPS any |raw|>=1 — i.e. it zeroes the whole 14-bit
@@ -335,6 +395,15 @@ static void fft_feed(hls::stream<cfixed_t> &in,
                      int sub_size,
                      unsigned sub_nfft) {
     cfg->setDir(1);
+#ifdef FFT_BFP
+    // Block floating point: the core derives its own per-stage scaling, so setSch
+    // is invalid ("FFT_SCALING != scaled. invalid to access scaling_sch field").
+  #ifdef FFT_RUNTIME_NFFT
+    cfg->setNfft(sub_nfft);
+  #else
+    (void)sub_nfft;
+  #endif
+#else
 #ifdef FFT_RUNTIME_NFFT
     cfg->setNfft(sub_nfft);
     cfg->setSch(SCALE_SCHED_LUT.v[sub_nfft]);
@@ -342,6 +411,7 @@ static void fft_feed(hls::stream<cfixed_t> &in,
     (void)sub_nfft;
     cfg->setSch(SCALE_SCHED);
 #endif
+#endif // FFT_BFP
     for (int i = 0; i < RT_N(sub_size, SUB_SIZE); i++) {
 #pragma HLS PIPELINE II=1
 #pragma HLS LOOP_TRIPCOUNT min=8 max=SUB_SIZE
@@ -350,14 +420,28 @@ static void fft_feed(hls::stream<cfixed_t> &in,
 }
 
 static void fft_drain(cfixed_t xk[SUB_SIZE],
-                      hls::stream<cfixed_t> &out,
+                      hls::stream<drain_t> &out,
                       fft_status_t *sts,
                       int sub_size) {
+#ifdef FFT_BFP
+    // BFP: latch this sub-FFT's block exponent (valid once the transform is done,
+    // i.e. when this drain process runs) and carry it alongside every mantissa so
+    // the joiner can reconcile lanes. getBlkExp() is the applied down-scaling.
+    ap_uint<8> be = (ap_uint<8>)sts->getBlkExp();
+#else
     (void)*sts;  // overflow status unused
+#endif
     for (int i = 0; i < RT_N(sub_size, SUB_SIZE); i++) {
 #pragma HLS PIPELINE II=1
 #pragma HLS LOOP_TRIPCOUNT min=8 max=SUB_SIZE
+#ifdef FFT_BFP
+        drain_t d;
+        d.val    = xk[i];
+        d.blkexp = be;
+        out.write(d);
+#else
         out.write(xk[i]);
+#endif
     }
 }
 
@@ -380,14 +464,20 @@ static void input_ssr1(hls::stream<axis_in_t> &s_axis,
     }
 }
 
-static void output_ssr1(hls::stream<cfixed_t>   &in,
+static void output_ssr1(hls::stream<drain_t>    &in,
                         hls::stream<axis_out_t> &m_axis,
                         int n) {
     for (int i = 0; i < RT_N(n, FFT_SIZE); i++) {
 #pragma HLS PIPELINE II=1
 #pragma HLS LOOP_TRIPCOUNT min=8 max=FFT_SIZE
         axis_out_t pkt;
+#ifdef FFT_BFP
+        // Single sub-FFT → one block exponent; bins already share a common scale,
+        // so the mantissa magnitude alone is directly comparable (no reconcile).
+        pkt.data.range(DSZ-1, 0) = magnitude(in.read().val);
+#else
         pkt.data.range(DSZ-1, 0) = magnitude(in.read());
+#endif
         pkt.last = (i == RT_N(n, FFT_SIZE) - 1);
         m_axis.write(pkt);
     }
@@ -494,16 +584,23 @@ static void twiddle(hls::stream<par_data> &din,
 // Joiner + magnitude: stream sub-FFT outputs → m_axis
 // With bit_reversed_order sub-FFTs:
 //   beat b = { |X[2·bit_rev(b,SUB_NFFT)]|, |X[2·bit_rev(b,SUB_NFFT)+1]| }
-static void output_ssr2(hls::stream<cfixed_t>   &fft0_out,
-                        hls::stream<cfixed_t>   &fft1_out,
+static void output_ssr2(hls::stream<drain_t>    &fft0_out,
+                        hls::stream<drain_t>    &fft1_out,
                         hls::stream<axis_out_t> &m_axis,
                         int n) {
     for (int i = 0; i < RT_N(n, SUB_SIZE); i++) {
 #pragma HLS PIPELINE II=1
 #pragma HLS LOOP_TRIPCOUNT min=8 max=SUB_SIZE
         axis_out_t pkt;
+#ifdef FFT_BFP
+        drain_t d[2];
+        d[0] = fft0_out.read();
+        d[1] = fft1_out.read();
+        bfp_pack<2>(d, pkt);
+#else
         pkt.data.range(  DSZ-1,   0) = magnitude(fft0_out.read());
         pkt.data.range(2*DSZ-1, DSZ) = magnitude(fft1_out.read());
+#endif
         pkt.last = (i == RT_N(n, SUB_SIZE) - 1);
         m_axis.write(pkt);
     }
@@ -686,20 +783,29 @@ static void stage2_lower(hls::stream<par_data>  &din,
 // With bit_reversed_order sub-FFTs:
 //   beat b = {|X[4·bit_rev(b,SUB_NFFT)]|, |X[4·bit_rev(b,SUB_NFFT)+1]|,
 //              |X[4·bit_rev(b,SUB_NFFT)+2]|, |X[4·bit_rev(b,SUB_NFFT)+3]|}
-static void output_ssr4(hls::stream<cfixed_t>   &fft0_out,
-                        hls::stream<cfixed_t>   &fft1_out,
-                        hls::stream<cfixed_t>   &fft2_out,
-                        hls::stream<cfixed_t>   &fft3_out,
+static void output_ssr4(hls::stream<drain_t>    &fft0_out,
+                        hls::stream<drain_t>    &fft1_out,
+                        hls::stream<drain_t>    &fft2_out,
+                        hls::stream<drain_t>    &fft3_out,
                         hls::stream<axis_out_t> &m_axis,
                         int n) {
     for (int i = 0; i < RT_N(n, SUB_SIZE); i++) {
 #pragma HLS PIPELINE II=1
 #pragma HLS LOOP_TRIPCOUNT min=8 max=SUB_SIZE
         axis_out_t pkt;
+#ifdef FFT_BFP
+        drain_t d[4];
+        d[0] = fft0_out.read();
+        d[1] = fft1_out.read();
+        d[2] = fft2_out.read();
+        d[3] = fft3_out.read();
+        bfp_pack<4>(d, pkt);
+#else
         pkt.data.range(  DSZ-1,     0) = magnitude(fft0_out.read());
         pkt.data.range(2*DSZ-1,   DSZ) = magnitude(fft1_out.read());
         pkt.data.range(3*DSZ-1, 2*DSZ) = magnitude(fft2_out.read());
         pkt.data.range(4*DSZ-1, 3*DSZ) = magnitude(fft3_out.read());
+#endif
         pkt.last = (i == RT_N(n, SUB_SIZE) - 1);
         m_axis.write(pkt);
     }
@@ -872,20 +978,32 @@ static void dft8_stage3_twiddle(hls::stream<par_data8> &din,
 
 // Joiner + magnitude: eight sub-FFT outputs → m_axis.
 //   beat b = {|X[8·bit_rev(b,SUB_NFFT)+lane]|} for lane = 0..7
-static void output_ssr8(hls::stream<cfixed_t>   &fft0_out,
-                        hls::stream<cfixed_t>   &fft1_out,
-                        hls::stream<cfixed_t>   &fft2_out,
-                        hls::stream<cfixed_t>   &fft3_out,
-                        hls::stream<cfixed_t>   &fft4_out,
-                        hls::stream<cfixed_t>   &fft5_out,
-                        hls::stream<cfixed_t>   &fft6_out,
-                        hls::stream<cfixed_t>   &fft7_out,
+static void output_ssr8(hls::stream<drain_t>    &fft0_out,
+                        hls::stream<drain_t>    &fft1_out,
+                        hls::stream<drain_t>    &fft2_out,
+                        hls::stream<drain_t>    &fft3_out,
+                        hls::stream<drain_t>    &fft4_out,
+                        hls::stream<drain_t>    &fft5_out,
+                        hls::stream<drain_t>    &fft6_out,
+                        hls::stream<drain_t>    &fft7_out,
                         hls::stream<axis_out_t> &m_axis,
                         int n) {
     for (int i = 0; i < RT_N(n, SUB_SIZE); i++) {
 #pragma HLS PIPELINE II=1
 #pragma HLS LOOP_TRIPCOUNT min=8 max=SUB_SIZE
         axis_out_t pkt;
+#ifdef FFT_BFP
+        drain_t d[8];
+        d[0] = fft0_out.read();
+        d[1] = fft1_out.read();
+        d[2] = fft2_out.read();
+        d[3] = fft3_out.read();
+        d[4] = fft4_out.read();
+        d[5] = fft5_out.read();
+        d[6] = fft6_out.read();
+        d[7] = fft7_out.read();
+        bfp_pack<8>(d, pkt);
+#else
         pkt.data.range(  DSZ-1,     0) = magnitude(fft0_out.read());
         pkt.data.range(2*DSZ-1,   DSZ) = magnitude(fft1_out.read());
         pkt.data.range(3*DSZ-1, 2*DSZ) = magnitude(fft2_out.read());
@@ -894,6 +1012,7 @@ static void output_ssr8(hls::stream<cfixed_t>   &fft0_out,
         pkt.data.range(6*DSZ-1, 5*DSZ) = magnitude(fft5_out.read());
         pkt.data.range(7*DSZ-1, 6*DSZ) = magnitude(fft6_out.read());
         pkt.data.range(8*DSZ-1, 7*DSZ) = magnitude(fft7_out.read());
+#endif
         pkt.last = (i == RT_N(n, SUB_SIZE) - 1);
         m_axis.write(pkt);
     }
@@ -950,7 +1069,7 @@ void fft_hls_direct(hls::stream<axis_in_t>  &s_axis,
 #if FFT_SSR == 1
 
     hls::stream<cfixed_t> pre_fft("pre_fft");
-    hls::stream<cfixed_t> post_fft("post_fft");
+    hls::stream<drain_t> post_fft("post_fft");
 #pragma HLS STREAM variable=pre_fft  depth=16
 #pragma HLS STREAM variable=post_fft depth=16
     cfixed_t     xn[SUB_SIZE];
@@ -971,8 +1090,8 @@ void fft_hls_direct(hls::stream<axis_in_t>  &s_axis,
     hls::stream<par_data>  radix_out  ("radix_out");
     hls::stream<cfixed_t>  tw_out0    ("tw_out0");
     hls::stream<cfixed_t>  tw_out1    ("tw_out1");
-    hls::stream<cfixed_t>  fft0_out   ("fft0_out");
-    hls::stream<cfixed_t>  fft1_out   ("fft1_out");
+    hls::stream<drain_t>   fft0_out   ("fft0_out");
+    hls::stream<drain_t>   fft1_out   ("fft1_out");
 #pragma HLS STREAM variable=raw_par      depth=16
 #pragma HLS STREAM variable=reorder_out  depth=16
 #pragma HLS STREAM variable=radix_out    depth=16
@@ -1007,10 +1126,10 @@ void fft_hls_direct(hls::stream<axis_in_t>  &s_axis,
     hls::stream<cfixed_t>   fft1_in     ("fft1_in");
     hls::stream<cfixed_t>   fft2_in     ("fft2_in");
     hls::stream<cfixed_t>   fft3_in     ("fft3_in");
-    hls::stream<cfixed_t>   fft0_out    ("fft0_out");
-    hls::stream<cfixed_t>   fft1_out    ("fft1_out");
-    hls::stream<cfixed_t>   fft2_out    ("fft2_out");
-    hls::stream<cfixed_t>   fft3_out    ("fft3_out");
+    hls::stream<drain_t>    fft0_out    ("fft0_out");
+    hls::stream<drain_t>    fft1_out    ("fft1_out");
+    hls::stream<drain_t>    fft2_out    ("fft2_out");
+    hls::stream<drain_t>    fft3_out    ("fft3_out");
 #pragma HLS STREAM variable=raw_par4    depth=16
 #pragma HLS STREAM variable=reorder_out depth=16
 #pragma HLS STREAM variable=upper       depth=16
@@ -1056,7 +1175,7 @@ void fft_hls_direct(hls::stream<axis_in_t>  &s_axis,
     hls::stream<par_data8>  s1_out      ("s1_out");
     hls::stream<par_data8>  s2_out      ("s2_out");
     hls::stream<cfixed_t>   fft_in[8];
-    hls::stream<cfixed_t>   fft_out[8];
+    hls::stream<drain_t>    fft_out[8];
 #pragma HLS STREAM variable=raw_par8    depth=16
 #pragma HLS STREAM variable=reorder_out depth=16
 #pragma HLS STREAM variable=s1_out      depth=16

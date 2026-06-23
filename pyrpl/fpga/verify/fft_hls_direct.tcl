@@ -33,8 +33,14 @@ if {$need} {
 # length it sweeps also covers the fixed-length path). Set FFT_RUNTIME_NFFT=0 to
 # verify the fixed-length build instead.
 set fft_runtime [getp fft_runtime_nfft 1]
-set defs "-DFFT_SSR=$fft_ssr -DFFT_NFFT=$fft_nfft -DASZ=14 -DDSZ=$fft_width"
+# INTERNAL_W: internal FFT datapath width (16/24/32). Was missing here, so csim
+# always ran the default 16; pass it through so verify matches the build knob.
+set fft_internal_w [getp fft_internal_w 16]
+# FFT_BFP: block floating point (per-frame adaptive scaling + per-lane reconcile).
+set fft_bfp     [getp fft_bfp     0]
+set defs "-DFFT_SSR=$fft_ssr -DFFT_NFFT=$fft_nfft -DASZ=14 -DDSZ=$fft_width -DINTERNAL_W=$fft_internal_w"
 if {$fft_runtime} { append defs " -DFFT_RUNTIME_NFFT" }
+if {$fft_bfp}     { append defs " -DFFT_BFP" }
 file mkdir .hls; cd .hls
 open_project -reset fft_hls_direct_verify
 add_files     ../hls/fft_hls_direct.cpp    -cflags "-I../hls $defs"
