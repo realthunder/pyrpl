@@ -473,6 +473,63 @@ write_xdc -no_fixed_only -force   $path_out/bft_impl.xdc
 report_timing -slack_lesser_than 0 -max_paths 20000 -file $path_out/tns_failing_paths.txt
 
 ################################################################################
+# Append resolved build options + derived module parameters to BUILD_INFO.txt.
+# make.sh writes the provenance header + the raw env overrides (blank = default);
+# here we record the actual resolved values (defaults applied) and the RTL/HLS
+# parameters that derive from them, so an archived build is fully self-describing.
+################################################################################
+set fft_internal_w [expr {[info exists env(FFT_INTERNAL_W)] ? $env(FFT_INTERNAL_W) : 16}]
+set ssr_bits  [expr {int(log($fft_ssr)/log(2) + 0.5)}]
+set sub_nfft  [expr {$fft_nfft - $ssr_bits}]
+set bi_qsz    [expr {$fft_nfft - $ssr_bits - 1}]
+set bi_subsz  [expr {1 << $sub_nfft}]
+set bi_inw    [expr {(($adc_sz*$fft_ssr + 7)/8)*8}]
+set bi_outw   [expr {$fft_width*$fft_ssr}]
+set bi_peakw  [expr {$fft_ssr*$fft_width}]
+if {![catch {open $path_out/BUILD_INFO.txt a} bi]} {
+    puts $bi ""
+    puts $bi "# ---- Resolved build options (defaults applied) ----"
+    foreach {k v} [list \
+            fpga_part $part  adc_sz $adc_sz  clk_diff $clk_diff  clk_mult $clk_mult \
+            clk_adc_div $clk_adc_div  fft_impl $fft_impl  fft_ssr $fft_ssr \
+            fft_nfft $fft_nfft  fft_width $fft_width  fft_scaled $fft_scaled \
+            fft_internal_w $fft_internal_w  fft_single $fft_single \
+            fft_use_approx $fft_use_approx  fft_runtime_nfft $fft_runtime_nfft \
+            fft_clk_period $fft_clk_period  fft_clk_sel $fft_clk_sel \
+            fft_clk_200 $fft_clk_200  fft_clk_178 $fft_clk_178 \
+            hist_block_size $hist_block_size  sum1_replicate $sum1_replicate \
+            phys_opt_dir $phys_opt_dir  opt_dir $opt_dir] {
+        puts $bi [format "%-17s= %s" $k $v]
+    }
+    puts $bi ""
+    puts $bi "# ---- Derived module parameters (build option -> RTL/HLS param) ----"
+    puts $bi "module red_pitaya_top   (synth -generic):"
+    foreach {k v} [list FFT_NFFT $fft_nfft  FFT_SSR $fft_ssr  FFT_WIDTH $fft_width \
+                        FFT_IMPL $fft_impl  FFT_SINGLE $fft_single  ADC_SZ $adc_sz \
+                        HIST_BLOCK_SIZE $hist_block_size] {
+        puts $bi [format "    %-16s= %s" $k $v]
+    }
+    puts $bi "module red_pitaya_scope #(.ASZ,.FSZ,.FSSR,.DSZ,...):"
+    puts $bi [format "    %-16s= %-5s (= ADC_SZ)"             ASZ  $adc_sz]
+    puts $bi [format "    %-16s= %-5s (= FFT_NFFT, 2^FSZ pts)" FSZ  $fft_nfft]
+    puts $bi [format "    %-16s= %-5s (= FFT_SSR)"            FSSR $fft_ssr]
+    puts $bi [format "    %-16s= %-5s (= FFT_WIDTH)"          DSZ  $fft_width]
+    puts $bi [format "    %-16s= %-5s (= FSZ - log2(FSSR) - 1, input FIFO depth)" QSZ $bi_qsz]
+    puts $bi "module fft_proc:"
+    puts $bi [format "    %-16s= %-5s (= log2(FSSR))"                  SSR_BITS      $ssr_bits]
+    puts $bi [format "    %-16s= %-5s (= FSZ - SSR_BITS, sub-FFT nfft)" NFFT_FIXED    $sub_nfft]
+    puts $bi [format "    %-16s= %-5s (= FSSR * DSZ)"                  PEAK_IN_WIDTH $bi_peakw]
+    puts $bi "module fft_hls_direct (HLS, FFT_IMPL=5):"
+    puts $bi [format "    %-16s= %-5s (internal FFT datapath width; FFT_INTERNAL_W knob)" INTERNAL_W $fft_internal_w]
+    puts $bi [format "    %-16s= %-5s (= FFT_NFFT - log2(FFT_SSR))"     SUB_NFFT  $sub_nfft]
+    puts $bi [format "    %-16s= %-5s (= 2^SUB_NFFT, per-lane serial FFT len)" SUB_SIZE $bi_subsz]
+    puts $bi [format "    %-16s= %-5s (= ceil(ASZ*FFT_SSR/8)*8, AXIS in)"  IN_WIDTH  $bi_inw]
+    puts $bi [format "    %-16s= %-5s (= DSZ*FFT_SSR, AXIS out)"           OUT_WIDTH $bi_outw]
+    close $bi
+    puts "INFO: appended resolved options + derived module params to BUILD_INFO.txt"
+}
+
+################################################################################
 # generate a bitstream
 ################################################################################
 

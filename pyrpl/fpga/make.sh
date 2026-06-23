@@ -449,7 +449,8 @@ manifest="$WORKROOT/out/BUILD_INFO.txt"
     [[ -n "$git_dirty" ]] && { echo "git_dirty_tracked:"; echo "$git_dirty" | sed 's/^/    /'; }
     echo "xilinx_version= $XILINX_VERSION"
     echo "placer_seed   = $seed_str"
-    echo "# Build params (empty => tcl default at the above git_commit):"
+    echo "# Build params explicitly set via env (empty => default; resolved values"
+    echo "# and derived module parameters are appended below by red_pitaya_vivado.tcl):"
     for v in FPGA_PART ADC_SZ CLK_MULT CLK_ADC_DIV FFT_IMPL FFT_SSR FFT_NFFT \
              FFT_WIDTH FFT_SCALED FFT_INTERNAL_W FFT_CLK_PERIOD FFT_CLK_SEL FFT_CLK_200 FFT_CLK_178 \
              FFT_MULT_LUT FFT_USE_APPROX HIST_BLOCK_SIZE SUM1_REPLICATE PHYS_OPT OPT_DIRECTIVE FFT_SINGLE; do
