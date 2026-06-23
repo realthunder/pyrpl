@@ -24,6 +24,9 @@ set fft_clk_period [getparam fft_clk_period 4.0]
 set fft_scaled     [getparam fft_scaled     2]
 # fft_width = DSZ (magnitude output bits): 0->28, 1->16, 2->20
 set fft_width      [getparam fft_width      [expr {$fft_scaled == 1 ? 16 : ($fft_scaled == 2 ? 20 : 28)}]]
+# fft_internal_w = INTERNAL_W: internal FFT datapath precision (wider = more small-signal
+# dynamic range, at DSP/BRAM cost). Default 16.
+set fft_internal_w [getparam fft_internal_w 16]
 set fft_size       [expr {1 << $fft_nfft}]
 # FFT_MULT_LUT=1: build the FFT complex multipliers/butterflies in LUTs, not DSP.
 set fft_mult_lut   [getparam fft_mult_lut    0]
@@ -80,6 +83,7 @@ add_files ../hls/fft_hls_direct.cpp \
              -DFFT_NFFT=$fft_nfft \
              -DASZ=14 \
              -DDSZ=$fft_width \
+             -DINTERNAL_W=$fft_internal_w \
              $mult_lut_flag \
              $runtime_flag"
 

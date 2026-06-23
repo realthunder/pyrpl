@@ -18,12 +18,12 @@
 // Block design:  s_axis -> fft_native_pre -> xfft(SSR) -> fft_native_mag -> m_axis
 //
 // AXIS bus packing (standard xfft SSR layout, sample-major, {imag,real} per slot):
-//   xfft input  beat: FFT_SSR slots of 2*INT_W bits, lane n at [n*2*INT_W +: 2*INT_W],
-//                     real in low INT_W, imag in high INT_W.
+//   xfft input  beat: FFT_SSR slots of 2*INTERNAL_W bits, lane n at [n*2*INTERNAL_W +: 2*INTERNAL_W],
+//                     real in low INTERNAL_W, imag in high INTERNAL_W.
 //   xfft output beat: FFT_SSR slots of XCMPX_W bits (byte-rounded I/Q each).
 //
 // Parameters (all overridable via -D, set from the IP-build TCL):
-//   FFT_SSR, FFT_NFFT, ASZ, INT_W, FFT_SCALED, DSZ, CFG_W, CFG_WORD
+//   FFT_SSR, FFT_NFFT, ASZ, INTERNAL_W, FFT_SCALED, DSZ, CFG_W, CFG_WORD
 // =============================================================================
 
 #include <hls_stream.h>
@@ -40,8 +40,8 @@
 #ifndef ASZ
 #define ASZ 14                 // ADC sample width
 #endif
-#ifndef INT_W
-#define INT_W 16               // xfft input I/Q width
+#ifndef INTERNAL_W
+#define INTERNAL_W 16               // xfft input I/Q width
 #endif
 // Scaling mode: 0 = unscaled (full dynamic range), 1 = scaled
 #ifndef FFT_SCALED
@@ -56,12 +56,12 @@
 
 // xfft output I/Q width per component. Native SSR runs the FULL N-point transform
 // in one instance, so growth is over the full FFT_NFFT stages (NOT a sub-FFT).
-//   scaled:   INT_W bits (÷2 per stage keeps the output in input range)
-//   unscaled: INT_W + FFT_NFFT bits (accumulates over 2^FFT_NFFT points)
+//   scaled:   INTERNAL_W bits (÷2 per stage keeps the output in input range)
+//   unscaled: INTERNAL_W + FFT_NFFT bits (accumulates over 2^FFT_NFFT points)
 #if FFT_SCALED
-#define XFFT_IQ_W   INT_W
+#define XFFT_IQ_W   INTERNAL_W
 #else
-#define XFFT_IQ_W   (INT_W + FFT_NFFT)
+#define XFFT_IQ_W   (INTERNAL_W + FFT_NFFT)
 #endif
 #define XFFT_IQ_BYTES ((XFFT_IQ_W + 7) / 8)   // byte-rounded slot per I or Q
 #define XCMPX_W       (XFFT_IQ_BYTES * 8 * 2)  // full complex slot (I + Q)
@@ -84,7 +84,7 @@
 
 // AXIS bus widths (byte-rounded)
 #define IN_W    (((FFT_SSR * ASZ + 7) / 8) * 8)        // packed real ADC input
-#define XIN_W   (FFT_SSR * 2 * INT_W)                  // xfft complex input bus
+#define XIN_W   (FFT_SSR * 2 * INTERNAL_W)                  // xfft complex input bus
 #define XOUT_W  (FFT_SSR * XCMPX_W)                    // xfft complex output bus
 #define OUT_W   (((FFT_SSR * DSZ + 7) / 8) * 8)        // packed magnitude output
 
@@ -143,7 +143,7 @@ static ap_uint<DSZ> magnitude(ap_int<XFFT_IQ_BYTES*8> re, ap_int<XFFT_IQ_BYTES*8
 //
 // Sends one config beat per frame (xfft requires S_AXIS_CONFIG before data), then
 // passes FFT_SIZE/FFT_SSR beats through, sign-extending each ASZ-bit real sample
-// into the low INT_W bits of its slot and zeroing the imaginary half.
+// into the low INTERNAL_W bits of its slot and zeroing the imaginary half.
 // =============================================================================
 void fft_native_pre(
     hls::stream<axis_in_t>  &s_axis,
@@ -179,10 +179,10 @@ void fft_native_pre(
         for (int s = 0; s < FFT_SSR; s++) {
 #pragma HLS UNROLL
             ap_int<ASZ> samp = pkt.data.range(s*ASZ + ASZ - 1, s*ASZ);
-            // Sign-extend ASZ-bit sample into INT_W-bit real part; imag stays 0.
-            ap_int<INT_W> re = samp;
-            out.data.range(s*2*INT_W + INT_W - 1, s*2*INT_W) =
-                (ap_uint<INT_W>)re.range(INT_W-1, 0);
+            // Sign-extend ASZ-bit sample into INTERNAL_W-bit real part; imag stays 0.
+            ap_int<INTERNAL_W> re = samp;
+            out.data.range(s*2*INTERNAL_W + INTERNAL_W - 1, s*2*INTERNAL_W) =
+                (ap_uint<INTERNAL_W>)re.range(INTERNAL_W-1, 0);
         }
         out.last = (i == BEATS - 1);
         m_axis_data.write(out);

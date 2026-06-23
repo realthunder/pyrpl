@@ -30,7 +30,7 @@ add_files ../hls/fft_ssr_native.cpp \
              -DFFT_SSR=$fft_ssr \
              -DFFT_NFFT=$fft_nfft \
              -DASZ=14 \
-             -DINT_W=16 \
+             -DINTERNAL_W=16 \
              -DDSZ=$fft_width \
              $approx_flag \
              $scaled_flag"

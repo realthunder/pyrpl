@@ -76,12 +76,18 @@ typedef ap_axiu<OUT_WIDTH, 0, 0, 0> axis_out_t;
 // Fixed-point types
 // ============================================================
 
-static const int INT_W  = 16;  // internal FFT precision
+// INTERNAL_W: internal FFT datapath width (the fixed-point precision carried through
+// the butterflies/twiddles), NOT an integer-bit count. Wider = lower quantization
+// floor = more small-signal dynamic range, at a cost of FFT-core DSP/BRAM. Override
+// with -DINTERNAL_W (build knob FFT_INTERNAL_W). Default 16.
+#ifndef INTERNAL_W
+#define INTERNAL_W 16
+#endif
 static const int TWID_W = 18;  // twiddle factor precision
 
-typedef std::complex<ap_fixed<INT_W, 1>>   cfixed_t;
+typedef std::complex<ap_fixed<INTERNAL_W, 1>>   cfixed_t;
 typedef std::complex<ap_fixed<TWID_W, 2>> cfixed_twid_t;
-typedef ap_fixed<INT_W + TWID_W + 1, 4>   fixed_mul_t;  // scalar multiply accumulator
+typedef ap_fixed<INTERNAL_W + TWID_W + 1, 4>   fixed_mul_t;  // scalar multiply accumulator
 
 // ============================================================
 // LogiCORE FFT configuration
@@ -137,8 +143,8 @@ struct fft_params_t : hls::ip_fft::params_t {
     // The output permutation is handled by BRAM addressing in fft_proc.sv.
     static const unsigned ordering_opt       = hls::ip_fft::bit_reversed_order;
     static const unsigned max_nfft           = SUB_NFFT;
-    static const unsigned input_width        = INT_W;
-    static const unsigned output_width       = INT_W;
+    static const unsigned input_width        = INTERNAL_W;
+    static const unsigned output_width       = INTERNAL_W;
     static const unsigned status_width       = 8;
 #ifdef FFT_RUNTIME_NFFT
     // Run-time configurable transform length (build knob FFT_RUNTIME_NFFT): the
@@ -280,7 +286,7 @@ static inline cfixed_twid_t w8_3() {
 // Maps [0,~1.5) input to a DSZ-bit unsigned integer with 2 integer bits.
 static inline ap_uint<DSZ> magnitude(cfixed_t v) {
 #pragma HLS INLINE
-    typedef ap_fixed<INT_W+1, 2> wider_t;
+    typedef ap_fixed<INTERNAL_W+1, 2> wider_t;
     wider_t re = v.real() < 0 ? (wider_t)(-v.real()) : (wider_t)v.real();
     wider_t im = v.imag() < 0 ? (wider_t)(-v.imag()) : (wider_t)v.imag();
     wider_t mx = (re > im) ? re : im;
@@ -295,15 +301,15 @@ static inline ap_uint<DSZ> magnitude(cfixed_t v) {
     return out.range(DSZ-1, 0);
 }
 
-// Convert a raw signed ASZ-bit ADC sample to the internal ap_fixed<INT_W,1> value
+// Convert a raw signed ASZ-bit ADC sample to the internal ap_fixed<INTERNAL_W,1> value
 // in [-1,1) by MSB-aligning it into the top ASZ bits. A plain value cast
-// (ap_fixed<INT_W,1>(raw)) WRAPS any |raw|>=1 — i.e. it zeroes the whole 14-bit
+// (ap_fixed<INTERNAL_W,1>(raw)) WRAPS any |raw|>=1 — i.e. it zeroes the whole 14-bit
 // ADC input — which silently broke the FFT (csim: every tone collapsed to bin 0).
 // Matches fft_ip_ssr.cpp's input handling.
-static inline ap_fixed<INT_W,1> adc_to_fixed(ap_int<ASZ> raw) {
+static inline ap_fixed<INTERNAL_W,1> adc_to_fixed(ap_int<ASZ> raw) {
 #pragma HLS INLINE
-    ap_fixed<INT_W,1> v = 0;
-    v.range(INT_W-1, INT_W-ASZ) = raw;
+    ap_fixed<INTERNAL_W,1> v = 0;
+    v.range(INTERNAL_W-1, INTERNAL_W-ASZ) = raw;
     return v;
 }
 
@@ -450,7 +456,7 @@ static void radix2p(hls::stream<par_data> &din,
 #pragma HLS PIPELINE II=1
 #pragma HLS LOOP_TRIPCOUNT min=8 max=SUB_SIZE
         par_data t = din.read();
-        typedef ap_fixed<INT_W+1, 2> wide_t;
+        typedef ap_fixed<INTERNAL_W+1, 2> wide_t;
         wide_t a = t.data0.real() + t.data1.real();
         wide_t b = t.data0.imag() + t.data1.imag();
         wide_t c = t.data0.real() - t.data1.real();
@@ -587,7 +593,7 @@ static void stage1_ssr4(hls::stream<par_data4> &din,
 #pragma HLS PIPELINE II=1
 #pragma HLS LOOP_TRIPCOUNT min=8 max=SUB_SIZE
         par_data4 t = din.read();
-        typedef ap_fixed<INT_W+1, 2> wide_t;
+        typedef ap_fixed<INTERNAL_W+1, 2> wide_t;
 
         wide_t a0r = t.data[0].real() + t.data[2].real();
         wide_t a0i = t.data[0].imag() + t.data[2].imag();
@@ -632,7 +638,7 @@ static void stage2_upper(hls::stream<par_data>  &din,
 #pragma HLS PIPELINE II=1
 #pragma HLS LOOP_TRIPCOUNT min=8 max=SUB_SIZE
         par_data t = din.read();
-        typedef ap_fixed<INT_W+1, 2> wide_t;
+        typedef ap_fixed<INTERNAL_W+1, 2> wide_t;
         wide_t f0r = t.data0.real() + t.data1.real();
         wide_t f0i = t.data0.imag() + t.data1.imag();
         wide_t  dr = t.data0.real() - t.data1.real();
@@ -657,7 +663,7 @@ static void stage2_lower(hls::stream<par_data>  &din,
 #pragma HLS PIPELINE II=1
 #pragma HLS LOOP_TRIPCOUNT min=8 max=SUB_SIZE
         par_data t = din.read();
-        typedef ap_fixed<INT_W+1, 2> wide_t;
+        typedef ap_fixed<INTERNAL_W+1, 2> wide_t;
         wide_t f1r = t.data0.real() + t.data1.real();
         wide_t f1i = t.data0.imag() + t.data1.imag();
         wide_t  dr = t.data0.real() - t.data1.real();
@@ -711,7 +717,7 @@ static void output_ssr4(hls::stream<cfixed_t>   &fft0_out,
 // pre-shift a±b can reach [-2,2) without overflow, then >>1 back into [-1,1).
 static inline void bfly8(cfixed_t a, cfixed_t b, cfixed_t &sum, cfixed_t &dif) {
 #pragma HLS INLINE
-    typedef ap_fixed<INT_W+1, 2> wide_t;
+    typedef ap_fixed<INTERNAL_W+1, 2> wide_t;
     wide_t sr = a.real() + b.real();
     wide_t si = a.imag() + b.imag();
     wide_t dr = a.real() - b.real();
