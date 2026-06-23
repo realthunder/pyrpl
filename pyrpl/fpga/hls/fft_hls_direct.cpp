@@ -80,9 +80,15 @@ typedef ap_axiu<OUT_WIDTH, 0, 0, 0> axis_out_t;
 // the butterflies/twiddles), NOT an integer-bit count. Wider = lower quantization
 // floor = more small-signal dynamic range, at a cost of FFT-core DSP/BRAM. Override
 // with -DINTERNAL_W (build knob FFT_INTERNAL_W). Default 16.
+// MUST be a multiple of 8: hls::fft byte-rounds the I/O datapath to ceil(W/8)*8 and
+// the cfixed_t array type must match it, so 16/24/32 are the only usable values — a
+// non-multiple (e.g. 20) fails to compile (no matching hls::fft overload) and would
+// round up to the next byte anyway (no BRAM saving vs the rounded width).
 #ifndef INTERNAL_W
 #define INTERNAL_W 16
 #endif
+static_assert(INTERNAL_W % 8 == 0,
+    "INTERNAL_W (FFT_INTERNAL_W) must be a multiple of 8 (hls::fft byte-rounds the datapath; use 16/24/32).");
 static const int TWID_W = 18;  // twiddle factor precision
 
 typedef std::complex<ap_fixed<INTERNAL_W, 1>>   cfixed_t;
