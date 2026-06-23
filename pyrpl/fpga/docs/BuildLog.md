@@ -18,15 +18,15 @@ Full rep-OFF place × phys_opt matrix, **re-swept after the nfft-constant refact
 (commit 091512d6 changed the netlist; the prior winner EarlyBlockPlacement regressed
 to −0.154, so DET was re-picked) — **6/21 close**, worst-slack:
 
-| place \ phys_opt | AggressiveExplore | Explore | AggressiveFanoutOpt |
-|---|---|---|---|
-| Explore | −0.113 | −0.113 | −0.138 |
-| ExtraNetDelay_high | −0.029 | −0.031 | −0.037 |
-| **ExtraNetDelay_low** | **+0.131** ✅ | +0.006 ✅ | −0.105 |
-| AltSpreadLogic_medium | +0.086 ✅ | +0.121 ✅ | +0.091 ✅ |
-| WLDrivenBlockPlacement | +0.103 ✅ | −0.037 | −0.035 |
-| EarlyBlockPlacement | −0.154 | −0.143 | −0.156 |
-| ExtraPostPlacementOpt | −0.125 | −0.061 | −0.039 |
+| place \ phys_opt       | AggressiveExplore | Explore   | AggressiveFanoutOpt |
+| ---------------------- | ----------------- | --------- | ------------------- |
+| Explore                | −0.113            | −0.113    | −0.138              |
+| ExtraNetDelay_high     | −0.029            | −0.031    | −0.037              |
+| **ExtraNetDelay_low**  | **+0.131** ✅     | +0.006 ✅ | −0.105              |
+| AltSpreadLogic_medium  | +0.086 ✅         | +0.121 ✅ | +0.091 ✅           |
+| WLDrivenBlockPlacement | +0.103 ✅         | −0.037    | −0.035              |
+| EarlyBlockPlacement    | −0.154            | −0.143    | −0.156              |
+| ExtraPostPlacementOpt  | −0.125            | −0.061    | −0.039              |
 
 **Winner: ExtraNetDelay_low × AggressiveExplore, rep OFF = adc +0.135, ser +0.131**
 (0 failing). `PROFILE=fft200ssr2` → DET=10. Archive:
@@ -48,15 +48,15 @@ Build: `PROFILE=fft178ssr4n11 ./make.sh` → DET=6 (EarlyBlockPlacement) + Explo
 Dropping N12→N11 halves the FFT data mem / reorder buffer, freeing the congestion
 that held N12 at −0.028. Full 7×3 place×phys_opt matrix (rep OFF) — **6/21 close**:
 
-| place \ phys_opt | AggressiveExplore | Explore | AggressiveFanoutOpt |
-|---|---|---|---|
-| Explore | −0.046 | +0.029 ✅ | −0.265 |
-| ExtraNetDelay_high | −0.086 | −0.080 | −0.140 |
-| ExtraNetDelay_low | −0.187 | +0.002 ✅ | −0.018 |
-| AltSpreadLogic_medium | −0.151 | −0.031 | −0.236 |
-| WLDrivenBlockPlacement | −0.013 | −0.061 | −0.109 |
-| **EarlyBlockPlacement** | +0.018 ✅ | **+0.037** ✅ | +0.029 ✅ |
-| ExtraPostPlacementOpt | −0.183 | −0.261 | −0.182 |
+| place \ phys_opt        | AggressiveExplore | Explore       | AggressiveFanoutOpt |
+| ----------------------- | ----------------- | ------------- | ------------------- |
+| Explore                 | −0.046            | +0.029 ✅     | −0.265              |
+| ExtraNetDelay_high      | −0.086            | −0.080        | −0.140              |
+| ExtraNetDelay_low       | −0.187            | +0.002 ✅     | −0.018              |
+| AltSpreadLogic_medium   | −0.151            | −0.031        | −0.236              |
+| WLDrivenBlockPlacement  | −0.013            | −0.061        | −0.109              |
+| **EarlyBlockPlacement** | +0.018 ✅         | **+0.037** ✅ | +0.029 ✅           |
+| ExtraPostPlacementOpt   | −0.183            | −0.261        | −0.182              |
 
 **Winner: EarlyBlockPlacement × Explore = +0.037** (adc +0.037, ser +0.130, all dac +).
 The whole EarlyBlockPlacement row closes (robust). Archive:
@@ -80,10 +80,10 @@ Resources (whole design): **LUT 68% (36381) · FF 44% · BRAM ~61% · DSP 77% (1
 NB the HLS per-IP csynth LUT *estimate* was 120% — Vivado mapping brought it to 68%;
 trust post-route, not the HLS estimate.
 
-| FFT clock | adc WNS | ser WNS | hold | closes | archive (`out.d/`) |
-|---|---|---|---|---|---|
-| **178.571 MHz** | **+0.097** | **+0.123** | + | ✓ **best** | **fft178ssr8n11-closed** |
-| 200 MHz | best a−0.026 | best s−0.217 | + | ✗ **0/24** | (not archived) |
+| FFT clock       | adc WNS      | ser WNS      | hold | closes     | archive (`out.d/`)       |
+| --------------- | ------------ | ------------ | ---- | ---------- | ------------------------ |
+| **178.571 MHz** | **+0.097**   | **+0.123**   | +    | ✓ **best** | **fft178ssr8n11-closed** |
+| 200 MHz         | best a−0.026 | best s−0.217 | +    | ✗ **0/24** | (not archived)           |
 
  ~2× the SSR=4/178 point rate (8 samples/clk @ 178 = 1.43 Gsps intake). 200 MHz does
 NOT close — full rep-OFF place×phys_opt sweep (8 place × 3 phys_opt) **0/24 cells**, ser
@@ -104,24 +104,24 @@ congestion-bound at 98% DSP. No place/phys_opt combo found closes it.
 
 Placement-directive sweep (phys_opt = AggressiveExplore default) — **0/6 close**:
 
-| DET | place directive | adc | ser | worst |
-|---|---|---|---|---|
-| 1 | Explore | −0.344 | +0.013 | −0.344 |
-| 2 | ExtraNetDelay_high | −0.271 | −0.065 | −0.271 |
-| 3 | AltSpreadLogic_high | −0.796 | +0.074 | −0.796 |
-| 4 | WLDrivenBlockPlacement | −0.273 | −0.028 | −0.273 |
-| 5 | ExtraPostPlacementOpt | −0.174 | −0.191 | −0.191 |
-| 6 | EarlyBlockPlacement | **−0.140** | +0.072 | **−0.140** (best of sweep) |
+| DET | place directive        | adc        | ser    | worst                      |
+| --- | ---------------------- | ---------- | ------ | -------------------------- |
+| 1   | Explore                | −0.344     | +0.013 | −0.344                     |
+| 2   | ExtraNetDelay_high     | −0.271     | −0.065 | −0.271                     |
+| 3   | AltSpreadLogic_high    | −0.796     | +0.074 | −0.796                     |
+| 4   | WLDrivenBlockPlacement | −0.273     | −0.028 | −0.273                     |
+| 5   | ExtraPostPlacementOpt  | −0.174     | −0.191 | −0.191                     |
+| 6   | EarlyBlockPlacement    | **−0.140** | +0.072 | **−0.140** (best of sweep) |
 
 phys_opt sweep on the best place (DET=6 EarlyBlockPlacement), via `PHYS_OPT=`:
 
-| phys_opt directive | adc | ser | worst |
-|---|---|---|---|
-| **Explore** | **−0.099** | +0.002 | **−0.099** ← best overall |
-| AggressiveExplore (default) | −0.140 | +0.072 | −0.140 |
-| none (skipped) | −0.306 | −0.158 | −0.306 |
-| AggressiveFanoutOpt | −0.319 | −0.022 | −0.319 |
-| AlternateReplication | −0.319 | −0.022 | −0.319 |
+| phys_opt directive          | adc        | ser    | worst                     |
+| --------------------------- | ---------- | ------ | ------------------------- |
+| **Explore**                 | **−0.099** | +0.002 | **−0.099** ← best overall |
+| AggressiveExplore (default) | −0.140     | +0.072 | −0.140                    |
+| none (skipped)              | −0.306     | −0.158 | −0.306                    |
+| AggressiveFanoutOpt         | −0.319     | −0.022 | −0.319                    |
+| AlternateReplication        | −0.319     | −0.022 | −0.319                    |
 
 place=`ExtraTimingOpt` (DET=9): + Explore −0.579, + AggressiveFanoutOpt −0.568 — worse.
 
@@ -130,15 +130,15 @@ replication **helps** adc even on the full die (`SUM1_REPLICATE` knob; keep it o
 
 place × phys_opt matrix (7 place × 3 phys_opt, **SUM1_REPLICATE=0**), worst-slack:
 
-| place \ phys_opt | AggressiveExplore | Explore | AggressiveFanoutOpt |
-|---|---|---|---|
-| Explore | −0.174 | −0.163 | −0.314 |
-| ExtraNetDelay_high | −0.288 | −0.125 | −0.156 |
-| ExtraNetDelay_low | −0.105 | −0.265 | −0.379 |
-| **AltSpreadLogic_medium** | −0.207 | −0.049 | **−0.028** ⭐ |
-| WLDrivenBlockPlacement | −0.196 | −0.452 | −0.433 |
-| EarlyBlockPlacement | −0.246 | −0.177 | −0.232 |
-| ExtraPostPlacementOpt | −0.180 (adc −0.041) | −0.286 | −0.194 |
+| place \ phys_opt          | AggressiveExplore   | Explore | AggressiveFanoutOpt |
+| ------------------------- | ------------------- | ------- | ------------------- |
+| Explore                   | −0.174              | −0.163  | −0.314              |
+| ExtraNetDelay_high        | −0.288              | −0.125  | −0.156              |
+| ExtraNetDelay_low         | −0.105              | −0.265  | −0.379              |
+| **AltSpreadLogic_medium** | −0.207              | −0.049  | **−0.028** ⭐       |
+| WLDrivenBlockPlacement    | −0.196              | −0.452  | −0.433              |
+| EarlyBlockPlacement       | −0.246              | −0.177  | −0.232              |
+| ExtraPostPlacementOpt     | −0.180 (adc −0.041) | −0.286  | −0.194              |
 
 Best = **AltSpreadLogic_medium × AggressiveFanoutOpt = −0.028** (adc −0.028, ser +0.012),
 rep OFF — the *medium* spread relieves adc congestion without starving the FFT (where
@@ -171,18 +171,18 @@ Archives: `out.d/sweep-ssr4n12-178-det*`.
 
 ## Other attempts (not closed / rejected)
 
-| Config | place | adc WNS | ser WNS | Result |
-|---|---|---|---|---|
-| SSR=2 · N13 · 200 MHz | multithread (Default) | −0.047 | −0.114 | near miss; closed later via directive sweep |
-| SSR=2 · N13 · 200 MHz · **runtime-nfft ON** | multithread | −0.024 | **−0.419** | ser broken: variable reorder-loop bounds defeat const-folding (700 endpoints) |
-| SSR=4 · N12 · 200 MHz | multithread | −0.157 | −0.281 | not closed; SSR=4 reorder needs ~5.4 ns |
+| Config                                      | place                 | adc WNS | ser WNS    | Result                                                                        |
+| ------------------------------------------- | --------------------- | ------- | ---------- | ----------------------------------------------------------------------------- |
+| SSR=2 · N13 · 200 MHz                       | multithread (Default) | −0.047  | −0.114     | near miss; closed later via directive sweep                                   |
+| SSR=2 · N13 · 200 MHz · **runtime-nfft ON** | multithread           | −0.024  | **−0.419** | ser broken: variable reorder-loop bounds defeat const-folding (700 endpoints) |
+| SSR=4 · N12 · 200 MHz                       | multithread           | −0.157  | −0.281     | not closed; SSR=4 reorder needs ~5.4 ns                                       |
 
 ---
 
 ## Shipping default (reference)
 
-| Config | place | adc WNS | ser WNS | LUT | FF | BRAM | DSP |
-|---|---|---|---|---|---|---|---|
-| SSR=4 · N12 · 125 MHz (`FFT_CLK_SEL=0`) | multithread | ~−0.08…−0.002 | +1.845 | 78% | 50% | 91% | 98% |
+| Config                                  | place       | adc WNS       | ser WNS | LUT | FF  | BRAM | DSP |
+| --------------------------------------- | ----------- | ------------- | ------- | --- | --- | ---- | --- |
+| SSR=4 · N12 · 125 MHz (`FFT_CLK_SEL=0`) | multithread | ~−0.08…−0.002 | +1.845  | 78% | 50% | 91%  | 98% |
 
 Built with a plain `./make.sh`. Archive: `out.d/2025.2-default-ssr4-125mhz-adc0.002`.

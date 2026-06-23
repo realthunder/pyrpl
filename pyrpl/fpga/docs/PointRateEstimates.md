@@ -14,12 +14,12 @@ clock). Single ADC channel = **125 Msps**, fixed. FFT is `FFT_IMPL=5` (direct
 
 Two regimes per frame, then ÷2 for up+down:
 
-| Quantity | Formula |
-|---|---|
-| FFT intake capacity | `SSR · f_fft` |
-| FFT-throughput ceiling (points/s) | `SSR·f_fft / (2N)` — short padded ramp, FFT-pipeline-bound |
-| Acquisition-bound (points/s) | `f_adc / (2N)` = `62.5e6 / N` — full-length ramp, ADC-bound |
-| "Short" threshold (ramp ≤ this × N real samples) | `f_adc / (SSR·f_fft)` |
+| Quantity                                         | Formula                                                     |
+| ------------------------------------------------ | ----------------------------------------------------------- |
+| FFT intake capacity                              | `SSR · f_fft`                                               |
+| FFT-throughput ceiling (points/s)                | `SSR·f_fft / (2N)` — short padded ramp, FFT-pipeline-bound  |
+| Acquisition-bound (points/s)                     | `f_adc / (2N)` = `62.5e6 / N` — full-length ramp, ADC-bound |
+| "Short" threshold (ramp ≤ this × N real samples) | `f_adc / (SSR·f_fft)`                                       |
 
 The **acquisition-bound** rate depends only on the ADC and N — it is **identical for
 every FFT clock / SSR choice**. The FFT clock/SSR only raise the FFT-throughput
@@ -31,12 +31,12 @@ A ramp is "short" (FFT-bound) when its real samples fill ≤ this % of the FFT w
 equivalently, when the ramp lasts less than the FFT takes to process one frame
 (`T_ramp < N/(SSR·f_fft)`). Below it → FFT-bound (max rate); above → ADC-bound.
 
-| Config | Intake (SSR·f_fft) | Short threshold |
-|---|---|---|
-| SSR=4 / 125 MHz | 500 Msps | 25.0 % |
-| SSR=2 / 200 MHz | 400 Msps | 31.25 % |
-| SSR=4 / 178 MHz | 712 Msps | 17.6 % |
-| SSR=4 / 200 MHz | 800 Msps | 15.6 % |
+| Config          | Intake (SSR·f_fft) | Short threshold |
+| --------------- | ------------------ | --------------- |
+| SSR=4 / 125 MHz | 500 Msps           | 25.0 %          |
+| SSR=2 / 200 MHz | 400 Msps           | 31.25 %         |
+| SSR=4 / 178 MHz | 712 Msps           | 17.6 %          |
+| SSR=4 / 200 MHz | 800 Msps           | 15.6 %          |
 
 (Faster FFT ⇒ *lower* threshold: a faster pipeline raises the ceiling but needs
 proportionally shorter / more-padded ramps to actually reach it.)
@@ -44,31 +44,31 @@ proportionally shorter / more-padded ramps to actually reach it.)
 ## Point rates (per channel, 2 FFT/point)
 
 ### SSR=2 / 200 MHz  (intake 400 Msps, short = 31.25 %)
-| NFFT | N | FFT-bound pts/s | Acq-bound pts/s (full ramp) |
-|---|---|---|---|
-| 13 | 8192 | 24.4 k | 7.6 k |
-| 12 | 4096 | 48.8 k | 15.3 k |
-| 11 | 2048 | 97.7 k | 30.5 k |
+| NFFT | N    | FFT-bound pts/s | Acq-bound pts/s (full ramp) |
+| ---- | ---- | --------------- | --------------------------- |
+| 13   | 8192 | 24.4 k          | 7.6 k                       |
+| 12   | 4096 | 48.8 k          | 15.3 k                      |
+| 11   | 2048 | 97.7 k          | 30.5 k                      |
 
 ### SSR=4 / 178 MHz  (intake 712 Msps, short = 17.6 %)
-| NFFT | N | FFT-bound pts/s | Acq-bound pts/s (full ramp) |
-|---|---|---|---|
-| 12 | 4096 | 86.9 k | 15.3 k |
-| 11 | 2048 | 173.8 k | 30.5 k |
+| NFFT | N    | FFT-bound pts/s | Acq-bound pts/s (full ramp) |
+| ---- | ---- | --------------- | --------------------------- |
+| 12   | 4096 | 86.9 k          | 15.3 k                      |
+| 11   | 2048 | 173.8 k         | 30.5 k                      |
 
 ### SSR=4 / 125 MHz  (intake 500 Msps, short = 25.0 %; ships today)
-| NFFT | N | FFT-bound pts/s | Acq-bound pts/s (full ramp) |
-|---|---|---|---|
-| 12 | 4096 | 61.0 k | 15.3 k |
-| 11 | 2048 | 122.1 k | 30.5 k |
+| NFFT | N    | FFT-bound pts/s | Acq-bound pts/s (full ramp) |
+| ---- | ---- | --------------- | --------------------------- |
+| 12   | 4096 | 61.0 k          | 15.3 k                      |
+| 11   | 2048 | 122.1 k         | 30.5 k                      |
 
 ## FFT-bound ceiling comparison (with 10 % derate for per-frame bubbles)
 
-| Config | Intake | N=12 pts/s | N=12 −10 % | N=11 pts/s | N=11 −10 % |
-|---|---|---|---|---|---|
-| SSR=4 / 125 MHz (ships) | 500 Msps | 61.0 k | 54.9 k | 122.1 k | 109.9 k |
-| SSR=2 / 200 MHz | 400 Msps | 48.8 k | 43.9 k | 97.7 k | 87.9 k |
-| SSR=4 / 178 MHz | 712 Msps | 86.9 k | 78.2 k | 173.8 k | 156.4 k |
+| Config                  | Intake   | N=12 pts/s | N=12 −10 % | N=11 pts/s | N=11 −10 % |
+| ----------------------- | -------- | ---------- | ---------- | ---------- | ---------- |
+| SSR=4 / 125 MHz (ships) | 500 Msps | 61.0 k     | 54.9 k     | 122.1 k    | 109.9 k    |
+| SSR=2 / 200 MHz         | 400 Msps | 48.8 k     | 43.9 k     | 97.7 k     | 87.9 k     |
+| SSR=4 / 178 MHz         | 712 Msps | 86.9 k     | 78.2 k     | 173.8 k    | 156.4 k    |
 
 Each NFFT step down doubles both rates (half the samples per frame). The FFT-bound
 ceiling scales with `SSR·f_fft`; e.g. SSR=4/125 (500 Msps) already beats SSR=2/200
@@ -82,12 +82,12 @@ ceiling scales with `SSR·f_fft`; e.g. SSR=4/125 (500 Msps) already beats SSR=2/
 `scope.fft_parallel` (reg `0x0[4]`) is a **runtime** mode bit, not a build knob — it
 re-tasks the two existing FFT engines instead of changing the FFT architecture:
 
-| | `fft_parallel=0` (sequential, the model above) | `fft_parallel=1` (parallel) |
-|---|---|---|
-| fft_a | adc_A, **up + down** ramps (2 frames) | adc_A, **up ramp only** (1 frame) |
-| fft_b | adc_B, **up + down** ramps (2 frames) | **adc_A**, **down ramp only** (1 frame) |
-| frames streamed / point / engine | **2N** (`fft_length2=2N`) | **N** (`fft_length2=N`) |
-| ADC channels | 2 independent | **1** (both engines on adc_A) |
+|                                  | `fft_parallel=0` (sequential, the model above) | `fft_parallel=1` (parallel)             |
+| -------------------------------- | ---------------------------------------------- | --------------------------------------- |
+| fft_a                            | adc_A, **up + down** ramps (2 frames)          | adc_A, **up ramp only** (1 frame)       |
+| fft_b                            | adc_B, **up + down** ramps (2 frames)          | **adc_A**, **down ramp only** (1 frame) |
+| frames streamed / point / engine | **2N** (`fft_length2=2N`)                      | **N** (`fft_length2=N`)                 |
+| ADC channels                     | 2 independent                                  | **1** (both engines on adc_A)           |
 
 Why it doubles the ceiling: in sequential mode one engine must stream the up-frame
 **and** the down-frame back-to-back — **2N** beats/point. The frame is the full padded
@@ -96,10 +96,10 @@ beats regardless of how few are real ADC samples). In parallel mode fft_a stream
 up-frame (N) while fft_b streams the down-frame (N) **concurrently**, so the per-point
 FFT-pipeline cost is **N**, not 2N:
 
-| Regime | Sequential | Parallel | Gain |
-|---|---|---|---|
-| FFT-bound (short/padded ramp) | `SSR·f_fft / (2N)` | `SSR·f_fft / N` | **2×** |
-| Acquisition-bound (full ramp) | `f_adc / (2N)` | `f_adc / (2N)` | **1× (none)** |
+| Regime                        | Sequential         | Parallel        | Gain          |
+| ----------------------------- | ------------------ | --------------- | ------------- |
+| FFT-bound (short/padded ramp) | `SSR·f_fft / (2N)` | `SSR·f_fft / N` | **2×**        |
+| Acquisition-bound (full ramp) | `f_adc / (2N)`     | `f_adc / (2N)`  | **1× (none)** |
 
 The acq floor is **unchanged**: in parallel mode both engines still pull real samples
 from the **single adc_A stream**, and the up-ramp and down-ramp samples physically
@@ -119,15 +119,15 @@ SSR ∈ {1,2,4}. **SSR=8 does NOT support it** (fft_b is dropped to fit — see 
 FFT-bound column = `SSR·f_fft/N` (already the 2× value); acq floor = `62.5e6/N`,
 config-independent. `−10%` = 10 % derate for per-frame bubbles.
 
-| Config (SSR / FFT clk) | Intake | NFFT | N | FFT-bound pts/s | −10 % | Acq floor (full ramp) | Closes? |
-|---|---|---|---|---|---|---|---|
-| SSR=4 / 125 MHz (ships) | 500 Msps | 12 | 4096 | 122.1 k | 109.9 k | 15.3 k | ✅ |
-| SSR=4 / 125 MHz (ships) | 500 Msps | 11 | 2048 | 244.1 k | 219.7 k | 30.5 k | ✅ |
-| SSR=4 / 178.571 MHz | 712 Msps | 12 | 4096 | 173.8 k | 156.4 k | 15.3 k | ❌ (N12 congestion) |
-| SSR=4 / 178.571 MHz | 712 Msps | 11 | 2048 | 347.7 k | 312.9 k | 30.5 k | ✅ (`fft178ssr4n11`) |
-| SSR=2 / 200 MHz | 400 Msps | 13 | 8192 | 48.8 k | 43.9 k | 7.6 k | ✅ (`fft200ssr2`) |
-| SSR=2 / 200 MHz | 400 Msps | 12 | 4096 | 97.7 k | 87.9 k | 15.3 k | ✅ |
-| SSR=2 / 200 MHz | 400 Msps | 11 | 2048 | 195.3 k | 175.8 k | 30.5 k | ✅ |
+| Config (SSR / FFT clk)  | Intake   | NFFT | N    | FFT-bound pts/s | −10 %   | Acq floor (full ramp) | Closes?              |
+| ----------------------- | -------- | ---- | ---- | --------------- | ------- | --------------------- | -------------------- |
+| SSR=4 / 125 MHz (ships) | 500 Msps | 12   | 4096 | 122.1 k         | 109.9 k | 15.3 k                | ✅                   |
+| SSR=4 / 125 MHz (ships) | 500 Msps | 11   | 2048 | 244.1 k         | 219.7 k | 30.5 k                | ✅                   |
+| SSR=4 / 178.571 MHz     | 712 Msps | 12   | 4096 | 173.8 k         | 156.4 k | 15.3 k                | ❌ (N12 congestion)  |
+| SSR=4 / 178.571 MHz     | 712 Msps | 11   | 2048 | 347.7 k         | 312.9 k | 30.5 k                | ✅ (`fft178ssr4n11`) |
+| SSR=2 / 200 MHz         | 400 Msps | 13   | 8192 | 48.8 k          | 43.9 k  | 7.6 k                 | ✅ (`fft200ssr2`)    |
+| SSR=2 / 200 MHz         | 400 Msps | 12   | 4096 | 97.7 k          | 87.9 k  | 15.3 k                | ✅                   |
+| SSR=2 / 200 MHz         | 400 Msps | 11   | 2048 | 195.3 k         | 175.8 k | 30.5 k                | ✅                   |
 
 These FFT-bound rates are **2× the sequential figures** in the tables above. To actually
 reach them you must be below the config's short threshold (SSR=4/125 → 25 %, SSR=4/178 →
@@ -160,11 +160,11 @@ that build drops fft_b, so for SSR=8 the sequential 2-frame/point model is the o
 
 Intake = SSR·f_fft = 8·f_fft. FFT-bound pts/s = `8·f_fft/(2N)` = `f_fft/512` (N=2048).
 
-| FFT clock | Intake | FFT-bound pts/s | −10% | Short threshold | Acq-bound (full ramp) |
-|---|---|---|---|---|---|
-| 125 MHz | 1000 Msps | 244.1 k | 219.7 k | 12.5 % | 30.5 k |
-| **178.571 MHz** (built) | 1429 Msps | 348.8 k | **313.9 k** | 8.75 % | 30.5 k |
-| 200 MHz | 1600 Msps | 390.6 k | 351.6 k | 7.81 % | 30.5 k |
+| FFT clock               | Intake    | FFT-bound pts/s | −10%        | Short threshold | Acq-bound (full ramp) |
+| ----------------------- | --------- | --------------- | ----------- | --------------- | --------------------- |
+| 125 MHz                 | 1000 Msps | 244.1 k         | 219.7 k     | 12.5 %          | 30.5 k                |
+| **178.571 MHz** (built) | 1429 Msps | 348.8 k         | **313.9 k** | 8.75 %          | 30.5 k                |
+| 200 MHz                 | 1600 Msps | 390.6 k         | 351.6 k     | 7.81 %          | 30.5 k                |
 
 **Status: REAL — closes at 178.571 MHz** (adc +0.097, ser +0.123, 0 fail; LUT 68% /
 DSP 77% / BRAM 61%; csim PASS — see `BuildLog.md`). Built via the `FFT_SINGLE=1` knob
@@ -205,15 +205,15 @@ restart overhead `24·SSR / (N + 24·SSR)`. So the realistic **parallel** point-
 is the detector frame capacity below (slightly under the `SSR·f_fft/N` figures in the
 fft_parallel table):
 
-| Config (SSR / FFT clk) | NFFT | cyc/frame (N/SSR+24) | Detector cap = parallel pts/s | Restart derate | Sequential pts/s (½) |
-|---|---|---|---|---|---|
-| SSR=4 / 125 MHz (ships) | 12 | 1048 | 119.3 k | −2.3 % | 59.6 k |
-| SSR=4 / 125 MHz (ships) | 11 | 536 | 233.2 k | −4.5 % | 116.6 k |
-| SSR=4 / 178.571 MHz | 12 | 1048 | 170.4 k | −2.3 % | 85.2 k |
-| SSR=4 / 178.571 MHz | 11 | 536 | 333.2 k | −4.5 % | 166.6 k |
-| SSR=2 / 200 MHz | 13 | 4120 | 48.5 k | −0.6 % | 24.3 k |
-| SSR=2 / 200 MHz | 12 | 2072 | 96.5 k | −1.2 % | 48.3 k |
-| SSR=2 / 200 MHz | 11 | 1048 | 190.8 k | −2.3 % | 95.4 k |
+| Config (SSR / FFT clk)  | NFFT | cyc/frame (N/SSR+24) | Detector cap = parallel pts/s | Restart derate | Sequential pts/s (½) |
+| ----------------------- | ---- | -------------------- | ----------------------------- | -------------- | -------------------- |
+| SSR=4 / 125 MHz (ships) | 12   | 1048                 | 119.3 k                       | −2.3 %         | 59.6 k               |
+| SSR=4 / 125 MHz (ships) | 11   | 536                  | 233.2 k                       | −4.5 %         | 116.6 k              |
+| SSR=4 / 178.571 MHz     | 12   | 1048                 | 170.4 k                       | −2.3 %         | 85.2 k               |
+| SSR=4 / 178.571 MHz     | 11   | 536                  | 333.2 k                       | −4.5 %         | 166.6 k              |
+| SSR=2 / 200 MHz         | 13   | 4120                 | 48.5 k                        | −0.6 %         | 24.3 k               |
+| SSR=2 / 200 MHz         | 12   | 2072                 | 96.5 k                        | −1.2 %         | 48.3 k               |
+| SSR=2 / 200 MHz         | 11   | 1048                 | 190.8 k                       | −2.3 %         | 95.4 k               |
 
 Takeaways:
 - **The detector keeps up in parallel mode** at every dual-channel config — it caps the
