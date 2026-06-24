@@ -36,6 +36,16 @@ set mult_lut_flag  [expr {$fft_mult_lut ? "-DFFT_MULT_LUT" : ""}]
 # shipping fixed-length build keeps its smaller footprint and adc/dac timing.
 set fft_runtime    [getparam fft_runtime_nfft 0]
 set runtime_flag   [expr {$fft_runtime ? "-DFFT_RUNTIME_NFFT" : ""}]
+# FFT_USE_APPROX=1 (default): fast alpha-max-beta-min magnitude. =0: CORDIC vectoring.
+set fft_use_approx [getparam fft_use_approx 1]
+set approx_flag    [expr {$fft_use_approx ? "-DUSE_APPROXIMATION" : ""}]
+# FFT_UNSCALED=1: run the hls::fft sub-cores unscaled (no per-stage /2; output grows
+# by SUB_NFFT bits -> more small-signal dynamic range). Default 0 = scaled.
+set fft_unscaled   [getparam fft_unscaled 0]
+set unscaled_flag  [expr {$fft_unscaled ? "-DFFT_UNSCALED" : ""}]
+# FFT_CORDIC_ITER: CORDIC magnitude iterations (default 10). Fewer = smaller/less
+# accurate. Only used when FFT_USE_APPROX=0.
+set fft_cordic_iter [getparam fft_cordic_iter 10]
 
 # ---- Generate twiddle LUT if not present (shared with FFT_IMPL=3) ----------
 set hls_dir [file normalize [file dirname [info script]]]
@@ -85,7 +95,10 @@ add_files ../hls/fft_hls_direct.cpp \
              -DDSZ=$fft_width \
              -DINTERNAL_W=$fft_internal_w \
              $mult_lut_flag \
-             $runtime_flag"
+             $runtime_flag \
+             $approx_flag \
+             $unscaled_flag \
+             -DCORDIC_ITER=$fft_cordic_iter"
 
 set_top fft_hls_direct
 

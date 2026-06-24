@@ -89,11 +89,35 @@ typedef ap_axiu<OUT_WIDTH, 0, 0, 0> axis_out_t;
 #endif
 static_assert(INTERNAL_W % 8 == 0,
     "INTERNAL_W (FFT_INTERNAL_W) must be a multiple of 8 (hls::fft byte-rounds the datapath; use 16/24/32).");
+// CORDIC vectoring-mode magnitude iterations (used unless USE_APPROXIMATION is set).
+// Build knob FFT_CORDIC_ITER (default 10): fewer iterations = smaller pipeline (less
+// FF/LUT) at lower magnitude accuracy (~iter bits). 10 is ample for peak detection;
+// 16 = full precision but ~1.6x the CORDIC area. Below ~5 the approx is better.
+#ifndef CORDIC_ITER
+#define CORDIC_ITER 10
+#endif
 static const int TWID_W = 18;  // twiddle factor precision
 
 typedef std::complex<ap_fixed<INTERNAL_W, 1>>   cfixed_t;
 typedef std::complex<ap_fixed<TWID_W, 2>> cfixed_twid_t;
 typedef ap_fixed<INTERNAL_W + TWID_W + 1, 4>   fixed_mul_t;  // scalar multiply accumulator
+
+// Sub-FFT output sample type. hls::fft byte-rounds the datapath and fixes the xn/xk
+// element types: input = ap_fixed<byteround(input_width),1>, output =
+// ap_fixed<byteround(output_width), byteround(output_width)-input_width+1> (see the
+// 1-channel fixed-point overload in hls_fft.h). cfixed_out_t MUST match that exactly.
+//   scaled:   output_width = INTERNAL_W           -> OUT_W = INTERNAL_W, OUT_I = 1
+//             (identical to cfixed_t; existing scaled datapath unchanged).
+//   unscaled: output_width = byteround(INTERNAL_W + SUB_NFFT + 1) (the hls::fft golden
+//             value; grows over the N/SSR sub-transform); OUT_I integer, INTERNAL_W-1 frac.
+#ifdef FFT_UNSCALED
+static const int OUT_W = (((INTERNAL_W + SUB_NFFT + 1) + 7) / 8) * 8;
+#else
+static const int OUT_W = (((INTERNAL_W) + 7) / 8) * 8;
+#endif
+static const int OUT_I = OUT_W - INTERNAL_W + 1;
+typedef ap_fixed<OUT_W, OUT_I>     fixed_out_t;
+typedef std::complex<fixed_out_t>  cfixed_out_t;
 
 // ============================================================
 // LogiCORE FFT configuration
@@ -150,7 +174,15 @@ struct fft_params_t : hls::ip_fft::params_t {
     static const unsigned ordering_opt       = hls::ip_fft::bit_reversed_order;
     static const unsigned max_nfft           = SUB_NFFT;
     static const unsigned input_width        = INTERNAL_W;
+#ifdef FFT_UNSCALED
+    // Unscaled: no per-stage /2; hls::fft requires output_width =
+    // byteround(input_width + max_nfft + 1) == OUT_W (see hls_fft.h golden check).
+    static const unsigned scaling_opt        = hls::ip_fft::unscaled;
+    static const unsigned output_width       = OUT_W;
+#else
+    static const unsigned scaling_opt        = hls::ip_fft::scaled;
     static const unsigned output_width       = INTERNAL_W;
+#endif
     static const unsigned status_width       = 8;
 #ifdef FFT_RUNTIME_NFFT
     // Run-time configurable transform length (build knob FFT_RUNTIME_NFFT): the
@@ -161,11 +193,21 @@ struct fft_params_t : hls::ip_fft::params_t {
     // xfft. Costs ~2700 LUTs vs the fixed-length build, so it is opt-in.
     static const bool     has_nfft           = true;
     // config word = NFFT field (low 8 bits, padded) + per-stage scaling schedule
-    // (2 bits/stage) + 1 direction bit, byte-rounded. The +8 is the NFFT field.
+    // (2 bits/stage, scaled only) + 1 direction bit, byte-rounded. The +8 is the
+    // NFFT field. Unscaled has no scaling schedule, so those 2*ceil/2 bits drop out
+    // (else checkConfig errors: the wrapper only counts schedule bits when scaled).
+  #ifdef FFT_UNSCALED
+    static const unsigned config_width       = ((1+8+7)/8)*8;
+  #else
     static const unsigned config_width       = ((2*((SUB_NFFT+1)/2)+1+8+7)/8)*8;
+  #endif
 #else
     // Fixed-length: NFFT baked in at max_nfft, no config NFFT field.
+  #ifdef FFT_UNSCALED
+    static const unsigned config_width       = ((1+7)/8)*8;
+  #else
     static const unsigned config_width       = ((2*((SUB_NFFT+1)/2)+1+7)/8)*8;
+  #endif
 #endif
     static const unsigned phase_factor_width = TWID_W;
     static const unsigned stages_block_ram   = (SUB_NFFT < 10) ? 0 : SUB_NFFT - 9;
@@ -288,23 +330,68 @@ static inline cfixed_twid_t w8_3() {
 }
 #endif
 
-// Alpha-max-beta-min magnitude: |z| ≈ max(|re|,|im|) + 3/8·min(|re|,|im|)
-// Maps [0,~1.5) input to a DSZ-bit unsigned integer with 2 integer bits.
-static inline ap_uint<DSZ> magnitude(cfixed_t v) {
+// CORDIC vectoring-mode magnitude (default; ported from fft_ssr_native.cpp). Selected
+// unless USE_APPROXIMATION is defined, in which case the alpha-max-beta-min
+// approximation below is used. Operates on the sub-FFT output component fixed_out_t
+// (widened in unscaled mode). cord_t carries +2 integer bits of CORDIC growth headroom
+// and +14 fractional bits for <0.02% gain precision.
+#ifndef USE_APPROXIMATION
+// +2 integer bits of CORDIC growth headroom, +8 fractional bits below the input LSB
+// for iteration/gain precision (ample for CORDIC_ITER<=~12; keeps the magnitude's
+// INTERNAL_W-1 fractional accuracy). Narrower than IMPL=4's +14 to save pipeline FF.
+typedef ap_fixed<OUT_W + 8, OUT_I + 2> cord_t;
+static cord_t cordic_magnitude_raw(fixed_out_t re_in, fixed_out_t im_in) {
 #pragma HLS INLINE
-    typedef ap_fixed<INTERNAL_W+1, 2> wider_t;
+    cord_t x = (re_in < 0) ? cord_t(-re_in) : cord_t(re_in);
+    cord_t y = (im_in < 0) ? cord_t(-im_in) : cord_t(im_in);
+    const cord_t cordic_gain = 0.607252935;
+    for (int i = 0; i < CORDIC_ITER; i++) {
+#pragma HLS PIPELINE II=1
+        cord_t xs = x >> i;
+        cord_t ys = y >> i;
+        if (y > 0) { x = x + ys; y = y - xs; }
+        else       { x = x - ys; y = y + xs; }
+    }
+    return x * cordic_gain;
+}
+#endif
+
+// Magnitude of a sub-FFT output sample -> DSZ-bit unsigned.
+//   scaled  : input in [-1,1), |z| in [0,~1.5) -> DSZ-bit fixed with 2 integer bits
+//             (unchanged from the original scaled build).
+//   unscaled: |z| spans [0,~1.5*2^SUB_NFFT); narrow to DSZ by keeping the low bits
+//             (LSB = 2^-(INTERNAL_W-1)) and saturating the top — the FFT_SCALED=2
+//             "saturating" convention, matching IMPL=4's magnitude() guard.
+static inline ap_uint<DSZ> magnitude(cfixed_out_t v) {
+#pragma HLS INLINE
+#ifdef USE_APPROXIMATION
+    // Alpha-max-beta-min: |z| ≈ max(|re|,|im|) + 3/8·min(|re|,|im|)
+    typedef ap_fixed<OUT_W + 1, OUT_I + 1> wider_t;
     wider_t re = v.real() < 0 ? (wider_t)(-v.real()) : (wider_t)v.real();
     wider_t im = v.imag() < 0 ? (wider_t)(-v.imag()) : (wider_t)v.imag();
     wider_t mx = (re > im) ? re : im;
     wider_t mn = (re > im) ? im : re;
     // Register the min-approximation add (latency=1) to split the CARRY4 chain
-    // (compare -> add -> add -> cast) that otherwise binds pll_ser_clk. Same fix
-    // as fft_ip_ssr.cpp's magnitude (there it recovered ser from -0.720).
+    // (compare -> add -> add -> cast) that otherwise binds pll_ser_clk.
     wider_t mn_approx = (mn >> 2) + (mn >> 3);
 #pragma HLS BIND_OP variable=mn_approx op=add latency=1
     wider_t mag = mx + mn_approx;
+#else
+    cord_t mag = cordic_magnitude_raw(v.real(), v.imag());
+#endif
+
+#ifdef FFT_UNSCALED
+    // Saturating narrow: reinterpret |z|'s bit pattern as an unsigned integer
+    // (value scaled by 2^(INTERNAL_W-1), i.e. OUT_W-OUT_I = INTERNAL_W-1 frac bits),
+    // keep the low DSZ bits, saturate above. == IMPL=4 magnitude() guard.
+    const int MAGBITS = OUT_W + 2;
+    ap_ufixed<MAGBITS, OUT_I + 2> umag = mag;
+    ap_uint<MAGBITS> bits = umag.range(MAGBITS - 1, 0);
+    return (bits >> DSZ) ? ap_uint<DSZ>(-1) : ap_uint<DSZ>(bits);
+#else
     ap_ufixed<DSZ, 2> out = mag;
     return out.range(DSZ-1, 0);
+#endif
 }
 
 // Convert a raw signed ASZ-bit ADC sample to the internal ap_fixed<INTERNAL_W,1> value
@@ -337,10 +424,15 @@ static void fft_feed(hls::stream<cfixed_t> &in,
     cfg->setDir(1);
 #ifdef FFT_RUNTIME_NFFT
     cfg->setNfft(sub_nfft);
+  #ifndef FFT_UNSCALED
+    // Unscaled has no per-stage schedule; setSch()->checkSch() errors unless scaled.
     cfg->setSch(SCALE_SCHED_LUT.v[sub_nfft]);
+  #endif
 #else
     (void)sub_nfft;
+  #ifndef FFT_UNSCALED
     cfg->setSch(SCALE_SCHED);
+  #endif
 #endif
     for (int i = 0; i < RT_N(sub_size, SUB_SIZE); i++) {
 #pragma HLS PIPELINE II=1
@@ -349,8 +441,8 @@ static void fft_feed(hls::stream<cfixed_t> &in,
     }
 }
 
-static void fft_drain(cfixed_t xk[SUB_SIZE],
-                      hls::stream<cfixed_t> &out,
+static void fft_drain(cfixed_out_t xk[SUB_SIZE],
+                      hls::stream<cfixed_out_t> &out,
                       fft_status_t *sts,
                       int sub_size) {
     (void)*sts;  // overflow status unused
@@ -494,9 +586,9 @@ static void twiddle(hls::stream<par_data> &din,
 // Joiner + magnitude: stream sub-FFT outputs → m_axis
 // With bit_reversed_order sub-FFTs:
 //   beat b = { |X[2·bit_rev(b,SUB_NFFT)]|, |X[2·bit_rev(b,SUB_NFFT)+1]| }
-static void output_ssr2(hls::stream<cfixed_t>   &fft0_out,
-                        hls::stream<cfixed_t>   &fft1_out,
-                        hls::stream<axis_out_t> &m_axis,
+static void output_ssr2(hls::stream<cfixed_out_t> &fft0_out,
+                        hls::stream<cfixed_out_t> &fft1_out,
+                        hls::stream<axis_out_t>   &m_axis,
                         int n) {
     for (int i = 0; i < RT_N(n, SUB_SIZE); i++) {
 #pragma HLS PIPELINE II=1
@@ -971,8 +1063,8 @@ void fft_hls_direct(hls::stream<axis_in_t>  &s_axis,
     hls::stream<par_data>  radix_out  ("radix_out");
     hls::stream<cfixed_t>  tw_out0    ("tw_out0");
     hls::stream<cfixed_t>  tw_out1    ("tw_out1");
-    hls::stream<cfixed_t>  fft0_out   ("fft0_out");
-    hls::stream<cfixed_t>  fft1_out   ("fft1_out");
+    hls::stream<cfixed_out_t> fft0_out ("fft0_out");
+    hls::stream<cfixed_out_t> fft1_out ("fft1_out");
 #pragma HLS STREAM variable=raw_par      depth=16
 #pragma HLS STREAM variable=reorder_out  depth=16
 #pragma HLS STREAM variable=radix_out    depth=16
@@ -980,8 +1072,8 @@ void fft_hls_direct(hls::stream<axis_in_t>  &s_axis,
 #pragma HLS STREAM variable=tw_out1      depth=16
 #pragma HLS STREAM variable=fft0_out     depth=16
 #pragma HLS STREAM variable=fft1_out     depth=16
-    cfixed_t     xn0[SUB_SIZE], xk0[SUB_SIZE];
-    cfixed_t     xn1[SUB_SIZE], xk1[SUB_SIZE];
+    cfixed_t     xn0[SUB_SIZE], xn1[SUB_SIZE];
+    cfixed_out_t xk0[SUB_SIZE], xk1[SUB_SIZE];
     fft_config_t cfg0, cfg1;
     fft_status_t sts0, sts1;
 

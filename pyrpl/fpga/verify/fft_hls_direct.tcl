@@ -32,9 +32,15 @@ if {$need} {
 # Default ON here so csim exercises the run-time configurable length (the max
 # length it sweeps also covers the fixed-length path). Set FFT_RUNTIME_NFFT=0 to
 # verify the fixed-length build instead.
-set fft_runtime [getp fft_runtime_nfft 1]
-set defs "-DFFT_SSR=$fft_ssr -DFFT_NFFT=$fft_nfft -DASZ=14 -DDSZ=$fft_width"
-if {$fft_runtime} { append defs " -DFFT_RUNTIME_NFFT" }
+set fft_runtime    [getp fft_runtime_nfft 1]
+set fft_internal_w [getp fft_internal_w   16]
+set fft_use_approx [getp fft_use_approx   1]
+set fft_unscaled    [getp fft_unscaled     0]
+set fft_cordic_iter [getp fft_cordic_iter  10]
+set defs "-DFFT_SSR=$fft_ssr -DFFT_NFFT=$fft_nfft -DASZ=14 -DDSZ=$fft_width -DINTERNAL_W=$fft_internal_w -DCORDIC_ITER=$fft_cordic_iter"
+if {$fft_runtime}      { append defs " -DFFT_RUNTIME_NFFT" }
+if {$fft_use_approx}   { append defs " -DUSE_APPROXIMATION" }
+if {$fft_unscaled}     { append defs " -DFFT_UNSCALED" }
 file mkdir .hls; cd .hls
 open_project -reset fft_hls_direct_verify
 add_files     ../hls/fft_hls_direct.cpp    -cflags "-I../hls $defs"
