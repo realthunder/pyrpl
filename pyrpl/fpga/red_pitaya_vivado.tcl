@@ -86,6 +86,12 @@ set fft_clk_200    [expr {[info exists env(FFT_CLK_200)]    ? $env(FFT_CLK_200) 
 # and redefines pll_ser_clk below.  Use with FFT_CLK_SEL=1 to route it into the FFT.
 # Takes precedence over FFT_CLK_200; do not set both.  Default 0.
 set fft_clk_178    [expr {[info exists env(FFT_CLK_178)]    ? $env(FFT_CLK_178)    : 0}]
+# DSP_FB_PIPELINE: register the digital-loopback feedback (dac->adc) in red_pitaya_top
+# to break the sum{1,2} -> saturate -> dac -> adc -> i_dsp input mux -> module
+# input-filter recurrence (the binding pll_adc_clk path once input_select is
+# multicycled).  Adds 1 cycle of loopback latency, taken only in digital_loop mode
+# (opt-in functional change); drives a Verilog define.  Default 0.
+set dsp_fb_pipeline [expr {[info exists env(DSP_FB_PIPELINE)] ? $env(DSP_FB_PIPELINE) : 0}]
 # fft_width = DSZ (magnitude output bits). Override with FFT_WIDTH env var if needed.
 if {[info exists env(FFT_WIDTH)]} {
     set fft_width $env(FFT_WIDTH)
@@ -242,6 +248,7 @@ read_xdc                          $path_sdc/red_pitaya.xdc
 set verilog_defines [expr {$fft_runtime_nfft ? "-verilog_define FFT_RUNTIME_NFFT" : ""}]
 if {$fft_clk_200} { lappend verilog_defines -verilog_define FFT_CLK_200 }
 if {$fft_clk_178} { lappend verilog_defines -verilog_define FFT_CLK_178 }
+if {$dsp_fb_pipeline} { lappend verilog_defines -verilog_define DSP_FB_PIPELINE }
 synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivalent_registers \
     {*}$verilog_defines \
     -generic ADC_SZ=$adc_sz \

@@ -427,8 +427,25 @@ begin
 end
     
 // transform into 2's complement (negative slope)
+`ifdef DSP_FB_PIPELINE
+// Pipeline the digital-loopback feedback (dac->adc) to break the per-cycle adc_clk
+// recurrence: sum{1,2} -> red_pitaya_saturate -> dac_{a,b} -> adc_{a,b} -> i_dsp
+// input mux -> module input filter (iq/trigger/scope lpf) -> delta_reg, the binding
+// pll_adc_clk path at ~178 MHz once input_select is multicycled. Only the loopback
+// arm is registered; the real ADC input (digital_loop=0) keeps its original latency.
+// Cost: +1 adc_clk cycle of loopback latency, taken only in digital_loop test/lock
+// mode. Build-gated (DSP_FB_PIPELINE), default OFF.
+reg [14-1:0] dac_a_lb, dac_b_lb;
+always @(posedge adc_clk) begin
+  dac_a_lb <= dac_a;
+  dac_b_lb <= dac_b;
+end
+assign adc_a = digital_loop ? dac_a_lb : {adc_dat_a[14-1], ~adc_dat_a[14-2:0]};
+assign adc_b = digital_loop ? dac_b_lb : {adc_dat_b[14-1], ~adc_dat_b[14-2:0]};
+`else
 assign adc_a = digital_loop ? dac_a : {adc_dat_a[14-1], ~adc_dat_a[14-2:0]};
 assign adc_b = digital_loop ? dac_b : {adc_dat_b[14-1], ~adc_dat_b[14-2:0]};
+`endif
 
 ////////////////////////////////////////////////////////////////////////////////
 // DAC IO
