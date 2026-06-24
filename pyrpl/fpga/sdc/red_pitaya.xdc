@@ -270,6 +270,20 @@ set_multicycle_path 1 -hold  -to   [get_cells -hierarchical -filter {NAME =~ *sy
 set_multicycle_path 2 -setup -from [get_cells -hierarchical -filter {NAME =~ *fft_nfft_reg*}]
 set_multicycle_path 1 -hold  -from [get_cells -hierarchical -filter {NAME =~ *fft_nfft_reg*}]
 
+# input_select is the per-module input-source mux select in red_pitaya_dsp: written
+# ONLY by a sys-bus register write (addr 0x00) and otherwise static while the design
+# runs.  It is registered on pll_adc_clk and used solely as the *select* of the
+# output_signal mux that feeds each module (PID/IIR/IQ/scope/trigger) — never as
+# per-cycle data — so the real ADC datapaths (output_signal*_reg -> mux -> module)
+# launch from different startpoints and keep their single-cycle requirement.  The
+# pll_adc_clk setup paths sourced here (trigger input mux -> lpf -> schmitt) are
+# quasi-static; relax to 2 cycles.  A reconfig leaves input_signal momentarily mixed
+# for a couple of cycles, which is harmless (the trigger is re-armed after setup, and
+# the lpf integrates transients).  The clk_fpga_0->adc_clk config CDC is already
+# false-pathed above.
+set_multicycle_path 2 -setup -from [get_cells -hierarchical -filter {NAME =~ *i_dsp/input_select_reg* && IS_SEQUENTIAL}]
+set_multicycle_path 1 -hold  -from [get_cells -hierarchical -filter {NAME =~ *i_dsp/input_select_reg* && IS_SEQUENTIAL}]
+
 # ADC data hold: adc_dat_*_i input_delay is referenced to adc_clk, but the
 # IOB register is clocked by pll_adc_clk (large internal skew vs adc_clk).
 # Hold analysis across these two clocks is not meaningful — suppress it.

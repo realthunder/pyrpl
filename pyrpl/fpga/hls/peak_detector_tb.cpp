@@ -1,6 +1,7 @@
 #include <iostream>
 #include "peak_detector.h"
 
+#ifndef FFT_NATURAL_ORDER
 // Bit-reverse the bottom `bits` bits of x (software reference)
 static int bit_rev_sw(int x, int bits) {
     int result = 0;
@@ -8,6 +9,7 @@ static int bit_rev_sw(int x, int bits) {
         result |= ((x >> i) & 1) << (bits - 1 - i);
     return result;
 }
+#endif
 
 int main() {
     hls::stream<axis_in_pkt>  s_axis;
@@ -27,11 +29,17 @@ int main() {
     data_t      data_min   = 5;          // below BG_VAL so background bins are included
     ap_uint<4>  nfft       = N_FFT_LOG2;
 
-    // Flat index that maps to actual_bin = PEAK_BIN via bit_rev(flat, N_FFT_LOG2)
-    // Since bit_rev is its own inverse: flat = bit_rev(PEAK_BIN, N_FFT_LOG2)
+    // Streaming position that the DUT must map to actual_bin = PEAK_BIN.
+#ifdef FFT_NATURAL_ORDER
+    // Native-SSR xfft: natural order — the streaming position IS the bin.
+    int target_flat = PEAK_BIN;
+#else
+    // DIF / bit_reversed_order: the FFT emits the bit-reversed bin, and the DUT
+    // reverses it back. bit_rev is its own inverse: flat = bit_rev(PEAK_BIN).
     int target_flat = bit_rev_sw(PEAK_BIN, N_FFT_LOG2);
+#endif
 
-    // Build input stream: FFT output arrives in bit-reversed (digit-reversed) order
+    // Build input stream: place the peak at its streaming position for this ordering
     for (int beat = 0; beat < N_BEATS; beat++) {
         axis_in_pkt pkt;
         pkt.data = 0;

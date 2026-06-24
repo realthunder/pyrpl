@@ -10,8 +10,16 @@ set fft_ssr        [expr {[info exists env(FFT_SSR)]        ? $env(FFT_SSR)     
 set fft_nfft       [expr {[info exists env(FFT_NFFT)]       ? $env(FFT_NFFT)       : 12}]
 set fft_width      [expr {[info exists env(FFT_WIDTH)]      ? $env(FFT_WIDTH)      : 20}]
 set fft_clk_period [expr {[info exists env(FFT_CLK_PERIOD)] ? $env(FFT_CLK_PERIOD) : 4.0}]
+set fft_impl       [expr {[info exists env(FFT_IMPL)]       ? $env(FFT_IMPL)       : 5}]
 
 set cflags "-DFSSR=$fft_ssr -DDSZ=$fft_width -DFSZ=$fft_nfft"
+
+# FFT_IMPL==4 is the native-SSR xfft, whose output is NATURAL order (PG109: SSR>1
+# fixed-point is natural-only). All other engines emit DIF/bit_reversed_order, where
+# the peak detector must bit-reverse the streaming position to recover the bin.
+if {$fft_impl == 4} {
+    append cflags " -DFFT_NATURAL_ORDER=1"
+}
 
 # -------- START HLS --------
 file mkdir $path_out

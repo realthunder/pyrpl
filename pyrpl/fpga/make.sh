@@ -292,7 +292,7 @@ else
 fi
 if [[ $_ssr -ge 8 ]]; then _single_def=1; else _single_def=0; fi
 echo "==> Build config: IMPL=${FFT_IMPL} SSR=${_ssr} NFFT=${FFT_NFFT:-12} SCALED=${FFT_SCALED:-2} WIDTH=${FFT_WIDTH:-auto} SINGLE=${FFT_SINGLE:-$_single_def}"
-echo "                  FFT_CLK=${_fftclk} | DET=${DETERMINISTIC} PHYS_OPT=${PHYS_OPT:-AggressiveExplore} SUM1_REP=${SUM1_REPLICATE:-1}"
+echo "                  FFT_CLK=${_fftclk} | DET=${DETERMINISTIC} PHYS_OPT=${PHYS_OPT:-AggressiveExplore} SUM1_REP=${SUM1_REPLICATE:-1} DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-0}"
 unset _ssr _fftclk _single_def
 
 mkdir -p "$ROOT/.hls"
