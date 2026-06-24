@@ -778,11 +778,11 @@ static void stage2_lower(hls::stream<par_data>  &din,
 // With bit_reversed_order sub-FFTs:
 //   beat b = {|X[4·bit_rev(b,SUB_NFFT)]|, |X[4·bit_rev(b,SUB_NFFT)+1]|,
 //              |X[4·bit_rev(b,SUB_NFFT)+2]|, |X[4·bit_rev(b,SUB_NFFT)+3]|}
-static void output_ssr4(hls::stream<cfixed_t>   &fft0_out,
-                        hls::stream<cfixed_t>   &fft1_out,
-                        hls::stream<cfixed_t>   &fft2_out,
-                        hls::stream<cfixed_t>   &fft3_out,
-                        hls::stream<axis_out_t> &m_axis,
+static void output_ssr4(hls::stream<cfixed_out_t> &fft0_out,
+                        hls::stream<cfixed_out_t> &fft1_out,
+                        hls::stream<cfixed_out_t> &fft2_out,
+                        hls::stream<cfixed_out_t> &fft3_out,
+                        hls::stream<axis_out_t>   &m_axis,
                         int n) {
     for (int i = 0; i < RT_N(n, SUB_SIZE); i++) {
 #pragma HLS PIPELINE II=1
@@ -964,15 +964,15 @@ static void dft8_stage3_twiddle(hls::stream<par_data8> &din,
 
 // Joiner + magnitude: eight sub-FFT outputs → m_axis.
 //   beat b = {|X[8·bit_rev(b,SUB_NFFT)+lane]|} for lane = 0..7
-static void output_ssr8(hls::stream<cfixed_t>   &fft0_out,
-                        hls::stream<cfixed_t>   &fft1_out,
-                        hls::stream<cfixed_t>   &fft2_out,
-                        hls::stream<cfixed_t>   &fft3_out,
-                        hls::stream<cfixed_t>   &fft4_out,
-                        hls::stream<cfixed_t>   &fft5_out,
-                        hls::stream<cfixed_t>   &fft6_out,
-                        hls::stream<cfixed_t>   &fft7_out,
-                        hls::stream<axis_out_t> &m_axis,
+static void output_ssr8(hls::stream<cfixed_out_t> &fft0_out,
+                        hls::stream<cfixed_out_t> &fft1_out,
+                        hls::stream<cfixed_out_t> &fft2_out,
+                        hls::stream<cfixed_out_t> &fft3_out,
+                        hls::stream<cfixed_out_t> &fft4_out,
+                        hls::stream<cfixed_out_t> &fft5_out,
+                        hls::stream<cfixed_out_t> &fft6_out,
+                        hls::stream<cfixed_out_t> &fft7_out,
+                        hls::stream<axis_out_t>   &m_axis,
                         int n) {
     for (int i = 0; i < RT_N(n, SUB_SIZE); i++) {
 #pragma HLS PIPELINE II=1
@@ -1099,10 +1099,10 @@ void fft_hls_direct(hls::stream<axis_in_t>  &s_axis,
     hls::stream<cfixed_t>   fft1_in     ("fft1_in");
     hls::stream<cfixed_t>   fft2_in     ("fft2_in");
     hls::stream<cfixed_t>   fft3_in     ("fft3_in");
-    hls::stream<cfixed_t>   fft0_out    ("fft0_out");
-    hls::stream<cfixed_t>   fft1_out    ("fft1_out");
-    hls::stream<cfixed_t>   fft2_out    ("fft2_out");
-    hls::stream<cfixed_t>   fft3_out    ("fft3_out");
+    hls::stream<cfixed_out_t> fft0_out  ("fft0_out");
+    hls::stream<cfixed_out_t> fft1_out  ("fft1_out");
+    hls::stream<cfixed_out_t> fft2_out  ("fft2_out");
+    hls::stream<cfixed_out_t> fft3_out  ("fft3_out");
 #pragma HLS STREAM variable=raw_par4    depth=16
 #pragma HLS STREAM variable=reorder_out depth=16
 #pragma HLS STREAM variable=upper       depth=16
@@ -1115,10 +1115,8 @@ void fft_hls_direct(hls::stream<axis_in_t>  &s_axis,
 #pragma HLS STREAM variable=fft1_out    depth=16
 #pragma HLS STREAM variable=fft2_out    depth=16
 #pragma HLS STREAM variable=fft3_out    depth=16
-    cfixed_t     xn0[SUB_SIZE], xk0[SUB_SIZE];
-    cfixed_t     xn1[SUB_SIZE], xk1[SUB_SIZE];
-    cfixed_t     xn2[SUB_SIZE], xk2[SUB_SIZE];
-    cfixed_t     xn3[SUB_SIZE], xk3[SUB_SIZE];
+    cfixed_t     xn0[SUB_SIZE], xn1[SUB_SIZE], xn2[SUB_SIZE], xn3[SUB_SIZE];
+    cfixed_out_t xk0[SUB_SIZE], xk1[SUB_SIZE], xk2[SUB_SIZE], xk3[SUB_SIZE];
     fft_config_t cfg0, cfg1, cfg2, cfg3;
     fft_status_t sts0, sts1, sts2, sts3;
 
@@ -1147,8 +1145,8 @@ void fft_hls_direct(hls::stream<axis_in_t>  &s_axis,
     hls::stream<par_data8>  reorder_out ("reorder_out");
     hls::stream<par_data8>  s1_out      ("s1_out");
     hls::stream<par_data8>  s2_out      ("s2_out");
-    hls::stream<cfixed_t>   fft_in[8];
-    hls::stream<cfixed_t>   fft_out[8];
+    hls::stream<cfixed_t>     fft_in[8];
+    hls::stream<cfixed_out_t> fft_out[8];
 #pragma HLS STREAM variable=raw_par8    depth=16
 #pragma HLS STREAM variable=reorder_out depth=16
 #pragma HLS STREAM variable=s1_out      depth=16
@@ -1157,14 +1155,10 @@ void fft_hls_direct(hls::stream<axis_in_t>  &s_axis,
 #pragma HLS STREAM variable=fft_out     depth=16
 #pragma HLS ARRAY_PARTITION variable=fft_in  complete dim=1
 #pragma HLS ARRAY_PARTITION variable=fft_out complete dim=1
-    cfixed_t     xn0[SUB_SIZE], xk0[SUB_SIZE];
-    cfixed_t     xn1[SUB_SIZE], xk1[SUB_SIZE];
-    cfixed_t     xn2[SUB_SIZE], xk2[SUB_SIZE];
-    cfixed_t     xn3[SUB_SIZE], xk3[SUB_SIZE];
-    cfixed_t     xn4[SUB_SIZE], xk4[SUB_SIZE];
-    cfixed_t     xn5[SUB_SIZE], xk5[SUB_SIZE];
-    cfixed_t     xn6[SUB_SIZE], xk6[SUB_SIZE];
-    cfixed_t     xn7[SUB_SIZE], xk7[SUB_SIZE];
+    cfixed_t     xn0[SUB_SIZE], xn1[SUB_SIZE], xn2[SUB_SIZE], xn3[SUB_SIZE];
+    cfixed_t     xn4[SUB_SIZE], xn5[SUB_SIZE], xn6[SUB_SIZE], xn7[SUB_SIZE];
+    cfixed_out_t xk0[SUB_SIZE], xk1[SUB_SIZE], xk2[SUB_SIZE], xk3[SUB_SIZE];
+    cfixed_out_t xk4[SUB_SIZE], xk5[SUB_SIZE], xk6[SUB_SIZE], xk7[SUB_SIZE];
     fft_config_t cfg0, cfg1, cfg2, cfg3, cfg4, cfg5, cfg6, cfg7;
     fft_status_t sts0, sts1, sts2, sts3, sts4, sts5, sts6, sts7;
 
