@@ -1,17 +1,32 @@
 #include "peak_detector.h"
 
-// Reverse the bottom FSZ bits of x (pure static wiring — 0 LUTs, 0 FFs).
-// The nfft-specific right-shift is deliberately excluded here; callers
-// pre-shift start/end bounds into FSZ-bit space before the STREAM loop
-// to keep the dynamic barrel shift off the II=1 critical path.
-static count_t bit_rev_full(count_t x) {
+// Map an AXI-S streaming position (beat*FSSR + ch) to the natural FFT bin index.
+// The FFT output ordering depends on the engine:
+//
+//   DIF / bit_reversed_order (FFT_IMPL 2/3/5): the streaming position is the
+//     bit-reversed bin, so reverse the bottom FSZ bits to recover natural order.
+//     The nfft-specific right-shift is deliberately excluded here; callers
+//     pre-shift the start/end bounds into FSZ-bit space before the STREAM loop
+//     to keep the dynamic barrel shift off the II=1 critical path.
+//
+//   Natural order (FFT_IMPL==4 native-SSR xfft; PG109: SSR>1 fixed-point is
+//     natural-only): the streaming position beat*FSSR + ch IS already the
+//     natural bin — identity, no reversal and no nfft shift (bounds and output
+//     are handled directly in natural-bin space; see start_b/end_b below).
+//
+// Pure static wiring — 0 LUTs, 0 FFs — after UNROLL.
+static count_t to_bin(count_t x) {
 #pragma HLS INLINE
-    count_t full_rev = 0;
+#ifdef FFT_NATURAL_ORDER
+    return x;
+#else
+    count_t rev = 0;
     for (int i = 0; i < FSZ; i++) {
 #pragma HLS UNROLL
-        full_rev[FSZ - 1 - i] = x[i];
+        rev[FSZ - 1 - i] = x[i];
     }
-    return full_rev;
+    return rev;
+#endif
 }
 
 void peak_detector(
@@ -32,16 +47,23 @@ void peak_detector(
 #pragma HLS INTERFACE ap_none      port=data_min
 #pragma HLS INTERFACE ap_none      port=nfft
 
+#ifdef FFT_NATURAL_ORDER
+    // Natural order: the streaming position already equals the natural bin, so the
+    // window bounds are compared directly in natural-bin space — no shift, no reversal.
+    count_t start_b = start_index;
+    count_t end_b   = end_index;
+#else
     // Pre-shift the index bounds into full-reversal (FSZ-bit) space once per frame.
     // Moves the dynamic barrel shift (nfft-dependent) out of the STREAM pipeline
-    // body so bit_rev_full becomes pure static wiring on the II=1 critical path.
+    // body so to_bin becomes pure static wiring on the II=1 critical path.
     // When nfft == FSZ (the common case), shift_amt == 0 — no barrel shift at all.
     // Use ap_uint<4> arithmetic throughout to avoid 32-bit widening of shift expressions.
     ap_uint<4> shift_amt = (ap_uint<4>)(FSZ - (int)nfft);
-    count_t start_rev = start_index << shift_amt;
+    count_t start_b = start_index << shift_amt;
     // Inclusive upper bound in FSZ-bit space: fill the lower shift_amt bits with 1s
-    // so all full_rev values whose top nfft bits equal end_index are accepted.
-    count_t end_rev = (end_index << shift_amt) | ((count_t(1) << shift_amt) - count_t(1));
+    // so all reversed values whose top nfft bits equal end_index are accepted.
+    count_t end_b = (end_index << shift_amt) | ((count_t(1) << shift_amt) - count_t(1));
+#endif
 
     // Frame accumulators (in clip(s << SQ_LSHIFT) units)
     sum_t    sum    = 0;
@@ -97,12 +119,12 @@ void peak_detector(
 
             // flat_idx = beat_idx*FSSR + ch; FSSR is constant so this is a shift+or
             count_t flat_idx = (count_t)((ap_uint<FSZ+4>)beat_idx * FSSR + ch);
-            // bit_rev_full is pure static wiring (0 LUTs) after UNROLL.
-            // Bounds are pre-shifted to FSZ-bit space so no barrel shift here.
-            count_t full_rev = bit_rev_full(flat_idx);
+            // to_bin is pure static wiring (0 LUTs) after UNROLL: identity for
+            // natural-order engines, bit-reversal for DIF (bounds pre-shifted above).
+            count_t bin = to_bin(flat_idx);
 
-            bool sample_valid = (full_rev >= start_rev) &&
-                                (full_rev <= end_rev)   &&
+            bool sample_valid = (bin >= start_b) &&
+                                (bin <= end_b)   &&
                                 (s > data_min);
 
             if (sample_valid) {
@@ -124,7 +146,7 @@ void peak_detector(
 
                 if (s > beat_peak) {
                     beat_peak  = s;
-                    beat_bin   = full_rev;   // store FSZ-bit form; shifted back at output
+                    beat_bin   = bin;   // natural: final bin; DIF: FSZ-bit form, shifted at output
                     beat_valid = true;
                 }
             }
@@ -199,9 +221,14 @@ void peak_detector(
 
     bool passes = peak_valid && ((thresh_t)diff_sq > threshold);
 
-    // Convert stored FSZ-bit full_rev back to the nfft-bit actual bin.
+#ifdef FFT_NATURAL_ORDER
+    // Natural order: peak_bin is already the actual bin (no shift was applied).
+    count_t actual_peak_bin = peak_bin;
+#else
+    // Convert stored FSZ-bit reversed value back to the nfft-bit actual bin.
     // Reuse shift_amt (ap_uint<4>) to avoid 32-bit widening of (FSZ - nfft).
     count_t actual_peak_bin = peak_bin >> shift_amt;
+#endif
 
     // Pack output: [DSZ-1:0]=value, [DSZ]=valid, [DSZ+FSZ:DSZ+1]=peak_bin
     ap_uint<OUT_WIDTH> out_data = 0;
