@@ -327,18 +327,31 @@ logic [FSZ-SSR_BITS-1: 0]  buf_b_raddr_reversed;
 //   channel = k[FSZ-1]              → buf_a_raddr_bitrev[SSR_BITS-1:0]
 //   address = bit_rev(k>>SSR_BITS)  → buf_a_raddr_bitrev[FSZ-1:SSR_BITS]
 //
-// FFT_IMPL==3 (IP SSR, DIF): lanes hold bins grouped by k mod FSSR.
+// FFT_IMPL==3 (IP SSR, DIF) and 5 (direct hls::fft): lanes hold bins grouped by
+// k mod FSSR, with bit-reversed per-lane address (LogiCORE bit_reversed_order).
 //   channel = k[SSR_BITS-1:0]       → buf_a_raddr[SSR_BITS-1:0]  (no bit-reversal)
 //   address = bit_rev(k>>SSR_BITS)  → buf_a_raddr_bitrev[FSZ-SSR_BITS-1:0]
+//
+// FFT_IMPL==4 (native-SSR xfft): per PG109, SSR>1 fixed-point supports ONLY
+// NATURAL output order (bit_reversed_order is silently unavailable). So bin k is at
+// the natural position — lane = k mod FSSR, address = k>>SSR_BITS, NO bit-reversal.
+//   channel = k[SSR_BITS-1:0]       → buf_a_raddr[SSR_BITS-1:0]
+//   address = k>>SSR_BITS           → buf_a_raddr[FSZ-1:SSR_BITS]  (NOT reversed)
 generate
 if (FSSR == 1) begin
     assign fft_rdata_up_o       = fft_rdata_up  [0];
     assign fft_rdata_down_o     = fft_rdata_down[0];
     assign buf_a_raddr_reversed = buf_a_raddr_bitrev >> fft_shift;
     assign buf_b_raddr_reversed = buf_b_raddr_bitrev >> fft_shift;
+end else if (FFT_IMPL == 4) begin
+    // Native-SSR xfft: NATURAL output order (PG109: SSR>1 fixed-point is natural-only).
+    // lane = k mod FSSR; address = k>>SSR_BITS with NO bit-reversal.
+    assign fft_rdata_up_o       = fft_rdata_up  [buf_a_raddr[SSR_BITS-1:0]];
+    assign fft_rdata_down_o     = fft_rdata_down[buf_b_raddr[SSR_BITS-1:0]];
+    assign buf_a_raddr_reversed = buf_a_raddr[FSZ-1:SSR_BITS];
+    assign buf_b_raddr_reversed = buf_b_raddr[FSZ-1:SSR_BITS];
 end else if (FFT_IMPL == 3 || FFT_IMPL == 5) begin
     // DIF: channel = k mod FSSR — low SSR_BITS of the bin index, no reversal needed.
-    // FFT_IMPL==5 (direct hls::fft) shares the IMPL==3 DIF output ordering.
     assign fft_rdata_up_o       = fft_rdata_up  [buf_a_raddr[SSR_BITS-1:0]];
     assign fft_rdata_down_o     = fft_rdata_down[buf_b_raddr[SSR_BITS-1:0]];
     assign buf_a_raddr_reversed = buf_a_raddr_bitrev[FSZ-SSR_BITS-1:0];
@@ -985,7 +998,9 @@ end else if (FFT_IMPL == 5) begin : gen_fft_hls_direct
 end else if (FFT_IMPL == 4) begin : gen_fft_native
     // Native-SSR xfft (Vivado 2025.2 CONFIG.super_sample_rates): single SSR xfft
     // with thin HLS pre (real->complex+config) and mag (complex->magnitude) wrappers.
-    // Output ordering matches FFT_IMPL==2 (handled by the DIT lane-map branch above).
+    // Output is NATURAL order (PG109: SSR>1 fixed-point is natural-only; handled by
+    // the FFT_IMPL==4 lane-map branch above). Input is consecutive samples, sample 0
+    // in the LSB lane (fifo_in delivers that) — confirmed correct by RTL sim of the BD.
 
     fft_ssr_native_bd_wrapper fft_i (
         .aclk                   (clk_i),

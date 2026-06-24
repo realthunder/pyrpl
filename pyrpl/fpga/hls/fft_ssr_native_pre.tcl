@@ -5,7 +5,9 @@
 proc getparam {name default} {
     upvar #0 $name g
     if {[info exists g] && $g ne ""} { return $g }
-    if {[info exists ::env($name)]}   { return $::env($name) }
+    # Env vars are UPPERCASE (FFT_SSR); the tcl var name is lowercase (fft_ssr).
+    set envname [string toupper $name]
+    if {[info exists ::env($envname)]} { return $::env($envname) }
     return $default
 }
 

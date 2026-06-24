@@ -98,7 +98,7 @@ set_property -dict [list \
     CONFIG.rounding_modes                          {convergent_rounding} \
     CONFIG.run_time_configurable_transform_length  {false} \
     CONFIG.scaling_options                         $scaling_opt \
-    CONFIG.output_ordering                         {bit_reversed_order} \
+    CONFIG.output_ordering                         {natural_order} \
     CONFIG.target_clock_frequency                  {250} \
     CONFIG.target_data_throughput                  {250} \
     CONFIG.throttle_scheme                         {nonrealtime} \
