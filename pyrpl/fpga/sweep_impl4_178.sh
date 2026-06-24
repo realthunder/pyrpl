@@ -10,8 +10,8 @@ ROOT=$(pwd)
 
 PARALLEL_SWEEP=${PARALLEL_SWEEP:-8}
 MIN_FREE_GB=${MIN_FREE_GB:-10}
-FFTENV="FFT_IMPL=4 FFT_SSR=4 FFT_NFFT=11 FFT_WIDTH=28 FFT_USE_APPROX=1 FFT_CLK_178=1 FFT_CLK_SEL=1 SUM1_REPLICATE=0"
-LABEL="impl4-ssr4n11-178-dsz28"
+FFTENV="FFT_IMPL=4 FFT_SSR=4 FFT_NFFT=11 FFT_WIDTH=24 FFT_USE_APPROX=1 FFT_CLK_SEL=0 SUM1_REPLICATE=0"
+LABEL="impl4-ssr4n11-125-dsz24"
 
 # 11 place directives — must match red_pitaya_vivado.tcl / make.sh det_dirs (1-indexed).
 DIRS=(Explore ExtraNetDelay_high AltSpreadLogic_high WLDrivenBlockPlacement \
