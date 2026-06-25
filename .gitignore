@@ -37,6 +37,7 @@ pyrpl/fpga/out/*.bit
 pyrpl/fpga/out/*.dcp
 pyrpl/fpga/out/*.xml
 pyrpl/fpga/sdk
+pyrpl/fpga/docs/
 pyrpl/fpga/*.html
 pyrpl/fpga/*.xml
 pyrpl/fpga/red_pitaya.prm
