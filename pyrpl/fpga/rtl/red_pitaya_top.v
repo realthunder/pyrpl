@@ -89,6 +89,7 @@ module red_pitaya_top #(
     FFT_NFFT = 13,
     FFT_SSR  = 1,
     FFT_WIDTH = 28,
+    FFT_FRAC = 8,
     FFT_IMPL = 3,
     FFT_SINGLE = 0,
     HIST_BLOCK_SIZE = 183
@@ -576,7 +577,7 @@ dma_s2mm #(
     .axi_rready_o (                    )
 );
 
-red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .FSSR(FFT_SSR), .DSZ(FFT_WIDTH), .FFT_IMPL(FFT_IMPL),
+red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .FSSR(FFT_SSR), .DSZ(FFT_WIDTH), .FRAC(FFT_FRAC), .FFT_IMPL(FFT_IMPL),
                    .FFT_SINGLE(FFT_SINGLE), .HIST_BLOCK_SIZE(HIST_BLOCK_SIZE)) i_scope (
   // ADC
   .adc_a_i         (  to_scope_a[14-1:14-ADC_SZ] ),  // CH 1

@@ -70,6 +70,7 @@ module red_pitaya_scope #(
   parameter ASZ  = 14,  // ADC input sample data width
   parameter DSZ  = 28,  // FFT_output width
   parameter FSZ  = 13,  // FFT transform length 2^FSZ (max runtime size)
+  parameter FRAC = 8,   // sub-bin interpolation fractional bits (k_interp = Q(FSZ).FRAC); 0=off
   parameter RSZ  = 14,  // RAM size 2^RSZ
   parameter HSZ  = 14,  // fft history buffer size 2^HSZ
   parameter FSSR     = 1, // FFT super sample rate (parallel channels)
@@ -282,6 +283,10 @@ localparam FFT_RDELAY = (7-1);
 // WARNING: if fft_clk_sel=0 (fft_clk=adc_clk), peak grows to N/(1+FSSR) which
 // exceeds this depth; application must restrict padding to avoid FIFO overflow.
 localparam QSZ = FSZ - $clog2(FSSR) - 1;
+
+// Output peak-index width: integer bin + FRAC sub-bin fractional bits (Q(FSZ).FRAC).
+// Carries through the inter-channel peak-index regs and history readout (see fft_proc).
+localparam IDX = FSZ + FRAC;
 
 logic [ ASZ-1: 0] adc_a_rd      ;
 logic [ ASZ-1: 0] adc_b_rd      ;
@@ -524,10 +529,10 @@ logic [ HSZ-1: 0]   fft_hist_step;
 logic [ RSZ-1: 0]   x_step;
 logic [ RSZ-1: 0]   y_step;
 
-logic [ FSZ-1: 0]   fft_hist_rdata_up_a, fft_hist_rdata_up_a_;
-logic [ FSZ-1: 0]   fft_hist_rdata_down_a, fft_hist_rdata_down_a_;
-logic [ FSZ-1: 0]   fft_hist_rdata_up_b, fft_hist_rdata_up_b_;
-logic [ FSZ-1: 0]   fft_hist_rdata_down_b, fft_hist_rdata_down_b_;
+logic [ IDX-1: 0]   fft_hist_rdata_up_a, fft_hist_rdata_up_a_;
+logic [ IDX-1: 0]   fft_hist_rdata_down_a, fft_hist_rdata_down_a_;
+logic [ IDX-1: 0]   fft_hist_rdata_up_b, fft_hist_rdata_up_b_;
+logic [ IDX-1: 0]   fft_hist_rdata_down_b, fft_hist_rdata_down_b_;
 
 logic [ 16-1:  0]   fft_wp_last_a;
 logic [ 16-1:  0]   fft_wp_last_b;
@@ -547,10 +552,10 @@ logic [ DSZ-1: 0]   fft_peak_minimum, fft_a_peak_minimum, fft_b_peak_minimum;
 logic [ 6-1 :  0]   fft_status[0:1];
 logic [ 2-1 :  0]   fft_done;
 // (* mark_debug = "true" *)
-logic [ 16-1: 0]    fft_peak_index_up_a;
-logic [ 16-1: 0]    fft_peak_index_down_a;
-logic [ 16-1: 0]    fft_peak_index_up_b;
-logic [ 16-1: 0]    fft_peak_index_down_b;
+logic [ IDX-1: 0]   fft_peak_index_up_a;
+logic [ IDX-1: 0]   fft_peak_index_down_a;
+logic [ IDX-1: 0]   fft_peak_index_up_b;
+logic [ IDX-1: 0]   fft_peak_index_down_b;
 logic [ DSZ-1: 0]   fft_peak_up_a;
 logic [ DSZ-1: 0]   fft_peak_down_a;
 logic [ DSZ-1: 0]   fft_peak_up_b;
@@ -738,6 +743,7 @@ fft_proc #(.ASZ(ASZ),
            .QSZ(QSZ),
            .DSZ(DSZ),
            .FSZ(FSZ),
+           .FRAC(FRAC),
            .RSZ(RSZ),
            .HSZ(HSZ),
            .FSSR(FSSR),
@@ -785,8 +791,8 @@ fft_a (
    .status_o (fft_status[0]),
    .fft_done_o (fft_done[0]),
    .fft_peak_ready_o (fft_peak_ready_a),
-   .fft_peak_index_up_o (fft_peak_index_up_a[FSZ-1:0]),
-   .fft_peak_index_down_o (fft_peak_index_down_a[FSZ-1:0]),
+   .fft_peak_index_up_o (fft_peak_index_up_a[IDX-1:0]),
+   .fft_peak_index_down_o (fft_peak_index_down_a[IDX-1:0]),
    .fft_peak_value_up_o (fft_peak_up_a),
    .fft_peak_value_down_o (fft_peak_down_a),
    .frame_cnt_o (fft_frame_cnt),
@@ -823,6 +829,7 @@ fft_proc #(.ASZ(ASZ),
            .QSZ(QSZ),
            .DSZ(DSZ),
            .FSZ(FSZ),
+           .FRAC(FRAC),
            .RSZ(RSZ),
            .HSZ(HSZ),
            .FSSR(FSSR),
@@ -870,8 +877,8 @@ fft_proc #(.ASZ(ASZ),
    .status_o (fft_status[1]),
    .fft_done_o (fft_done[1]),
    .fft_peak_ready_o (fft_peak_ready_b),
-   .fft_peak_index_up_o (fft_peak_index_up_b[FSZ-1:0]),
-   .fft_peak_index_down_o (fft_peak_index_down_b[FSZ-1:0]),
+   .fft_peak_index_up_o (fft_peak_index_up_b[IDX-1:0]),
+   .fft_peak_index_down_o (fft_peak_index_down_b[IDX-1:0]),
    .fft_peak_value_up_o (fft_peak_up_b),
    .fft_peak_value_down_o (fft_peak_down_b),
 
@@ -1597,11 +1604,14 @@ end else begin
      20'h00038 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_start                      ; end
      20'h0003C : begin sys_ack <= sys_en;          sys_rdata <= fft_threshold_k                     ; end
      20'h00040 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_minimum                    ; end
-     20'h00044 : begin sys_ack <= sys_en;          sys_rdata <= {fft_parallel?fft_peak_index_up_b:fft_peak_index_down_a, fft_peak_index_up_a}; end
+     // Peak bin index = k_interp, unsigned Q(FSZ).FRAC fixed-point (IDX=FSZ+FRAC bits,
+     // zero-extended to 32). Host recovers the fractional bin as value / 2^FRAC.
+     // One register per index, mirroring the peak-VALUE registers 0x48/0x4C/0x80/0x84.
+     20'h00044 : begin sys_ack <= sys_en;          sys_rdata <= {{32-IDX{1'b0}}, fft_peak_index_up_a}; end
      20'h00048 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_up_a                       ; end
      20'h0004C : begin sys_ack <= sys_en;          sys_rdata <= fft_parallel?fft_peak_up_b:fft_peak_down_a ; end
-     // 20'h00050 : begin sys_ack <= sys_en;          sys_rdata <= fft_sum_a                           ; end
-     // 20'h00054 : begin sys_ack <= sys_en;          sys_rdata <= fft_count_a                         ; end
+     20'h00050 : begin sys_ack <= sys_en;          sys_rdata <= {{32-IDX{1'b0}}, (fft_parallel?fft_peak_index_up_b:fft_peak_index_down_a)}; end
+     20'h00054 : begin sys_ack <= sys_en;          sys_rdata <= {{32-IDX{1'b0}}, fft_peak_index_down_b}; end
      20'h00058 : begin sys_ack <= sys_en;          sys_rdata <= fft_wait1_cnt                       ; end
      20'h0005C : begin sys_ack <= sys_en;          sys_rdata <= fft_wait2_cnt                       ; end
      20'h00060 : begin sys_ack <= sys_en;          sys_rdata <= fft_acq1_cnt                        ; end
@@ -1610,7 +1620,7 @@ end else begin
      20'h0006C : begin sys_ack <= sys_en;          sys_rdata <= fft_state                           ; end
      // 20'h00070 : begin sys_ack <= sys_en;          sys_rdata <= fft_we_cnt[0]                       ; end
      20'h00074 : begin sys_ack <= sys_en;          sys_rdata <= fft_scan_frame_cnt                  ; end
-     20'h0007C : begin sys_ack <= sys_en;          sys_rdata <= {fft_peak_index_down_b, fft_peak_index_up_b}; end
+     20'h0007C : begin sys_ack <= sys_en;          sys_rdata <= {{32-IDX{1'b0}}, fft_peak_index_up_b}; end
      20'h00080 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_up_b                       ; end
      20'h00084 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_down_b                     ; end
      20'h00088 : begin sys_ack <= sys_en;          sys_rdata <= fft_nfft                            ; end
@@ -1681,10 +1691,14 @@ end else begin
      20'h3???? : begin sys_ack <= fft_rd_dv;       sys_rdata <= sys_addr[2] ? fft_rdata_down_a : fft_rdata_up_a; end
      20'h4???? : begin sys_ack <= fft_rd_dv;       sys_rdata <= sys_addr[2] ? fft_rdata_down_b : fft_rdata_up_b; end
 
-     // 20'h5???? : begin sys_ack <= fft_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, (fft_parallel ? fft_hist_rdata_up_b : fft_hist_rdata_down_a),
-     //                                                             {16-FSZ{1'b0}}, fft_hist_rdata_up_a} ; end
-     20'h5???? : begin sys_ack <= fft_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, fft_hist_rdata_down_a, {16-FSZ{1'b0}}, fft_hist_rdata_up_a} ; end
-     20'h6???? : begin sys_ack <= fft_rd_dv;       sys_rdata <= {{16-FSZ{1'b0}}, fft_hist_rdata_down_b, {16-FSZ{1'b0}}, fft_hist_rdata_up_b} ; end
+     // Peak-index history readback. Each entry is k_interp (Q(FSZ).FRAC, IDX bits),
+     // too wide to pack up+down in one 32-bit word, so up/down get separate address
+     // ranges (all read the same hist position from sys_addr): 0x5=up_a, 0x7=down_a,
+     // 0x6=up_b, 0x8=down_b. Host recovers fractional bin = value / 2^FRAC.
+     20'h5???? : begin sys_ack <= fft_rd_dv;       sys_rdata <= {{32-IDX{1'b0}}, fft_hist_rdata_up_a}   ; end
+     20'h7???? : begin sys_ack <= fft_rd_dv;       sys_rdata <= {{32-IDX{1'b0}}, fft_hist_rdata_down_a} ; end
+     20'h6???? : begin sys_ack <= fft_rd_dv;       sys_rdata <= {{32-IDX{1'b0}}, fft_hist_rdata_up_b}   ; end
+     20'h8???? : begin sys_ack <= fft_rd_dv;       sys_rdata <= {{32-IDX{1'b0}}, fft_hist_rdata_down_b} ; end
 
        default : begin sys_ack <= sys_en;          sys_rdata <=  32'h0                              ; end
    endcase

@@ -29,6 +29,31 @@ static count_t to_bin(count_t x) {
 #endif
 }
 
+#if FRAC_BITS > 0 && defined(FFT_NATURAL_ORDER)
+// Sequential fractional divider: returns floor(n / d * 2^QB) for n <= d (so the
+// result fits in QB bits). Used once per frame for the parabolic sub-bin offset.
+// 7-series HLS has no pipelineable divider IP (bind_op impl=fabric/latency is
+// rejected on xc7z020) and a combinational LUT divide is ~4.4 ns (caps Fmax). This
+// computes ONLY the QB fractional bits we keep (QB = FRAC_BITS-1), so it iterates
+// QB times with a QB-bit quotient — far smaller than dividing a pre-scaled wide
+// numerator. Latency (~QB cycles, post-tlast) is irrelevant; per-cycle path is short.
+template <int DW, int QB>
+static ap_uint<QB> seq_frac_div(ap_uint<DW> n, ap_uint<DW> d) {
+#pragma HLS INLINE off
+    ap_uint<QB>   quo = 0;
+    ap_uint<DW+1> rem = n;          // n <= d < 2^DW, so the integer part is 0
+    SEQ_DIV: for (int i = QB - 1; i >= 0; i--) {
+#pragma HLS PIPELINE II=1
+        rem <<= 1;
+        if (rem >= (ap_uint<DW+1>)d) {
+            rem  -= d;
+            quo[i] = 1;
+        }
+    }
+    return quo;
+}
+#endif
+
 void peak_detector(
     hls::stream<axis_in_pkt>  &s_axis,
     hls::stream<axis_out_pkt> &m_axis,
@@ -90,6 +115,21 @@ void peak_detector(
 
     count_t beat_idx = 0;
 
+#if FRAC_BITS > 0 && defined(FFT_NATURAL_ORDER)
+    // --- Sub-bin interpolation neighbor capture (natural order only) ---
+    // In natural order bin = beat*FSSR + ch, so the peak's neighbors mag[peak-1]
+    // and mag[peak+1] are adjacent lanes of the same beat, or the top/bottom lane
+    // of the adjacent beat. We carry the raw magnitudes of the running peak's two
+    // neighbors alongside the peak itself.
+    data_t prev_last = 0;       // previous beat's top lane (FSSR-1): the cross-beat left neighbor
+    data_t peak_L    = 0;       // mag[peak_bin-1] for the current running peak
+    data_t peak_R    = 0;       // mag[peak_bin+1]
+    // The right neighbor of a peak landing on a beat's top lane (ch==FSSR-1) is the
+    // next beat's lane 0 — one beat in the future. r_pending defers its capture by
+    // one beat (same idiom as delayed_delta above).
+    bool   r_pending = false;
+#endif
+
     // --- STREAM loop: one iteration per AXI-S beat, II=1 ---
     bool last = false;
     STREAM: while (!last) {
@@ -110,12 +150,23 @@ void peak_detector(
         data_t  beat_peak  = 0;
         count_t beat_bin   = 0;
         bool    beat_valid = false;
+#if FRAC_BITS > 0 && defined(FFT_NATURAL_ORDER)
+        // Retain all FSSR lane magnitudes so the peak's neighbors can be selected
+        // ONCE after the argmax (by the winning lane), instead of threading L/R
+        // payloads through the FSSR-deep argmax tree (which bloats LUTs and the
+        // II=1 path). Partitioned so each lane is its own register/wire.
+        data_t  smp[FSSR];
+#pragma HLS ARRAY_PARTITION variable=smp complete
+#endif
 
         // --- BEAT loop: unrolled to FSSR parallel datapaths ---
         BEAT: for (int ch = 0; ch < FSSR; ch++) {
 #pragma HLS UNROLL
 
             data_t s = pkt.data.range(ch*DSZ + DSZ - 1, ch*DSZ);
+#if FRAC_BITS > 0 && defined(FFT_NATURAL_ORDER)
+            smp[ch] = s;   // constant ch after UNROLL -> pure wiring
+#endif
 
             // flat_idx = beat_idx*FSSR + ch; FSSR is constant so this is a shift+or
             count_t flat_idx = (count_t)((ap_uint<FSZ+4>)beat_idx * FSSR + ch);
@@ -152,6 +203,19 @@ void peak_detector(
             }
         }
 
+#if FRAC_BITS > 0 && defined(FFT_NATURAL_ORDER)
+        // Select the winning peak's neighbors ONCE, by its lane (= low SSR_BITS of the
+        // natural-order bin), from the retained lane magnitudes. Two FSSR:1 muxes —
+        // far cheaper than carrying L/R through the per-lane argmax. Left neighbor of
+        // lane 0 is the previous beat's top lane (prev_last); right neighbor of the
+        // top lane is the next beat's lane 0 (deferred below via r_pending).
+        const ap_uint<4> SSR_MASK = FSSR - 1;
+        ap_uint<4> cpk = (ap_uint<4>)((count_t)beat_bin & (count_t)SSR_MASK);
+        data_t beat_L = (cpk == 0) ? prev_last : smp[(ap_uint<4>)((cpk - 1) & SSR_MASK)];
+        data_t beat_R = smp[(ap_uint<4>)((cpk + 1) & SSR_MASK)];
+        bool   beat_right_edge = (cpk == (ap_uint<4>)SSR_MASK);
+#endif
+
         // Merge beat results using PREVIOUS beat's deltas (delayed by one beat).
         // Breaks the per-cycle carry chain (compare→mux→adder tree→frame add→reg)
         // into two sub-4-ns paths: delta accumulation and frame update run in
@@ -171,6 +235,16 @@ void peak_detector(
         delayed_delta_count = delta_count;
         reset_sq = false;
         beat_idx++;
+#if FRAC_BITS > 0 && defined(FFT_NATURAL_ORDER)
+        // Resolve a deferred right neighbor: the peak set on the previous beat landed
+        // on a top lane, so its mag[peak+1] is this beat's lane 0. Done before the
+        // new-peak test below; if this beat sets a new peak it overwrites peak_R anyway.
+        data_t this_ch0 = pkt.data.range(DSZ - 1, 0);
+        if (r_pending) {
+            peak_R    = this_ch0;
+            r_pending = false;
+        }
+#endif
         // Single comparison on the carried path: one icmp (~2.5 ns) fits in II=1.
         // beat_peak > peak_val is always true for the first valid sample because
         // valid samples satisfy s > data_min >= 0, so beat_peak >= 1 > peak_val(0).
@@ -178,7 +252,21 @@ void peak_detector(
             peak_val   = beat_peak;
             peak_bin   = beat_bin;
             peak_valid = true;
+#if FRAC_BITS > 0 && defined(FFT_NATURAL_ORDER)
+            peak_L = beat_L;
+            if (beat_right_edge) {
+                r_pending = true;     // mag[peak+1] arrives next beat (lane 0)
+            } else {
+                peak_R    = beat_R;
+                r_pending = false;
+            }
+#endif
         }
+#if FRAC_BITS > 0 && defined(FFT_NATURAL_ORDER)
+        // This beat's top lane is the cross-beat left neighbor for a bin-0 peak in
+        // the next beat. Pure register load — no recurrence.
+        prev_last = pkt.data.range(FSSR*DSZ - 1, (FSSR-1)*DSZ);
+#endif
     }
 
     // Flush all delayed pipeline registers: last beat's deltas are still pending.
@@ -230,11 +318,61 @@ void peak_detector(
     count_t actual_peak_bin = peak_bin >> shift_amt;
 #endif
 
-    // Pack output: [DSZ-1:0]=value, [DSZ]=valid, [DSZ+FSZ:DSZ+1]=peak_bin
+    // --- Sub-bin interpolation: k_interp = peak_bin + delta, as Q(FSZ).FRAC_BITS ---
+    // delta = 0.5*(L-R)/(L-2P+R). For a genuine peak P >= L,R so den = L-2P+R <= 0,
+    // and the signs carry through: L>R (left-heavier) -> num>0,den<0 -> delta<0,
+    // pulling k_interp below peak_bin. The divide runs once per frame (post-tlast),
+    // off the II=1 stream path.
+    kinterp_t k_interp;
+#if FRAC_BITS > 0 && defined(FFT_NATURAL_ORDER)
+    {
+        // Interpolate only for a genuine local max with both neighbors available:
+        //  - P >= L and P >= R  (else not a peak; also guarantees den_mag>=|num| so the
+        //    fractional divider's n<=d precondition holds and |frac| < 2^(FRAC_BITS-1)),
+        //  - not bin 0 (no left neighbor) and not r_pending (bin N-1, right neighbor
+        //    never arrived). Otherwise frac = 0 (emit the integer bin).
+        bool interp_ok = peak_valid && !r_pending && (actual_peak_bin != 0)
+                         && (peak_L <= peak_val) && (peak_R <= peak_val);
+
+        ap_int<FRAC_BITS + 1> frac = 0;
+        if (interp_ok) {
+            // den = L-2P+R = -((P-L)+(P-R)) <= 0; work with magnitudes.
+            // delta = 0.5*(L-R)/den = -0.5*(L-R)/den_mag, so
+            // frac = delta*2^FRAC = -(L-R)/den_mag * 2^(FRAC_BITS-1).
+            ap_uint<DSZ + 1> den_mag = (ap_uint<DSZ + 1>)(peak_val - peak_L)
+                                     + (ap_uint<DSZ + 1>)(peak_val - peak_R);
+            bool         num_neg = (peak_R > peak_L);            // L-R < 0
+            ap_uint<DSZ> num_mag = num_neg ? (ap_uint<DSZ>)(peak_R - peak_L)
+                                           : (ap_uint<DSZ>)(peak_L - peak_R);
+            if (den_mag != 0) {
+                // fmag = floor(num_mag/den_mag * 2^(FRAC_BITS-1)); only the kept bits.
+                const int DW = DSZ + 1;
+                ap_uint<FRAC_BITS - 1> fmag =
+                    seq_frac_div<DW, FRAC_BITS - 1>((ap_uint<DW>)num_mag, (ap_uint<DW>)den_mag);
+                // den<0 flips the sign: num>0 -> delta<0, num<0 -> delta>0.
+                frac = num_neg ? (ap_int<FRAC_BITS + 1>)fmag
+                               : (ap_int<FRAC_BITS + 1>)(-(ap_int<FRAC_BITS + 1>)fmag);
+            }
+        }
+        // k_interp = (peak_bin << FRAC_BITS) + frac. peak_bin >= 1 when interp_ok and
+        // |frac| <= 0.5*2^FRAC_BITS, so the sum stays non-negative.
+        ap_int<IDX_BITS + 1> ki =
+            (((ap_int<IDX_BITS + 1>)actual_peak_bin) << FRAC_BITS) + frac;
+        k_interp = (kinterp_t)ki;
+    }
+#elif FRAC_BITS > 0
+    // Non-natural order: field is FSZ+FRAC wide but fractional part is always 0.
+    k_interp = ((kinterp_t)actual_peak_bin) << FRAC_BITS;
+#else
+    // FRAC_BITS == 0: plain integer bin (no interpolation logic synthesized).
+    k_interp = actual_peak_bin;
+#endif
+
+    // Pack output: [DSZ-1:0]=value, [DSZ]=valid, [DSZ+IDX_BITS:DSZ+1]=k_interp
     ap_uint<OUT_WIDTH> out_data = 0;
-    out_data.range(DSZ - 1, 0)          = peak_val;
-    out_data[DSZ]                       = (ap_uint<1>)(passes ? 1 : 0);
-    out_data.range(DSZ + FSZ, DSZ + 1)  = actual_peak_bin;
+    out_data.range(DSZ - 1, 0)                 = peak_val;
+    out_data[DSZ]                              = (ap_uint<1>)(passes ? 1 : 0);
+    out_data.range(DSZ + IDX_BITS, DSZ + 1)    = k_interp;
 
     axis_out_pkt out_pkt;
     out_pkt.data = out_data;

@@ -2,6 +2,7 @@ module fft_proc #(
   parameter ASZ,        // ADC input sample width
   parameter DSZ,        // FFT_output width
   parameter FSZ,        // FFT transform length 2^FSZ
+  parameter FRAC = 0,   // sub-bin interpolation fractional bits (peak index = Q(FSZ).FRAC); 0=off
   parameter FSSR,       // FFT super sample size
   parameter FFT_IMPL = 3, // 1=LogiCORE, 2=HLS SSR (DIT), 3=IP SSR (DIF)
   parameter RSZ,        // RAM size 2^RSZ
@@ -36,8 +37,8 @@ module fft_proc #(
   input logic             fft_index_valid_in,
   input logic  [ HSZ-1:0] fft_hist_index_in,
 
-  output logic [ FSZ-1:0] fft_hist_rdata_up_o,
-  output logic [ FSZ-1:0] fft_hist_rdata_down_o,
+  output logic [ IDX-1:0] fft_hist_rdata_up_o,
+  output logic [ IDX-1:0] fft_hist_rdata_down_o,
 
   output logic [ 63:0]    m_dma_tdata,
   output logic            m_dma_tvalid,
@@ -48,8 +49,8 @@ module fft_proc #(
   output logic            fft_done_o,
   output logic            fft_peak_ready_o,
 
-  output logic [ FSZ-1:0] fft_peak_index_up_o,
-  output logic [ FSZ-1:0] fft_peak_index_down_o,
+  output logic [ IDX-1:0] fft_peak_index_up_o,
+  output logic [ IDX-1:0] fft_peak_index_down_o,
   output logic [ DSZ-1:0] fft_peak_value_up_o,
   output logic [ DSZ-1:0] fft_peak_value_down_o,
 
@@ -64,6 +65,14 @@ module fft_proc #(
 );
 
 localparam SSR_BITS = $clog2(FSSR);
+
+// Output peak-index width: integer bin (FSZ) plus FRAC sub-bin fractional bits.
+// The HLS peak detector emits the index as unsigned Q(FSZ).FRAC fixed-point
+// (k_interp = peak_bin + parabolic offset). All downstream peak-INDEX carriers
+// (inter-channel registers, history BRAM, point-cloud DMA word) are IDX-wide.
+// Input/addressing indices (peak_start, FFT buffer addresses, acq/wait counts,
+// scan-position hist_index) stay FSZ — only the detected bin value carries frac.
+localparam IDX = FSZ + FRAC;
 
 // Runtime FFT length is supported only by the LogiCORE IP (FFT_IMPL==1), or when
 // explicitly opted in via the FFT_RUNTIME_NFFT define. Otherwise nfft and every
@@ -107,7 +116,7 @@ logic                   fft_saxi_last;
 logic                   fft_saxi_rdy;
 logic                   fft_saxi_valid;
 
-logic [ FSZ-1: 0]       fft_peak_idx;
+logic [ IDX-1: 0]       fft_peak_idx;
 logic [ DSZ-1: 0]       fft_peak;
 
 logic [ DSZ*FSSR-1:0]   fft_maxi_data;
@@ -132,8 +141,8 @@ logic               peak_up, peak_ready;
 logic               peak_ready_pretrig = {fft_peak_ready[0], peak_ready} == 2'b01;
 logic               peak_ready_trig = fft_peak_ready == 2'b01;
 
-logic [ FSZ-1:0]    fft_peak_index_up, fft_peak_index_up_;
-logic [ FSZ-1:0]    fft_peak_index_down, fft_peak_index_down_;
+logic [ IDX-1:0]    fft_peak_index_up, fft_peak_index_up_;
+logic [ IDX-1:0]    fft_peak_index_down, fft_peak_index_down_;
 logic [ DSZ-1:0]    fft_peak_value_up, fft_peak_value_up_;
 logic [ DSZ-1:0]    fft_peak_value_down, fft_peak_value_down_;
 logic               out_recv, out_send, out_send_;
@@ -149,8 +158,8 @@ logic [ FSZ-1: 0]   buf_b_raddr;
 
 logic [ HSZ-1: 0]   hist_a_waddr;
 logic [ HSZ-1: 0]   hist_b_waddr;
-logic [ FSZ-1: 0]   hist_a_wdata;
-logic [ FSZ-1: 0]   hist_b_wdata;
+logic [ IDX-1: 0]   hist_a_wdata;
+logic [ IDX-1: 0]   hist_b_wdata;
 logic               hist_a_we   ;
 logic               hist_b_we   ;
 logic [ HSZ-1: 0]   hist_a_raddr;
@@ -291,7 +300,7 @@ xpm_cdc_pulse #(
 );
 
 xpm_cdc_handshake #(
-    .WIDTH          (FSZ + FSZ + DSZ + DSZ),
+    .WIDTH          (IDX + IDX + DSZ + DSZ),
     .DEST_EXT_HSK   (0),
     .SRC_SYNC_FF    (SYNC_FF),
     .DEST_SYNC_FF   (SYNC_FF)
@@ -422,15 +431,15 @@ endgenerate
 
 xpm_memory_sdpram #(
     // .MEMORY_PRIMITIVE       ("block"),
-    .MEMORY_SIZE            ((1<<HSZ)*FSZ),
+    .MEMORY_SIZE            ((1<<HSZ)*IDX),
     .ADDR_WIDTH_A           (HSZ),
     .ADDR_WIDTH_B           (HSZ),
     .CLOCKING_MODE          ("independent_clock"),
     .READ_LATENCY_B         (READ_A_DELAY),
     .WRITE_MODE_B           ("read_first"),
-    .READ_DATA_WIDTH_B      (FSZ),
-    .WRITE_DATA_WIDTH_A     (FSZ),
-    .BYTE_WRITE_WIDTH_A     (FSZ)
+    .READ_DATA_WIDTH_B      (IDX),
+    .WRITE_DATA_WIDTH_A     (IDX),
+    .BYTE_WRITE_WIDTH_A     (IDX)
 ) fft_hist_up (
     .clka   (clk_i),
     .addra  (hist_a_waddr),
@@ -447,15 +456,15 @@ xpm_memory_sdpram #(
 
 xpm_memory_sdpram #(
     // .MEMORY_PRIMITIVE       ("block"),
-    .MEMORY_SIZE            ((1<<HSZ)*FSZ),
+    .MEMORY_SIZE            ((1<<HSZ)*IDX),
     .ADDR_WIDTH_A           (HSZ),
     .ADDR_WIDTH_B           (HSZ),
     .CLOCKING_MODE          ("independent_clock"),
     .READ_LATENCY_B         (READ_B_DELAY),
     .WRITE_MODE_B           ("read_first"),
-    .READ_DATA_WIDTH_B      (FSZ),
-    .WRITE_DATA_WIDTH_A     (FSZ),
-    .BYTE_WRITE_WIDTH_A     (FSZ)
+    .READ_DATA_WIDTH_B      (IDX),
+    .WRITE_DATA_WIDTH_A     (IDX),
+    .BYTE_WRITE_WIDTH_A     (IDX)
 ) fft_hist_down (
     .clka   (clk_i),
     .addra  (hist_b_waddr),
@@ -806,7 +815,8 @@ peak_detector_bd_wrapper pd_i (
 );
 
 logic  fft_peak_valid = peak_out_data[DSZ];
-assign fft_peak_idx   = fft_peak_valid ? peak_out_data[DSZ + FSZ : DSZ + 1] : 0;
+// k_interp occupies [DSZ+IDX : DSZ+1] (IDX = FSZ+FRAC bits), value in [DSZ-1:0].
+assign fft_peak_idx   = fft_peak_valid ? peak_out_data[DSZ + IDX : DSZ + 1] : 0;
 assign fft_peak       = peak_out_data[DSZ-1 : 0];
 assign peak_ready     = peak_out_valid;
 
@@ -820,9 +830,10 @@ assign peak_ready     = peak_out_valid;
 //   [63:60]          CHANNEL_ID      (4-bit channel tag: 0=fft_a, 1=fft_b)
 //
 // Data word (64-bit):
-//   [FSZ-1:0]       peak_bin_up
-//   [2*FSZ-1:FSZ]   peak_bin_down
-//   [63:2*FSZ]      reserved 0
+//   [IDX-1:0]       peak_bin_up    (k_interp, Q(FSZ).FRAC fixed-point)
+//   [2*IDX-1:IDX]   peak_bin_down  (k_interp, Q(FSZ).FRAC fixed-point)
+//   [63:2*IDX]      reserved 0
+//   IDX = FSZ+FRAC. Host recovers each bin = field / 2^FRAC. Requires 2*IDX <= 64.
 //
 // Emit condition: sequential (up_toggle=1) → after down chirp (both peaks fresh);
 //                 parallel  (up_toggle=0) → every frame.
@@ -831,12 +842,12 @@ assign peak_ready     = peak_out_valid;
 // fft_index_flush_i closes any in-progress packet cleanly (emits tlast) so the
 // downstream FIFO and dma_s2mm stay consistent with no PS intervention.
 localparam DMA_HDR_RSVD = 64 - 4 - 32 - HSZ;  // [63:60]=channel_id [59:32+HSZ]=rsvd [31+HSZ:32]=hist_index [31:0]=frame_cnt
-localparam DMA_DAT_RSVD = 64 - 2*FSZ;
+localparam DMA_DAT_RSVD = 64 - 2*IDX;
 
 logic [15:0]    dma_data_sent;      // data words sent in current packet (0..HIST_BLOCK_SIZE)
 logic           dma_data_pending;   // first data word buffered after header
-logic [FSZ-1:0] dma_saved_peak_up;
-logic [FSZ-1:0] dma_saved_peak_down;
+logic [IDX-1:0] dma_saved_peak_up;
+logic [IDX-1:0] dma_saved_peak_down;
 
 logic [63:0]    dma_wr_data;
 logic           dma_wr_en;

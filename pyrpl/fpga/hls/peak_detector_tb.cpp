@@ -21,6 +21,10 @@ int main() {
     const int PEAK_BIN   = 100;
     const int PEAK_VAL   = 300;   // small signal — below old SQ_RSHIFT=11 floor of 2048
     const int BG_VAL     = 10;
+    // Sub-bin interpolation neighbors: bins PEAK_BIN-1 / PEAK_BIN+1 get distinct
+    // magnitudes so the parabolic offset is non-zero. delta = 0.5*(L-R)/(L-2P+R).
+    const int LEFT_VAL   = 120;   // mag[PEAK_BIN-1]
+    const int RIGHT_VAL  = 80;    // mag[PEAK_BIN+1]
 
     // AXI-lite control values
     ap_uint<16> k_sq       = 9;          // k=3 -> k^2=9
@@ -51,6 +55,12 @@ int main() {
             int flat = beat * FSSR + ch;
             ap_uint<DSZ> val = (flat == target_flat) ? (ap_uint<DSZ>)PEAK_VAL
                                                       : (ap_uint<DSZ>)BG_VAL;
+#ifdef FFT_NATURAL_ORDER
+            // Natural order: bin == streaming position, so the peak's neighbors sit
+            // at flat = PEAK_BIN-1 / PEAK_BIN+1. (Interpolation only runs here.)
+            if (flat == PEAK_BIN - 1) val = (ap_uint<DSZ>)LEFT_VAL;
+            if (flat == PEAK_BIN + 1) val = (ap_uint<DSZ>)RIGHT_VAL;
+#endif
             pkt.data.range(ch*DSZ + DSZ - 1, ch*DSZ) = val;
         }
         s_axis.write(pkt);
@@ -65,18 +75,47 @@ int main() {
 
     axis_out_pkt result = m_axis.read();
 
-    data_t  out_val   = result.data.range(DSZ - 1, 0);
-    bool    out_valid = (bool)result.data[DSZ];
-    count_t out_bin   = result.data.range(DSZ + SSZ, DSZ + 1);
+    data_t            out_val     = result.data.range(DSZ - 1, 0);
+    bool              out_valid   = (bool)result.data[DSZ];
+    ap_uint<IDX_BITS> out_kinterp = result.data.range(DSZ + IDX_BITS, DSZ + 1);
 
-    std::cout << "Peak bin:   " << out_bin   << "  (expected " << PEAK_BIN  << ")\n";
+    int errors = 0;
+
+    // Expected integer floor of the Q(FSZ).FRAC_BITS index. With FRAC_BITS==0 it is
+    // PEAK_BIN exactly; with interpolation a negative sub-bin offset can move the
+    // floor to PEAK_BIN-1, so derive it from the expected fixed-point value below.
+    int exp_bin = PEAK_BIN;
+
+#if FRAC_BITS > 0 && defined(FFT_NATURAL_ORDER)
+    // Reproduce the DUT's fixed-point parabolic offset (integer divide, truncating).
+    int L = LEFT_VAL, P = PEAK_VAL, R = RIGHT_VAL;
+    int num = L - R, den = L - 2*P + R;          // den <= 0
+    int exp_frac = (den != 0) ? ((num << (FRAC_BITS - 1)) / den) : 0;
+    const int FMAX = (1 << (FRAC_BITS - 1));
+    if (exp_frac >  FMAX) exp_frac =  FMAX;
+    if (exp_frac < -FMAX) exp_frac = -FMAX;
+    int exp_kinterp = PEAK_BIN * (1 << FRAC_BITS) + exp_frac;
+    double delta = (double)exp_frac / (1 << FRAC_BITS);
+    exp_bin = exp_kinterp >> FRAC_BITS;          // floor(peak_bin + delta)
+#else
+    int exp_kinterp = PEAK_BIN;                  // field is the plain integer bin
+#endif
+
+    int out_bin = (int)(out_kinterp >> FRAC_BITS);
+
+    std::cout << "Peak bin:   " << out_bin   << "  (expected " << exp_bin   << ")\n";
     std::cout << "Peak value: " << out_val   << "  (expected " << PEAK_VAL  << ")\n";
     std::cout << "Valid:      " << out_valid << "  (expected 1)\n";
 
-    int errors = 0;
-    if ((int)out_bin  != PEAK_BIN) { std::cerr << "FAIL: bin mismatch\n";   errors++; }
+    if (out_bin       != exp_bin)  { std::cerr << "FAIL: bin mismatch\n";   errors++; }
     if ((int)out_val  != PEAK_VAL) { std::cerr << "FAIL: value mismatch\n"; errors++; }
     if (!out_valid)                 { std::cerr << "FAIL: peak not valid\n"; errors++; }
+
+#if FRAC_BITS > 0 && defined(FFT_NATURAL_ORDER)
+    std::cout << "k_interp:   " << out_kinterp << "  (expected " << exp_kinterp
+              << ", delta=" << delta << " bin)\n";
+    if ((int)out_kinterp != exp_kinterp) { std::cerr << "FAIL: k_interp mismatch\n"; errors++; }
+#endif
 
     std::cout << (errors == 0 ? "PASS\n" : "FAIL\n");
     return errors;

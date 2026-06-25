@@ -11,8 +11,11 @@ set fft_nfft       [expr {[info exists env(FFT_NFFT)]       ? $env(FFT_NFFT)    
 set fft_width      [expr {[info exists env(FFT_WIDTH)]      ? $env(FFT_WIDTH)      : 20}]
 set fft_clk_period [expr {[info exists env(FFT_CLK_PERIOD)] ? $env(FFT_CLK_PERIOD) : 4.0}]
 set fft_impl       [expr {[info exists env(FFT_IMPL)]       ? $env(FFT_IMPL)       : 5}]
+# PEAK_FRAC: sub-bin interpolation fractional bits F (Q(FSZ).F output index).
+# 0 disables interpolation entirely (plain integer bin, no extra logic).
+set peak_frac      [expr {[info exists env(PEAK_FRAC)]      ? $env(PEAK_FRAC)      : 8}]
 
-set cflags "-DFSSR=$fft_ssr -DDSZ=$fft_width -DFSZ=$fft_nfft"
+set cflags "-DFSSR=$fft_ssr -DDSZ=$fft_width -DFSZ=$fft_nfft -DFRAC_BITS=$peak_frac"
 
 # FFT_IMPL==4 is the native-SSR xfft, whose output is NATURAL order (PG109: SSR>1
 # fixed-point is natural-only). All other engines emit DIF/bit_reversed_order, where

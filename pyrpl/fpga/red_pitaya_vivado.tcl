@@ -102,6 +102,11 @@ if {[info exists env(FFT_WIDTH)]} {
     set fft_width [expr {$fft_scaled == 1 ? 16 : ($fft_scaled == 2 ? 20 : (($sub_nfft_ + 14 + 3) / 4 * 4))}]
 }
 
+# PEAK_FRAC = sub-bin interpolation fractional bits F. The peak detector emits the
+# bin index as Q(FSZ).F fixed-point (k_interp); 0 disables interpolation (plain
+# integer bin). Must match the -DFRAC_BITS passed to the peak_detector HLS build.
+set fft_frac [expr {[info exists env(PEAK_FRAC)] ? $env(PEAK_FRAC) : 8}]
+
 if {[llength $argv] > 1 && [lindex $argv 0] == "alinx"} {
     set clk_diff 0
     set adc_sz 12
@@ -258,6 +263,7 @@ synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivale
     -generic FFT_NFFT=$fft_nfft \
     -generic FFT_SSR=$fft_ssr \
     -generic FFT_WIDTH=$fft_width \
+    -generic FFT_FRAC=$fft_frac \
     -generic FFT_IMPL=$fft_impl \
     -generic FFT_SINGLE=$fft_single \
     -generic HIST_BLOCK_SIZE=$hist_block_size
@@ -521,6 +527,8 @@ if {![catch {open $path_out/BUILD_INFO.txt a} bi]} {
     puts $bi [format "    %-16s= %-5s (= FFT_NFFT, 2^FSZ pts)" FSZ  $fft_nfft]
     puts $bi [format "    %-16s= %-5s (= FFT_SSR)"            FSSR $fft_ssr]
     puts $bi [format "    %-16s= %-5s (= FFT_WIDTH)"          DSZ  $fft_width]
+    puts $bi [format "    %-16s= %-5s (= PEAK_FRAC, k_interp sub-bin frac bits; 0=off)" FRAC $fft_frac]
+    puts $bi [format "    %-16s= %-5s (= FSZ + FRAC, peak index out width)" IDX [expr {$fft_nfft + $fft_frac}]]
     puts $bi [format "    %-16s= %-5s (= FSZ - log2(FSSR) - 1, input FIFO depth)" QSZ $bi_qsz]
     puts $bi "module fft_proc:"
     puts $bi [format "    %-16s= %-5s (= log2(FSSR))"                  SSR_BITS      $ssr_bits]
