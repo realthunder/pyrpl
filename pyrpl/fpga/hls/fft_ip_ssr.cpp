@@ -227,10 +227,10 @@ void fft_ip_ssr_pre(
 #pragma HLS INTERFACE axis         port=s_axis
 #pragma HLS INTERFACE axis         port=m_axis_data0
 #pragma HLS INTERFACE axis         port=m_axis_cfg0
-#pragma HLS INTERFACE ap_none      port=event_frame_started
+#pragma HLS INTERFACE ap_vld       port=event_frame_started
 #pragma HLS INTERFACE ap_ctrl_none port=return
 
-    event_frame_started = false;
+    event_frame_started = true;   // one ap_vld pulse per frame at entry
 
     // Send config before data (xfft requires config first)
     {
@@ -244,7 +244,6 @@ void fft_ip_ssr_pre(
     PASS:
     for (int i = 0; i < FFT_SIZE; i++) {
 #pragma HLS PIPELINE II=1
-        event_frame_started = (i == 0);
         axis_in_t pkt = s_axis.read();
         ap_int<ASZ> samp = pkt.data.range(ASZ-1, 0);
         intern_t val;
@@ -276,10 +275,10 @@ void fft_ip_ssr_pre(
 #pragma HLS INTERFACE axis         port=m_axis_data1
 #pragma HLS INTERFACE axis         port=m_axis_cfg0
 #pragma HLS INTERFACE axis         port=m_axis_cfg1
-#pragma HLS INTERFACE ap_none      port=event_frame_started
+#pragma HLS INTERFACE ap_vld       port=event_frame_started
 #pragma HLS INTERFACE ap_ctrl_none port=return
 
-    event_frame_started = false;
+    event_frame_started = true;   // one ap_vld pulse per frame at entry
 
     // Send config before data (xfft requires config first)
     {
@@ -298,7 +297,6 @@ void fft_ip_ssr_pre(
     FILL:
     for (int b = 0; b < SUB_SIZE / FFT_SSR; b++) {
 #pragma HLS PIPELINE II=1
-        event_frame_started = (b == 0);
         axis_in_t pkt = s_axis.read();
         for (int ch = 0; ch < FFT_SSR; ch++) {
 #pragma HLS UNROLL
@@ -414,10 +412,10 @@ void fft_ip_ssr_pre(
 #pragma HLS INTERFACE axis         port=m_axis_cfg1
 #pragma HLS INTERFACE axis         port=m_axis_cfg2
 #pragma HLS INTERFACE axis         port=m_axis_cfg3
-#pragma HLS INTERFACE ap_none      port=event_frame_started
+#pragma HLS INTERFACE ap_vld       port=event_frame_started
 #pragma HLS INTERFACE ap_ctrl_none port=return
 
-    event_frame_started = false;
+    event_frame_started = true;   // one ap_vld pulse per frame at entry
 
     // Send config before data
     {
@@ -439,7 +437,6 @@ void fft_ip_ssr_pre(
     FILL0:
     for (int b = 0; b < SUB_SIZE / FFT_SSR; b++) {
 #pragma HLS PIPELINE II=1
-        event_frame_started = (b == 0);
         axis_in_t pkt = s_axis.read();
         for (int ch = 0; ch < FFT_SSR; ch++) {
 #pragma HLS UNROLL

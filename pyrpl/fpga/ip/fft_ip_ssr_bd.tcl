@@ -124,7 +124,10 @@ for {set ch 0} {$ch < $fft_ssr} {incr ch} {
 # ---- External AXIS --------------------------------------------------------
 connect_bd_intf_net [get_bd_intf_ports s_axis]       [get_bd_intf_pins pre_0/s_axis]
 connect_bd_intf_net [get_bd_intf_pins post_0/m_axis] [get_bd_intf_ports m_axis]
-connect_bd_net      [get_bd_pins pre_0/event_frame_started] [get_bd_ports event_frame_started]
+# Wire the ap_vld pulse, not the constant-1 data pin (see fft_ip_ssr.cpp): the HLS
+# pre exposes event_frame_started (data) + event_frame_started_ap_vld, a clean
+# 1-cycle pulse at each frame entry, which is what fft_proc.sv expects.
+connect_bd_net      [get_bd_pins pre_0/event_frame_started_ap_vld] [get_bd_ports event_frame_started]
 
 # ---- Internal: pre → xfft data+config, xfft → post ----------------------
 for {set ch 0} {$ch < $fft_ssr} {incr ch} {

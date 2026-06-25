@@ -1007,7 +1007,12 @@ void fft_hls_direct(hls::stream<axis_in_t>  &s_axis,
 {
 #pragma HLS INTERFACE axis port=s_axis
 #pragma HLS INTERFACE axis port=m_axis
-#pragma HLS INTERFACE ap_none port=event_frame_started
+// ap_vld (not ap_none): the value written here is constant true, so ap_none would
+// expose only that constant-1 data wire (event_frame_started stuck high -> fft_proc
+// counts every cycle). ap_vld additionally exposes event_frame_started_ap_vld, a
+// clean 1-cycle pulse at each function (frame) entry — that is what the BD wires to
+// the event_frame_started port for per-frame counting.
+#pragma HLS INTERFACE ap_vld port=event_frame_started
 #ifdef FFT_RUNTIME_NFFT
 // nfft = per-lane sub-FFT exponent (log2 of the runtime sub-FFT length), driven
 // from fft_proc.sv's fft_nfft. Held stable for the whole frame (the design only
