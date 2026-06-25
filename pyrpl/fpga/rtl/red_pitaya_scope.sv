@@ -890,8 +890,8 @@ if (adc_rstn_i == 1'b0) begin
     fft_peak_minimum <= 1;
     fft_wait1_cnt <= 100;
     fft_wait2_cnt <= 200;
-    fft_acq1_cnt <= 2**(FSZ-1) - 200;
-    fft_acq2_cnt <= 2**(FSZ-1) - 200;
+    fft_acq1_cnt <= (2**(FSZ-1) - 200) & ~(FSSR-1);
+    fft_acq2_cnt <= (2**(FSZ-1) - 200) & ~(FSSR-1);
     fft_trig_sync <= 0;
     fft_clk_sel <= 0;
 end else if (sys_wen) begin
@@ -906,8 +906,11 @@ end else if (sys_wen) begin
     if (sys_addr[19:0]==20'h40) fft_peak_minimum <= sys_wdata[DSZ-1:0];
     if (sys_addr[19:0]==20'h58) fft_wait1_cnt <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h5C) fft_wait2_cnt <= sys_wdata[FSZ-1:0];
-    if (sys_addr[19:0]==20'h60) fft_acq1_cnt <= sys_wdata[FSZ-1:0];
-    if (sys_addr[19:0]==20'h64) fft_acq2_cnt <= sys_wdata[FSZ-1:0];
+    // Force acq counts to whole SSR beats: fin packs FSSR samples/beat and the FFT
+    // input FSM reads beats (acq>>SSR_BITS). A non-FSSR-multiple leaves a partial beat
+    // stranded in fin -> next frame's lanes shift (fs/FSSR rotation) + flush starvation.
+    if (sys_addr[19:0]==20'h60) fft_acq1_cnt <= sys_wdata[FSZ-1:0] & ~(FSSR-1);
+    if (sys_addr[19:0]==20'h64) fft_acq2_cnt <= sys_wdata[FSZ-1:0] & ~(FSSR-1);
     // Only writable when runtime FFT length is enabled; otherwise this decode is
     // constant-false and pruned, leaving fft_nfft fixed at its FSZ init value.
     if (RUNTIME_NFFT && sys_addr[19:0]==20'h88) begin
