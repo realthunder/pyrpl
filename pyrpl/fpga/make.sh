@@ -227,12 +227,15 @@ case "${PROFILE:-}" in
         echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 fft178ssr4n11 fft178ssr8n11)" >&2; exit 1 ;;
 esac
 
-# ---- Active build defaults (override on the command line, e.g. FFT_IMPL=3 ./make.sh) ----
-# Default build: direct hls::fft (FFT_IMPL=5), SSR=4, FFT clock pinned to 125 MHz
-# (FFT_CLK_SEL=0). SSR=4 @ 125 MHz = same 500 Msps as SSR=2 @ 250 MHz but an 8 ns
-# budget, which closes the FFT timing (pll_ser_clk +1.8 ns). Fits at ~98% DSP.
-# See HANDOFF.md / memory project-hls-direct-fft.
-export FFT_IMPL=${FFT_IMPL:-5}
+# ---- Active build defaults (override on the command line, e.g. FFT_IMPL=5 ./make.sh) ----
+# Default build: native-SSR xfft (FFT_IMPL=4), SSR=4. The two closed operating
+# points (reproduce with explicit flags, not baked in as defaults here):
+#   Build 1 (best): FFT_NFFT=11 FFT_WIDTH=24 FFT_CLK_SEL=1 FFT_CLK_178=1
+#                   DSP_FB_PIPELINE=1 DETERMINISTIC=10  -> adc 0.153 / ser 0.035
+#   Build 2 (fast): FFT_NFFT=9  FFT_WIDTH=24 FFT_SCALED=2 FFT_CLK_SEL=0
+#                   -> adc 0.166 / ser 1.845
+# (Was FFT_IMPL=5 direct hls::fft; see HANDOFF.md / memory project-hls-direct-fft.)
+export FFT_IMPL=${FFT_IMPL:-4}
 export FFT_SSR=${FFT_SSR:-4}
 # FFT clock for timing closure: 0 = 125 MHz / 8 ns (default), 1 = the I1 mux clock
 # (250 MHz / 4 ns, or 200 MHz / 5 ns when FFT_CLK_200=1 — see below).

@@ -119,7 +119,11 @@ connect_bd_intf_net [get_bd_intf_pins pre_0/m_axis_cfg]   [get_bd_intf_pins xfft
 connect_bd_intf_net [get_bd_intf_pins xfft_0/M_AXIS_DATA] [get_bd_intf_pins mag_0/s_axis]
 connect_bd_intf_net [get_bd_intf_pins mag_0/m_axis]       [get_bd_intf_ports m_axis]
 
-connect_bd_net [get_bd_pins pre_0/event_frame_started] [get_bd_ports event_frame_started]
+# event_frame_started comes from the real xfft core (like FFT_IMPL==1). The HLS
+# fft_native_pre wrapper also exposes an event_frame_started pin, but it is hard-
+# wired to 0 (assign event_frame_started = 1'd0;), which left frame_cnt/scan_frame_cnt
+# in fft_proc.sv frozen. Tap xfft_0 so the pulse actually fires once per frame.
+connect_bd_net [get_bd_pins xfft_0/event_frame_started] [get_bd_ports event_frame_started]
 
 save_bd_design
 validate_bd_design
