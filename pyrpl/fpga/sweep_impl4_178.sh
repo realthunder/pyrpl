@@ -10,15 +10,21 @@ ROOT=$(pwd)
 
 PARALLEL_SWEEP=${PARALLEL_SWEEP:-8}
 MIN_FREE_GB=${MIN_FREE_GB:-10}
-FFTENV="FFT_IMPL=4 FFT_SSR=4 FFT_NFFT=11 FFT_WIDTH=24 FFT_USE_APPROX=1 FFT_CLK_178=1 FFT_CLK_SEL=1 SUM1_REPLICATE=0 DSP_FB_PIPELINE=1"
-LABEL="impl4-ssr4n11-178-dsz24-mcp-fbpipe"
+FFTENV="FFT_IMPL=5 FFT_SSR=8 FFT_NFFT=11 FFT_SINGLE=1 FFT_UNSCALED=1 FFT_INTERNAL_W=16 FFT_WIDTH=24 FFT_USE_APPROX=1 FFT_CLK_178=1 FFT_CLK_SEL=1 SUM1_REPLICATE=0 DSP_FB_PIPELINE=1"
+LABEL="impl5-ssr8n11-178-dsz24-unscaled-single-fbpipe-physopt7"
 
 # 11 place directives — must match red_pitaya_vivado.tcl / make.sh det_dirs (1-indexed).
 DIRS=(Explore ExtraNetDelay_high AltSpreadLogic_high WLDrivenBlockPlacement \
       ExtraPostPlacementOpt EarlyBlockPlacement AltSpreadLogic_medium Default \
       ExtraTimingOpt ExtraNetDelay_low AltSpreadLogic_low)
-# 3 phys_opt directives (same set as the prior ssr2n13 sweep).
-PHYS=(Explore AggressiveExplore AggressiveFanoutOpt)
+# Subset of place directives (det indices into DIRS/det_place_dirs) to sweep.
+# Default = all 11; here narrowed to the directives that closed the FFT ser clock
+# in the SSR=8-unscaled sweep, to hunt phys_opt variants that clear the last ASG path.
+DET_INDICES=(1 2 3 5 9)
+# 7 phys_opt directives — the original 3 plus retiming/replication variants that
+# best target a route-bound single endpoint (the ~13 ps ASG dac_npnt path).
+PHYS=(Explore AggressiveExplore AggressiveFanoutOpt \
+      AddRetime AlternateFlowWithRetiming AlternateReplication ExploreWithHoldFix)
 
 RESULTS=sweep_impl4_178_results.txt
 : > "$RESULTS"
@@ -53,7 +59,7 @@ run_one() {  # $1=det index   $2=phys directive
         > "build_${tag}.log" 2>&1
 }
 
-for n in $(seq 1 ${#DIRS[@]}); do
+for n in "${DET_INDICES[@]}"; do
     for phys in "${PHYS[@]}"; do
         wait_slot
         log "== launch det${n}(${DIRS[$((n-1))]}) x ${phys} at $(date '+%T') avail=$(avail_gb)GB running=$(running) =="
@@ -65,7 +71,7 @@ wait
 log "==== all builds done $(date '+%T') — collecting =="
 
 extract() { awk -v c="$1" '$1==c && $2 ~ /^-?[0-9]+\.[0-9]+$/{print $2; exit}' "$2" 2>/dev/null; }
-for n in $(seq 1 ${#DIRS[@]}); do
+for n in "${DET_INDICES[@]}"; do
     dir=${DIRS[$((n-1))]}
     for phys in "${PHYS[@]}"; do
         tag="det${n}-${phys}"
