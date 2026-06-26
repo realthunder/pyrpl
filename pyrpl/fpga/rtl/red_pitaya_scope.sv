@@ -560,6 +560,25 @@ logic [ DSZ-1: 0]   fft_peak_up_a;
 logic [ DSZ-1: 0]   fft_peak_down_a;
 logic [ DSZ-1: 0]   fft_peak_up_b;
 logic [ DSZ-1: 0]   fft_peak_down_b;
+
+// Sub-bin FRACTION of each peak index (low FRAC bits of k_interp), zero-extended to
+// 16 and packed {down, up} per channel for the 0x174/0x178 registers (down in [31:16],
+// up in [15:0]). Guarded for FRAC=0 (interpolation disabled) where the [FRAC-1:0]
+// select would be illegal — then the registers read 0.
+logic [ 32-1: 0]    fft_peak_frac_a;
+logic [ 32-1: 0]    fft_peak_frac_b;
+generate
+if (FRAC > 0) begin : g_peak_frac
+   assign fft_peak_frac_a = {{16-FRAC{1'b0}}, fft_peak_index_down_a[FRAC-1:0],
+                             {16-FRAC{1'b0}}, fft_peak_index_up_a[FRAC-1:0]};
+   assign fft_peak_frac_b = {{16-FRAC{1'b0}}, fft_peak_index_down_b[FRAC-1:0],
+                             {16-FRAC{1'b0}}, fft_peak_index_up_b[FRAC-1:0]};
+end else begin : g_peak_frac_off
+   assign fft_peak_frac_a = 32'h0;
+   assign fft_peak_frac_b = 32'h0;
+end
+endgenerate
+
 logic [ 32-1: 0]    fft_frame_cnt;
 logic [ 32-1: 0]    fft_scan_frame_cnt;
 logic [ 32-1: 0]    fft_we_cnt[1:0];
@@ -573,10 +592,6 @@ logic [ 2-1 : 0]    fft_peak_ready;
 
 logic [ 2-1:  0]    fft_rstn;
 logic               fft_rstn_i;
-
-logic [32-1 : 0] fft_debug_cnt;
-logic [32-1 : 0] fft_debug_cnt2;
-logic [32-1 : 0] fft_debug_cnt3;
 
 always @(posedge adc_clk_i) begin
     if  ((fft_trig_sync && adc_rst_do) || sync_rst_i || !adc_rstn_i) begin
@@ -935,17 +950,14 @@ if (fft_rstn_i == 0) begin
     fft_state <= S_IDLE;
 end else begin
     if (sys_wen && (sys_addr[19:0]==20'h0) && sys_wdata[9]) begin
-        fft_debug_cnt3 <= fft_debug_cnt3 + 1;
         fft_peak_ready[0] <= 0;
     end else if (fft_peak_ready_a) begin
         fft_peak_ready[0] <= 1;
-        fft_debug_cnt2 <= fft_debug_cnt2 + 1;
     end
     if (sys_wen && (sys_addr[19:0]==20'h0) && sys_wdata[10])
         fft_peak_ready[1] <= 0;
     else if (fft_peak_ready_b) begin
         fft_peak_ready[1] <= 1;
-        fft_debug_cnt <= fft_debug_cnt + 1;
     end
 
     case (fft_state)
@@ -1604,14 +1616,14 @@ end else begin
      20'h00038 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_start                      ; end
      20'h0003C : begin sys_ack <= sys_en;          sys_rdata <= fft_threshold_k                     ; end
      20'h00040 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_minimum                    ; end
-     // Peak bin index = k_interp, unsigned Q(FSZ).FRAC fixed-point (IDX=FSZ+FRAC bits,
-     // zero-extended to 32). Host recovers the fractional bin as value / 2^FRAC.
-     // One register per index, mirroring the peak-VALUE registers 0x48/0x4C/0x80/0x84.
-     20'h00044 : begin sys_ack <= sys_en;          sys_rdata <= {{32-IDX{1'b0}}, fft_peak_index_up_a}; end
+     // Legacy 16-bit packed peak-bin indices (backward compatible) — INTEGER bin only.
+     // Each 16-bit field is the integer part of k_interp, i.e. k_interp[IDX-1:FRAC]
+     // (FSZ bits, zero-extended to 16). 0x44 = {second, up_a}, where second =
+     // parallel?up_b:down_a (mirrors the peak-VALUE reg 0x4C); 0x7C = {down_b, up_b}.
+     // 0x50/0x54 are free again; the full Q(FSZ).FRAC fixed-point indices live at 0x170-0x17C.
+     20'h00044 : begin sys_ack <= sys_en;          sys_rdata <= {{16-FSZ{1'b0}}, (fft_parallel ? fft_peak_index_up_b[IDX-1:FRAC] : fft_peak_index_down_a[IDX-1:FRAC]), {16-FSZ{1'b0}}, fft_peak_index_up_a[IDX-1:FRAC]}; end
      20'h00048 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_up_a                       ; end
      20'h0004C : begin sys_ack <= sys_en;          sys_rdata <= fft_parallel?fft_peak_up_b:fft_peak_down_a ; end
-     20'h00050 : begin sys_ack <= sys_en;          sys_rdata <= {{32-IDX{1'b0}}, (fft_parallel?fft_peak_index_up_b:fft_peak_index_down_a)}; end
-     20'h00054 : begin sys_ack <= sys_en;          sys_rdata <= {{32-IDX{1'b0}}, fft_peak_index_down_b}; end
      20'h00058 : begin sys_ack <= sys_en;          sys_rdata <= fft_wait1_cnt                       ; end
      20'h0005C : begin sys_ack <= sys_en;          sys_rdata <= fft_wait2_cnt                       ; end
      20'h00060 : begin sys_ack <= sys_en;          sys_rdata <= fft_acq1_cnt                        ; end
@@ -1620,7 +1632,7 @@ end else begin
      20'h0006C : begin sys_ack <= sys_en;          sys_rdata <= fft_state                           ; end
      // 20'h00070 : begin sys_ack <= sys_en;          sys_rdata <= fft_we_cnt[0]                       ; end
      20'h00074 : begin sys_ack <= sys_en;          sys_rdata <= fft_scan_frame_cnt                  ; end
-     20'h0007C : begin sys_ack <= sys_en;          sys_rdata <= {{32-IDX{1'b0}}, fft_peak_index_up_b}; end
+     20'h0007C : begin sys_ack <= sys_en;          sys_rdata <= {{16-FSZ{1'b0}}, fft_peak_index_down_b[IDX-1:FRAC], {16-FSZ{1'b0}}, fft_peak_index_up_b[IDX-1:FRAC]}; end
      20'h00080 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_up_b                       ; end
      20'h00084 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_down_b                     ; end
      20'h00088 : begin sys_ack <= sys_en;          sys_rdata <= fft_nfft                            ; end
@@ -1666,21 +1678,17 @@ end else begin
      
      20'h0016c : begin sys_ack <= sys_en;          sys_rdata <= {{32-1{1'b0}}, pretrig_ok}          ; end
 
-     20'h00170 : begin sys_ack <= sys_en;          sys_rdata <= fft_debug_cnt                       ; end
-     20'h00174 : begin sys_ack <= sys_en;          sys_rdata <= fft_debug_cnt2                      ; end
-     20'h00178 : begin sys_ack <= sys_en;          sys_rdata <= fft_debug_cnt3                      ; end
+     // Peak-bin sub-bin FRACTION (the low FRAC bits of k_interp), per channel.
+     // 0x170 = FRAC build constant (fraction scale; host: fraction = field / 2^FRAC).
+     // 0x174/0x178 pack {down, up} for channel A/B — each the FRAC-bit fraction
+     // zero-extended to 16, down in [31:16], up in [15:0]. Combine with the integer
+     // bin from 0x44/0x7C: bin = integer + fraction/2^FRAC. All read 0 when FRAC=0.
+     20'h00170 : begin sys_ack <= sys_en;          sys_rdata <= FRAC                                    ; end
+     20'h00174 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_frac_a                         ; end
+     20'h00178 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_frac_b                         ; end
 
-     // 20'h00170 : begin sys_ack <= sys_en;          sys_rdata <= fft_q_wp_a                          ; end
-     // 20'h00174 : begin sys_ack <= sys_en;          sys_rdata <= fft_q_rp_a                          ; end
-     // 20'h00178 : begin sys_ack <= sys_en;          sys_rdata <= fft_q_rp_save_a                     ; end
-     // 20'h0017C : begin sys_ack <= sys_en;          sys_rdata <= fft_q_wp_b                          ; end
-     // 20'h00180 : begin sys_ack <= sys_en;          sys_rdata <= fft_q_rp_b                          ; end
-     // 20'h00184 : begin sys_ack <= sys_en;          sys_rdata <= fft_q_rp_save_b                     ; end
-     //
      20'h00188 : begin sys_ack <= sys_en;          sys_rdata <= {{16-RSZ{1'b0}}, y_step, {16-RSZ{1'b0}}, x_step}; end
-
      20'h0018C : begin sys_ack <= sys_en;          sys_rdata <= scope_sig_dly                     ; end
-
      20'h00190 : begin sys_ack <= sys_en;          sys_rdata <= fft_overflow_cnt                    ; end
      // 20'h00198 : begin sys_ack <= sys_en;          sys_rdata <= fft_we_cnt[1]                       ; end
 
