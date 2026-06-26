@@ -113,6 +113,7 @@ module axi_slave #(
 
 wire                 ack         ;
 reg   [      6-1: 0] ack_cnt     ;
+reg                  sys_ack_d   ;  // sys_ack_i delayed 1 cycle (enforce 2-cycle PS read)
 
 reg                  rd_do       ;
 reg   [ AXI_IW-1: 0] rd_arid     ;
@@ -204,7 +205,16 @@ end else begin
       ack_cnt <= ack_cnt + 6'h1 ;
 end
 
-assign ack = sys_ack_i || ack_cnt[5] || (rd_do && rd_errorw) || (wr_do && wr_errorw); // bus acknowledge or timeout or error
+// Enforce a 2-cycle PS read: delay the peripheral ack by one sys-clk cycle so the AXI
+// master latches sys_rdata on the 2nd cycle, matching the (multicycle-2) sys_rdata
+// readback path. Without this, a peripheral that acks in 1 cycle (e.g. scope reg 0,
+// sys_ack<=sys_en) returns sys_rdata before the multicycled mux has settled -> corrupt
+// reads. Timeout/error terms stay immediate; cost is +1 cycle read/write latency.
+always @(posedge axi_clk_i)
+   if (axi_rstn_i == 1'b0) sys_ack_d <= 1'b0;
+   else                    sys_ack_d <= sys_ack_i;
+
+assign ack = sys_ack_d || ack_cnt[5] || (rd_do && rd_errorw) || (wr_do && wr_errorw); // bus acknowledge (1-cycle delayed) or timeout or error
 
 //------------------------------------------
 //  Simple slave interface
