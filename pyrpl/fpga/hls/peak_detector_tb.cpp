@@ -11,55 +11,46 @@ static int bit_rev_sw(int x, int bits) {
 }
 #endif
 
-int main() {
+struct frame_result {
+    int  bin;
+    int  val;
+    bool valid;
+    unsigned kinterp;
+};
+
+// Build one FFT frame (uniform background `bg_val` with a peak at `peak_bin`, plus
+// optional distinct neighbors for sub-bin interpolation), stream it through the DUT,
+// and return the decoded output. `peak_bin`'s neighbors are placed only in natural
+// order (FFT_IMPL==4), matching the detector's neighbor-capture assumption.
+static frame_result run_frame(int n_fft_log2, int peak_bin, int peak_val,
+                              int bg_val, int left_val, int right_val,
+                              ap_uint<16> k_sq, count_t start_idx, count_t end_idx,
+                              data_t data_min, ap_uint<4> nfft) {
     hls::stream<axis_in_pkt>  s_axis;
     hls::stream<axis_out_pkt> m_axis;
 
-    const int N_FFT_LOG2 = 10;          // 1024-point FFT
-    const int N_FFT      = 1 << N_FFT_LOG2;
-    const int N_BEATS    = N_FFT / FSSR;
-    const int PEAK_BIN   = 100;
-    const int PEAK_VAL   = 300;   // small signal — below old SQ_RSHIFT=11 floor of 2048
-    const int BG_VAL     = 10;
-    // Sub-bin interpolation neighbors: bins PEAK_BIN-1 / PEAK_BIN+1 get distinct
-    // magnitudes so the parabolic offset is non-zero. delta = 0.5*(L-R)/(L-2P+R).
-    const int LEFT_VAL   = 120;   // mag[PEAK_BIN-1]
-    const int RIGHT_VAL  = 80;    // mag[PEAK_BIN+1]
+    const int N_FFT   = 1 << n_fft_log2;
+    const int N_BEATS = N_FFT / FSSR;
 
-    // AXI-lite control values
-    ap_uint<16> k_sq       = 9;          // k=3 -> k^2=9
-    count_t     start_idx  = 10;
-    count_t     end_idx    = 500;
-    data_t      data_min   = 5;          // below BG_VAL so background bins are included
-    ap_uint<4>  nfft       = N_FFT_LOG2;
-
-    // Streaming position that the DUT must map to actual_bin = PEAK_BIN.
 #ifdef FFT_NATURAL_ORDER
-    // Native-SSR xfft: natural order — the streaming position IS the bin.
-    int target_flat = PEAK_BIN;
+    int target_flat = peak_bin;                       // natural: position IS the bin
 #else
-    // DIF / bit_reversed_order: the FFT emits the bit-reversed bin, and the DUT
-    // reverses it back. bit_rev is its own inverse: flat = bit_rev(PEAK_BIN).
-    int target_flat = bit_rev_sw(PEAK_BIN, N_FFT_LOG2);
+    int target_flat = bit_rev_sw(peak_bin, n_fft_log2); // DIF: streaming = bit-rev bin
 #endif
 
-    // Build input stream: place the peak at its streaming position for this ordering
     for (int beat = 0; beat < N_BEATS; beat++) {
         axis_in_pkt pkt;
         pkt.data = 0;
         pkt.last = (beat == N_BEATS - 1);
         pkt.keep = -1;
         pkt.strb = -1;
-
         for (int ch = 0; ch < FSSR; ch++) {
             int flat = beat * FSSR + ch;
-            ap_uint<DSZ> val = (flat == target_flat) ? (ap_uint<DSZ>)PEAK_VAL
-                                                      : (ap_uint<DSZ>)BG_VAL;
+            ap_uint<DSZ> val = (flat == target_flat) ? (ap_uint<DSZ>)peak_val
+                                                      : (ap_uint<DSZ>)bg_val;
 #ifdef FFT_NATURAL_ORDER
-            // Natural order: bin == streaming position, so the peak's neighbors sit
-            // at flat = PEAK_BIN-1 / PEAK_BIN+1. (Interpolation only runs here.)
-            if (flat == PEAK_BIN - 1) val = (ap_uint<DSZ>)LEFT_VAL;
-            if (flat == PEAK_BIN + 1) val = (ap_uint<DSZ>)RIGHT_VAL;
+            if (flat == peak_bin - 1) val = (ap_uint<DSZ>)left_val;
+            if (flat == peak_bin + 1) val = (ap_uint<DSZ>)right_val;
 #endif
             pkt.data.range(ch*DSZ + DSZ - 1, ch*DSZ) = val;
         }
@@ -68,54 +59,90 @@ int main() {
 
     peak_detector(s_axis, m_axis, k_sq, start_idx, end_idx, data_min, nfft);
 
+    frame_result r{0, 0, false, 0};
     if (m_axis.empty()) {
         std::cerr << "FAIL: no output produced\n";
-        return 1;
+        r.bin = -1;
+        return r;
     }
+    axis_out_pkt out = m_axis.read();
+    r.val     = (int)(data_t)out.data.range(DSZ - 1, 0);
+    r.valid   = (bool)out.data[DSZ];
+    r.kinterp = (unsigned)(ap_uint<IDX_BITS>)out.data.range(DSZ + IDX_BITS, DSZ + 1);
+    r.bin     = (int)(r.kinterp >> FRAC_BITS);
+    return r;
+}
 
-    axis_out_pkt result = m_axis.read();
-
-    data_t            out_val     = result.data.range(DSZ - 1, 0);
-    bool              out_valid   = (bool)result.data[DSZ];
-    ap_uint<IDX_BITS> out_kinterp = result.data.range(DSZ + IDX_BITS, DSZ + 1);
-
+int main() {
     int errors = 0;
 
-    // Expected integer floor of the Q(FSZ).FRAC_BITS index. With FRAC_BITS==0 it is
-    // PEAK_BIN exactly; with interpolation a negative sub-bin offset can move the
-    // floor to PEAK_BIN-1, so derive it from the expected fixed-point value below.
-    int exp_bin = PEAK_BIN;
+    // ---------------------------------------------------------------------------
+    // Scenario 1: original low-floor frame (background well below any clip point).
+    // Exercises the sub-bin parabolic interpolation against known neighbor values.
+    // ---------------------------------------------------------------------------
+    {
+        const int N_FFT_LOG2 = 10;
+        const int PEAK_BIN    = 100;
+        const int PEAK_VAL    = 300;
+        const int BG_VAL      = 10;
+        const int LEFT_VAL    = 120;   // mag[PEAK_BIN-1]
+        const int RIGHT_VAL   = 80;    // mag[PEAK_BIN+1]
 
+        frame_result r = run_frame(N_FFT_LOG2, PEAK_BIN, PEAK_VAL, BG_VAL,
+                                   LEFT_VAL, RIGHT_VAL,
+                                   /*k_sq*/9, /*start*/10, /*end*/500,
+                                   /*data_min*/5, /*nfft*/N_FFT_LOG2);
+
+        int exp_bin = PEAK_BIN;
 #if FRAC_BITS > 0 && defined(FFT_NATURAL_ORDER)
-    // Reproduce the DUT's fixed-point parabolic offset (integer divide, truncating).
-    int L = LEFT_VAL, P = PEAK_VAL, R = RIGHT_VAL;
-    int num = L - R, den = L - 2*P + R;          // den <= 0
-    int exp_frac = (den != 0) ? ((num << (FRAC_BITS - 1)) / den) : 0;
-    const int FMAX = (1 << (FRAC_BITS - 1));
-    if (exp_frac >  FMAX) exp_frac =  FMAX;
-    if (exp_frac < -FMAX) exp_frac = -FMAX;
-    int exp_kinterp = PEAK_BIN * (1 << FRAC_BITS) + exp_frac;
-    double delta = (double)exp_frac / (1 << FRAC_BITS);
-    exp_bin = exp_kinterp >> FRAC_BITS;          // floor(peak_bin + delta)
+        int num = LEFT_VAL - RIGHT_VAL, den = LEFT_VAL - 2*PEAK_VAL + RIGHT_VAL;
+        int exp_frac = (den != 0) ? ((num << (FRAC_BITS - 1)) / den) : 0;
+        const int FMAX = (1 << (FRAC_BITS - 1));
+        if (exp_frac >  FMAX) exp_frac =  FMAX;
+        if (exp_frac < -FMAX) exp_frac = -FMAX;
+        int exp_kinterp = PEAK_BIN * (1 << FRAC_BITS) + exp_frac;
+        double delta = (double)exp_frac / (1 << FRAC_BITS);
+        exp_bin = exp_kinterp >> FRAC_BITS;
 #else
-    int exp_kinterp = PEAK_BIN;                  // field is the plain integer bin
+        int exp_kinterp = PEAK_BIN;
 #endif
-
-    int out_bin = (int)(out_kinterp >> FRAC_BITS);
-
-    std::cout << "Peak bin:   " << out_bin   << "  (expected " << exp_bin   << ")\n";
-    std::cout << "Peak value: " << out_val   << "  (expected " << PEAK_VAL  << ")\n";
-    std::cout << "Valid:      " << out_valid << "  (expected 1)\n";
-
-    if (out_bin       != exp_bin)  { std::cerr << "FAIL: bin mismatch\n";   errors++; }
-    if ((int)out_val  != PEAK_VAL) { std::cerr << "FAIL: value mismatch\n"; errors++; }
-    if (!out_valid)                 { std::cerr << "FAIL: peak not valid\n"; errors++; }
-
+        std::cout << "[1] low-floor: bin=" << r.bin << " (exp " << exp_bin
+                  << ")  val=" << r.val << " (exp " << PEAK_VAL
+                  << ")  valid=" << r.valid << "\n";
+        if (r.bin   != exp_bin)  { std::cerr << "FAIL: [1] bin mismatch\n";   errors++; }
+        if (r.val   != PEAK_VAL) { std::cerr << "FAIL: [1] value mismatch\n"; errors++; }
+        if (!r.valid)            { std::cerr << "FAIL: [1] peak not valid\n"; errors++; }
 #if FRAC_BITS > 0 && defined(FFT_NATURAL_ORDER)
-    std::cout << "k_interp:   " << out_kinterp << "  (expected " << exp_kinterp
-              << ", delta=" << delta << " bin)\n";
-    if ((int)out_kinterp != exp_kinterp) { std::cerr << "FAIL: k_interp mismatch\n"; errors++; }
+        std::cout << "    k_interp=" << r.kinterp << " (exp " << exp_kinterp
+                  << ", delta=" << delta << ")\n";
+        if ((int)r.kinterp != exp_kinterp) { std::cerr << "FAIL: [1] k_interp mismatch\n"; errors++; }
 #endif
+    }
+
+    // ---------------------------------------------------------------------------
+    // Scenario 2: HIGH-floor CW frame (regression guard for the clip degeneracy).
+    // The uniform floor raw=2000 sits FAR above the old clip point (raw 128). Under
+    // the old `clip(s<<SQ_LSHIFT)` the floor saturated alongside the peak, collapsing
+    // diff_sq/variance to 0 -> detection dropped for any k (intermittent no-detect).
+    // With scaling removed it must detect a clearly dominant peak. valid==1, bin==peak.
+    // ---------------------------------------------------------------------------
+    {
+        const int N_FFT_LOG2 = 10;
+        const int PEAK_BIN    = 100;
+        const int PEAK_VAL    = 100000;  // dominant peak, raw (< 2^DSZ)
+        const int BG_VAL      = 2000;    // noise floor, raw >> old clip point (128)
+        // symmetric neighbors -> delta 0; we only assert detection + integer bin here
+        frame_result r = run_frame(N_FFT_LOG2, PEAK_BIN, PEAK_VAL, BG_VAL,
+                                   BG_VAL, BG_VAL,
+                                   /*k_sq*/4, /*start*/0, /*end*/500,
+                                   /*data_min*/1, /*nfft*/N_FFT_LOG2);
+        std::cout << "[2] high-floor (bg=" << BG_VAL << "): bin=" << r.bin
+                  << " (exp " << PEAK_BIN << ")  val=" << r.val
+                  << " (exp " << PEAK_VAL << ")  valid=" << r.valid << " (exp 1)\n";
+        if (!r.valid)             { std::cerr << "FAIL: [2] high-floor peak DROPPED (clip degeneracy)\n"; errors++; }
+        if (r.bin != PEAK_BIN)    { std::cerr << "FAIL: [2] high-floor bin mismatch\n"; errors++; }
+        if (r.val != PEAK_VAL)    { std::cerr << "FAIL: [2] high-floor value mismatch\n"; errors++; }
+    }
 
     std::cout << (errors == 0 ? "PASS\n" : "FAIL\n");
     return errors;

@@ -39,15 +39,25 @@
 #define IDX_BITS (FSZ + FRAC_BITS)          // width of the k_interp output field
 typedef ap_uint<IDX_BITS> kinterp_t;
 
-// FMCW lidar: one dominant peak, all other bins at noise floor (1-100 LSBs).
-// Scale each sample up by SQ_LSHIFT, clip to SQ_BITS, then accumulate.
-// Noise-floor bins become non-zero in the variance; the large FMCW peak clips
-// and does not skew the background statistics — detection is background-relative.
-// sum_sq_t = SSZ + 2*SQ_BITS = 48 bits → fits DSP48E1 P-register → II=1 at 250 MHz.
+// FMCW lidar: one dominant peak, all other bins at the noise floor.
+// Accumulate the raw DSZ-bit magnitudes at full precision (no input scaling).
+//
+// The detection statistic (peak - mean) > k*stdev is scale-invariant, so an earlier
+// design left-shifted by SQ_LSHIFT and clipped to SQ_BITS=17 purely to bound sum_sq
+// to 48 bits (one DSP48E1 P-register) for II=1 at 250 MHz. That clip caused a
+// degeneracy: when the noise floor itself exceeds the clip point (raw 2^(SQ_BITS-
+// SQ_LSHIFT)), the floor saturates ALONGSIDE the peak — every valid bin pins to the
+// same max, so scaled_diff and the variance both collapse to 0 and detection fails
+// regardless of k (intermittent no-detect on a strong tone; see memory
+// project_peak_detect_clip_degeneracy).
+//
+// At 125 MHz there is timing slack for the wider (fabric/multi-DSP) accumulators, so
+// scaling is disabled: SQ_LSHIFT=0 and SQ_BITS=DSZ puts the clip point at full scale
+// (2^DSZ) where it never fires, leaving s_sc == raw s. sum_sq widens to SSZ+2*DSZ.
 #ifndef SQ_LSHIFT
-#define SQ_LSHIFT 10
+#define SQ_LSHIFT 0
 #endif
-#define SQ_BITS 17   // fixed: SSZ + 2*SQ_BITS = 48
+#define SQ_BITS (DSZ + SQ_LSHIFT)   // clip point = full scale: never saturates
 
 typedef ap_uint<DSZ>                        data_t;
 typedef ap_uint<SSZ>                        count_t;
