@@ -479,6 +479,12 @@ xpm_memory_sdpram #(
     .enb    (1'b1)
 );
 
+`else
+// History BRAM disabled: drive the readback outputs to 0 so they are not undriven
+// nets feeding the scope sys_rdata mux (undriven X-prone bits corrupt the readback).
+assign fft_hist_rdata_up_o   = '0;
+assign fft_hist_rdata_down_o = '0;
+
 `endif
 
 always @(posedge adc_clk_i)
