@@ -128,6 +128,23 @@ always @(posedge clk_i) begin
 end
 
 //-----------------------------
+// Pipeline the trigger-detection input. Breaks the long single-cycle pll_adc_clk
+// path sum1 -> dac_saturate -> dat_a_o -> input_select mux -> triggerfilter ->
+// adc_scht that binds at 125 MHz once the FFT shares adc_clk (route-dominated).
+// Cost: detection (and hence trig_o / the trigger-flag output) is delayed +1
+// adc_clk cycle = a fixed 1-sample offset on acquisition start. Benign for FMCW:
+// a constant time shift is a pure linear phase ramp across the FFT, so magnitude/
+// peak-bin/range are unchanged. Same +1-cycle trade DSP_FB_PIPELINE already makes
+// in digital_loop test/lock mode, so it is gated on that define (non-pipelined
+// builds are bit-identical). The phase-feedthrough output (output_data = phase)
+// is unaffected since it does not read dat_i.
+`ifdef DSP_FB_PIPELINE
+reg  signed [14-1:0] dat_i_trig;
+always @(posedge clk_i) dat_i_trig <= dat_i;
+`else
+wire signed [14-1:0] dat_i_trig = dat_i;
+`endif
+
 // cascaded set of FILTERSTAGES low- or high-pass filters
 wire signed [14-1:0] dat_i_filtered;
 red_pitaya_filter_block #(
@@ -140,8 +157,8 @@ red_pitaya_filter_block #(
   (
   .clk_i(clk_i),
   .rstn_i(rstn_i),
-  .set_filter(set_filter), 
-  .dat_i(dat_i),
+  .set_filter(set_filter),
+  .dat_i(dat_i_trig),
   .dat_o(dat_i_filtered)
   );
 
