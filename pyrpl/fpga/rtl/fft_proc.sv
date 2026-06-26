@@ -480,10 +480,13 @@ if (out_req) begin
     fft_peak_value_down_o <= fft_peak_value_down_;
 end
 
+// scan_frame_cnt: counts scan-position changes. fft_hist_index changes only at
+// scan-step rate, so sampling it at fft_frame_start is fine. frame_cnt moved to the
+// peak_ready_pretrig block below (gated by peak_up) — up_in is the INPUT-side phase
+// and fft_frame_start fires at FFT-processing start, so the two desync once the FFT
+// pipeline fills and frame_cnt froze.
 always @(posedge clk_i) begin
     if (fft_frame_start) begin
-        if (up_in)
-            frame_cnt <= frame_cnt + 1;
         if (prev_hist_index != fft_hist_index)
             scan_frame_cnt <= scan_frame_cnt + 1;
         prev_hist_index <= fft_hist_index;
@@ -735,6 +738,7 @@ end else begin
         fft_hist_index <= fft_hist_index_o;
 
         if (peak_up) begin
+            frame_cnt <= frame_cnt + 1;   // coherent up-frame count (was up_in @ fft_frame_start)
             fft_peak_index_up <= fft_peak_idx;
             fft_peak_value_up <= fft_peak;
         end else begin
