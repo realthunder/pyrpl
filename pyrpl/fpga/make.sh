@@ -187,9 +187,8 @@ case "${PROFILE:-}" in
         # The SSR=2 design is roomy (63% DSP) so the adc sum1 force-replication is not
         # needed here and actually hurt — keep it OFF.
         export DETERMINISTIC=${DETERMINISTIC:-10}
-        export SUM1_REPLICATE=${SUM1_REPLICATE:-0}
         export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
-        echo "==> PROFILE=fft200ssr2: SSR=2 NFFT=13 FFT@200MHz, place ExtraNetDelay_low (DETERMINISTIC=10), phys_opt AggressiveExplore, sum1 replicate OFF"
+        echo "==> PROFILE=fft200ssr2: SSR=2 NFFT=13 FFT@200MHz, place ExtraNetDelay_low (DETERMINISTIC=10), phys_opt AggressiveExplore"
         ;;
     fft178ssr4n11)
         # Highest-throughput closing config: SSR=4 NFFT=11 (2048-pt) FFT @ 178.57 MHz.
@@ -204,8 +203,7 @@ case "${PROFILE:-}" in
         export FFT_CLK_SEL=${FFT_CLK_SEL:-1}
         export DETERMINISTIC=${DETERMINISTIC:-6}
         export PHYS_OPT=${PHYS_OPT:-Explore}
-        export SUM1_REPLICATE=${SUM1_REPLICATE:-0}
-        echo "==> PROFILE=fft178ssr4n11: SSR=4 NFFT=11 FFT@178.57MHz, place EarlyBlockPlacement (DETERMINISTIC=6), phys_opt Explore, sum1 replicate OFF"
+        echo "==> PROFILE=fft178ssr4n11: SSR=4 NFFT=11 FFT@178.57MHz, place EarlyBlockPlacement (DETERMINISTIC=6), phys_opt Explore"
         ;;
     fft178ssr8n11)
         # Experimental SSR=8 single-FFT build: only fft_a is synthesised (FFT_SINGLE=1,
@@ -220,7 +218,6 @@ case "${PROFILE:-}" in
         export FFT_CLK_SEL=${FFT_CLK_SEL:-1}
         export DETERMINISTIC=${DETERMINISTIC:-6}
         export PHYS_OPT=${PHYS_OPT:-Explore}
-        export SUM1_REPLICATE=${SUM1_REPLICATE:-0}
         echo "==> PROFILE=fft178ssr8n11: SSR=8 NFFT=11 FFT@178.57MHz, fft_b disabled (FFT_SINGLE=1), place EarlyBlockPlacement (DETERMINISTIC=6), phys_opt Explore — EXPERIMENTAL"
         ;;
     *)
@@ -295,7 +292,7 @@ else
 fi
 if [[ $_ssr -ge 8 ]]; then _single_def=1; else _single_def=0; fi
 echo "==> Build config: IMPL=${FFT_IMPL} SSR=${_ssr} NFFT=${FFT_NFFT:-12} SCALED=${FFT_SCALED:-2} WIDTH=${FFT_WIDTH:-auto} SINGLE=${FFT_SINGLE:-$_single_def}"
-echo "                  FFT_CLK=${_fftclk} | DET=${DETERMINISTIC} PHYS_OPT=${PHYS_OPT:-AggressiveExplore} SUM1_REP=${SUM1_REPLICATE:-1} DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-0}"
+echo "                  FFT_CLK=${_fftclk} | DET=${DETERMINISTIC} PHYS_OPT=${PHYS_OPT:-AggressiveExplore} DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-0}"
 unset _ssr _fftclk _single_def
 
 mkdir -p "$ROOT/.hls"
@@ -456,7 +453,7 @@ manifest="$WORKROOT/out/BUILD_INFO.txt"
     echo "# and derived module parameters are appended below by red_pitaya_vivado.tcl):"
     for v in FPGA_PART ADC_SZ CLK_MULT CLK_ADC_DIV FFT_IMPL FFT_SSR FFT_NFFT \
              FFT_WIDTH PEAK_FRAC FFT_SCALED FFT_INTERNAL_W FFT_CLK_PERIOD FFT_CLK_SEL FFT_CLK_200 FFT_CLK_178 \
-             FFT_MULT_LUT FFT_USE_APPROX FFT_UNSCALED FFT_CORDIC_ITER HIST_BLOCK_SIZE SUM1_REPLICATE PHYS_OPT OPT_DIRECTIVE FFT_SINGLE; do
+             FFT_MULT_LUT FFT_USE_APPROX FFT_UNSCALED FFT_CORDIC_ITER HIST_BLOCK_SIZE PHYS_OPT OPT_DIRECTIVE FFT_SINGLE; do
         printf '%-14s= %s\n' "$v" "${!v:-}"
     done
 } > "$manifest"

@@ -405,27 +405,6 @@ if {[lsearch -exact {none off skip ""} $phys_opt_dir] >= 0} {
     phys_opt_design -directive $phys_opt_dir
 }
 
-# adc: i_dsp/sum1_reg (the DSP output summer) is a high-fanout source feeding the
-# pyrpl output-bus loopback (sum1 -> dac_saturate -> dat_a -> iq/trigger/... inputs).
-# Its route to the IQ input-filter is the lone adc violation (~-0.022); pinning one
-# consumer just displaces the others, so instead replicate the high-fanout sum1 nets
-# and let phys_opt place a local copy per consumer cluster. This is an adc-clock-
-# domain path (i_dsp is always on adc_clk), independent of the FFT clock mux, so run
-# it for any FFT_CLK_SEL — at FFT_CLK_SEL=1 this same loopback is the worst adc path.
-# SUM1_REPLICATE=0 disables this (default 1). Helps adc when the die has room
-# (SSR=2), but on a near-full die (SSR=4, 98% DSP) the extra copies compete for
-# scarce slices and may hurt — toggle to A/B it.
-set sum1_replicate [expr {[info exists env(SUM1_REPLICATE)] ? $env(SUM1_REPLICATE) : 1}]
-if {$sum1_replicate && ($fft_clk_sel == 0 || $fft_clk_sel == 1)} {
-    set sum1_pins [get_pins -hier -quiet -filter {NAME =~ i_dsp/sum1_reg*/Q}]
-    if {[llength $sum1_pins] > 0} {
-        set sum1_nets [get_nets -of_objects $sum1_pins]
-        phys_opt_design -force_replication_on_nets $sum1_nets
-        puts "INFO: forced replication on [llength $sum1_nets] sum1 nets (adc)"
-    }
-} else {
-    puts "INFO: sum1 force-replication disabled (SUM1_REPLICATE=$sum1_replicate)"
-}
 
 # [2020.1 levers — disabled on 2025.2; FFT is no longer critical]
 # Force replication of the xfft NonRealTime CE register (ce_predicted_reg, fo≈1000+).
@@ -510,7 +489,7 @@ if {![catch {open $path_out/BUILD_INFO.txt a} bi]} {
             fft_use_approx $fft_use_approx  fft_runtime_nfft $fft_runtime_nfft \
             fft_clk_period $fft_clk_period  fft_clk_sel $fft_clk_sel \
             fft_clk_200 $fft_clk_200  fft_clk_178 $fft_clk_178 \
-            hist_block_size $hist_block_size  sum1_replicate $sum1_replicate \
+            hist_block_size $hist_block_size \
             phys_opt_dir $phys_opt_dir  opt_dir $opt_dir] {
         puts $bi [format "%-17s= %s" $k $v]
     }
