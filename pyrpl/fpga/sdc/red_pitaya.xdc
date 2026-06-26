@@ -284,6 +284,78 @@ set_multicycle_path 1 -hold  -from [get_cells -hierarchical -filter {NAME =~ *ff
 set_multicycle_path 2 -setup -from [get_cells -hierarchical -filter {NAME =~ *i_dsp/input_select_reg* && IS_SEQUENTIAL}]
 set_multicycle_path 1 -hold  -from [get_cells -hierarchical -filter {NAME =~ *i_dsp/input_select_reg* && IS_SEQUENTIAL}]
 
+# Quasi-static sys-bus config regs: static while running but fan into pll_adc_clk
+# logic. Relax setup to 2 (-from), hold 1; same as input_select/fft_nfft above.
+# Signal names are explicit; wildcards are used ONLY for the looped instance
+# (ASG channel a/b/c/d, dsp genblk index) and the register bit index. Strobe/reset
+# config (rst, zero, steping, trig_sw, *_trig, *_on, dsp sync) is excluded, and so
+# are the HW-updated set_*_axi_cur / set_*_axi_trig DMA pointers.
+
+# ASG (i_asg, channel * = a/b/c/d). NCO config (set_*_size/step/ofs -> dac_npnt =
+# binding path) + set_*_amp, set_*_dc, set_*_ncyc, set_*_rnum, set_*_rdly, at_counts_*.
+set asg_cfg [get_cells {
+    i_asg/set_*_size_reg[*]  i_asg/set_*_step_reg[*]  i_asg/set_*_ofs_reg[*]
+    i_asg/set_*_amp_reg[*]   i_asg/set_*_dc_reg[*]    i_asg/set_*_ncyc_reg[*]
+    i_asg/set_*_rnum_reg[*]  i_asg/set_*_rdly_reg[*]  i_asg/at_counts_*_reg[*]
+}]
+set_multicycle_path 2 -setup -from $asg_cfg
+set_multicycle_path 1 -hold  -from $asg_cfg
+
+# PID (i_dsp/<genblk>*.i_pid). set_sp, set_kp, set_ki, set_kd, set_filter,
+# out_min, out_max  (-> pid_out).
+set pid_cfg [get_cells {
+    i_dsp/*.i_pid/set_sp_reg[*]   i_dsp/*.i_pid/set_kp_reg[*]
+    i_dsp/*.i_pid/set_ki_reg[*]   i_dsp/*.i_pid/set_kd_reg[*]
+    i_dsp/*.i_pid/set_filter_reg[*]
+    i_dsp/*.i_pid/out_min_reg[*]  i_dsp/*.i_pid/out_max_reg[*]
+}]
+set_multicycle_path 2 -setup -from $pid_cfg
+set_multicycle_path 1 -hold  -from $pid_cfg
+
+# IQ (i_dsp/<genblk>*.iq). g1, g2, g3, g4, input_filter, quadrature_filter,
+# start_phase, shift_phase (static demod freq/phase words).
+set iq_cfg [get_cells {
+    i_dsp/*.iq/g1_reg[*]  i_dsp/*.iq/g2_reg[*]  i_dsp/*.iq/g3_reg[*]  i_dsp/*.iq/g4_reg[*]
+    i_dsp/*.iq/input_filter_reg[*]      i_dsp/*.iq/quadrature_filter_reg[*]
+    i_dsp/*.iq/start_phase_reg[*]       i_dsp/*.iq/shift_phase_reg[*]
+}]
+set_multicycle_path 2 -setup -from $iq_cfg
+set_multicycle_path 1 -hold  -from $iq_cfg
+
+# Trigger (i_dsp/<genblk>*.i_trigger). set_a_thresh, set_a_hyst, set_filter,
+# phase_offset, trigger_source (detection input already pipelined in RTL).
+set trig_cfg [get_cells {
+    i_dsp/*.i_trigger/set_a_thresh_reg[*]  i_dsp/*.i_trigger/set_a_hyst_reg[*]
+    i_dsp/*.i_trigger/set_filter_reg[*]    i_dsp/*.i_trigger/phase_offset_reg[*]
+    i_dsp/*.i_trigger/trigger_source_reg[*]
+}]
+set_multicycle_path 2 -setup -from $trig_cfg
+set_multicycle_path 1 -hold  -from $trig_cfg
+
+# DSP routing muxes (i_dsp). output_select, scan_select (select lines only).
+set dsp_cfg [get_cells {
+    i_dsp/output_select_reg[*]  i_dsp/scan_select_reg[*]
+}]
+set_multicycle_path 2 -setup -from $dsp_cfg
+set_multicycle_path 1 -hold  -from $dsp_cfg
+
+# Scope (i_scope). set_a_tresh, set_a_hyst, set_dec, set_dly, fft_peak_start,
+# fft_threshold_k, fft_peak_minimum, fft_wait1_cnt, fft_wait2_cnt, fft_acq1_cnt,
+# fft_acq2_cnt, scope_sig_dly.
+# (Input-filter set_*_filt_* and AXI-DMA set_*_axi_* are commented out in scope.sv
+#  — registers undriven/optimized away, so they are NOT constrained here.)
+set scope_cfg [get_cells {
+    i_scope/set_a_tresh_reg[*]  i_scope/set_a_hyst_reg[*]
+    i_scope/set_dec_reg[*]      i_scope/set_dly_reg[*]
+    i_scope/fft_peak_start_reg[*]    i_scope/fft_threshold_k_reg[*]
+    i_scope/fft_peak_minimum_reg[*]
+    i_scope/fft_wait1_cnt_reg[*]  i_scope/fft_wait2_cnt_reg[*]
+    i_scope/fft_acq1_cnt_reg[*]   i_scope/fft_acq2_cnt_reg[*]
+    i_scope/scope_sig_dly_reg[*]
+}]
+set_multicycle_path 2 -setup -from $scope_cfg
+set_multicycle_path 1 -hold  -from $scope_cfg
+
 # ADC data hold: adc_dat_*_i input_delay is referenced to adc_clk, but the
 # IOB register is clocked by pll_adc_clk (large internal skew vs adc_clk).
 # Hold analysis across these two clocks is not meaningful — suppress it.
