@@ -431,10 +431,18 @@ class IntProperty(NumberProperty):
 class IntRegister(BaseRegister, IntProperty):
     """
     Register for integer values encoded on less than 32 bits.
+
+    When ``bitmask`` selects a sub-field that is not aligned to bit 0, the
+    value is shifted so the Python side sees the field as a plain integer
+    (read shifts right, write shifts left by the field offset). This lets
+    several packed fields of one FPGA register be exposed as individual
+    IntRegister attributes.
     """
     def __init__(self, address, bits=32, bitmask=None, **kwargs):
         self.bits = bits
         self.size = int(np.ceil(float(self.bits) / 32))
+        # bit offset of the field = number of trailing zeros of the bitmask
+        self._shift = 0 if bitmask is None else (bitmask & -bitmask).bit_length() - 1
         BaseRegister.__init__(self, address=address, bitmask=bitmask)
         if not 'min' in kwargs: kwargs['min'] = 0
         if not 'max' in kwargs: kwargs['max'] = 2**self.bits-1
@@ -442,10 +450,10 @@ class IntRegister(BaseRegister, IntProperty):
                              **kwargs)
 
     def to_python(self, obj, value):
-        return int(value)
+        return int(value) >> self._shift
 
     def from_python(self, obj, value):
-        return int(value)
+        return int(value) << self._shift
 
 
 class ConstantIntRegister(IntRegister):

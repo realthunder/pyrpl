@@ -10,7 +10,8 @@ module fft_proc #(
   parameter QSZ,        // FFT queue size 2^QSZ
   parameter READ_DELAY,  // memory output read delay
   parameter HIST_BLOCK_SIZE = 183,  // DMA packet size in detection words (183+1 hdr = 184×8 = 1472 B = one Ethernet MTU)
-  parameter [3:0] CHANNEL_ID = 0   // 4-bit channel tag stamped into header bits [63:60]
+  parameter [3:0] CHANNEL_ID = 0,  // 4-bit channel tag stamped into header bits [63:60]
+  parameter [3:0] DMA_FMT_VERSION = 4'd1  // packet-layout version stamped into header bits [49:46]
 )(
   input logic             adc_clk_i,
   input logic             clk_i,
@@ -832,7 +833,8 @@ assign peak_ready     = peak_out_valid;
 // Header word (64-bit):
 //   [31:0]           frame_cnt       (cumulative frame counter)
 //   [31+HSZ:32]      fft_hist_index  (scan-position tag for this block)
-//   [59:32+HSZ]      reserved 0
+//   [35+HSZ:32+HSZ]  DMA_FMT_VERSION (4-bit packet-layout version, host sanity check)
+//   [59:36+HSZ]      reserved 0
 //   [63:60]          CHANNEL_ID      (4-bit channel tag: 0=fft_a, 1=fft_b)
 //
 // Data word (64-bit):
@@ -847,7 +849,8 @@ assign peak_ready     = peak_out_valid;
 // paired data word is held one cycle (dma_data_pending).
 // fft_index_flush_i closes any in-progress packet cleanly (emits tlast) so the
 // downstream FIFO and dma_s2mm stay consistent with no PS intervention.
-localparam DMA_HDR_RSVD = 64 - 4 - 32 - HSZ;  // [63:60]=channel_id [59:32+HSZ]=rsvd [31+HSZ:32]=hist_index [31:0]=frame_cnt
+// Header reserved span = [59:32+HSZ]; its low nibble carries DMA_FMT_VERSION.
+localparam DMA_HDR_RSVD = 64 - 4 - 32 - HSZ;  // [63:60]=channel_id [59:36+HSZ]=rsvd [35+HSZ:32+HSZ]=version [31+HSZ:32]=hist_index [31:0]=frame_cnt
 localparam DMA_DAT_RSVD = 64 - 2*IDX;
 
 logic [15:0]    dma_data_sent;      // data words sent in current packet (0..HIST_BLOCK_SIZE)
@@ -889,7 +892,7 @@ always @(posedge clk_i) begin
     end else if (dma_emit) begin
         if (dma_data_sent == 0) begin
             // First detection of new block: send header, buffer data for next cycle
-            dma_wr_data         <= { CHANNEL_ID, {DMA_HDR_RSVD{1'b0}}, fft_hist_index, frame_cnt };
+            dma_wr_data         <= { CHANNEL_ID, {(DMA_HDR_RSVD-4){1'b0}}, DMA_FMT_VERSION, fft_hist_index, frame_cnt };
             dma_wr_tlast        <= 0;
             dma_wr_en           <= 1;
             dma_saved_peak_up   <= fft_peak_index_up;

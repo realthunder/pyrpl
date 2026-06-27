@@ -1,15 +1,24 @@
 """UDP multicast receiver for point-cloud packets from monitor_server's DMA thread.
 
-Packet format (little-endian 64-bit words, 184 words = 1472 bytes):
+Packet format (little-endian 64-bit words, (HIST_BLOCK_SIZE+1) words):
   Word 0 header:
     bits [31:0]        = frame_cnt  (same for all packets in one frame)
     bits [31+HSZ:32]   = fft_hist_index  (zero-based index of first data word
                          in this packet within the frame; default HSZ=14)
+    bits [35+HSZ:32+HSZ] = packet-layout version (4-bit, host sanity check)
     bits [63:60]       = CHANNEL_ID (0=fft_a, 1=fft_b)
   Words 1..HIST_BLOCK_SIZE (default 183):
-    bits [FSZ-1:0]     = peak_bin_up
-    bits [2*FSZ-1:FSZ] = peak_bin_down
-    (indices hist_index, hist_index+1, ... hist_index+182 within the frame)
+    bits [IDX-1:0]     = peak_bin_up    (k_interp, Q(FSZ).FRAC fixed-point)
+    bits [2*IDX-1:IDX] = peak_bin_down  (k_interp, Q(FSZ).FRAC fixed-point)
+    where IDX = FSZ + FRAC. Each value is unsigned Q(FSZ).FRAC; the host
+    recovers the fractional bin as value / 2**FRAC (raw value returned here,
+    matching Scope.get_fft_history()).
+    (indices hist_index, hist_index+1, ... within the frame)
+
+The field widths (FSZ, FRAC, HSZ) and HIST_BLOCK_SIZE are NOT hardcoded: the
+scope reads them from the FPGA's self-describing descriptor registers and calls
+configure() before starting the receive thread, so the host always matches the
+running bitstream.
 
 A complete frame is assembled from one or more packets sharing the same frame_cnt.
 When frame_cnt changes, the assembled data is published as a ready frame.
@@ -24,8 +33,6 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MCAST_IP = '239.255.0.1'
 _DEFAULT_PORT = 12468
-_PKT_WORDS = 184       # 1 header + 183 data
-_PKT_BYTES = _PKT_WORDS * 8
 
 
 class DmaUdpClient:
@@ -50,7 +57,8 @@ class DmaUdpClient:
     """
 
     def __init__(self, mcast_ip=_DEFAULT_MCAST_IP, port=_DEFAULT_PORT,
-                 fsz=13, hist_block_size=183, hsz=14, max_frame_size=128*1024):
+                 fsz=13, frac=8, hist_block_size=183, hsz=14,
+                 max_frame_size=128*1024):
         """
         Parameters
         ----------
@@ -59,7 +67,11 @@ class DmaUdpClient:
         port : int
             UDP port (must match monitor_server argv[2]).
         fsz : int
-            FFT peak bin index width in bits (= nfft register value, default 13).
+            FFT peak integer-bin width in bits (default 13).
+        frac : int
+            Sub-bin interpolation fractional bits (default 8). Each peak field
+            is IDX = fsz + frac bits wide; the host recovers the fractional bin
+            as value / 2**frac. frac=0 disables interpolation.
         hist_block_size : int
             Data words per packet (= HIST_BLOCK_SIZE build parameter, default 183).
         hsz : int
@@ -68,15 +80,15 @@ class DmaUdpClient:
             Maximum number of (peak_up, peak_down) pairs per frame.  Packets
             whose hist_index >= max_frame_size are silently discarded.  Defaults
             to 128 K entries (1 MB per channel per frame).
+
+        The width parameters default to the reference build, but the scope
+        overrides them at runtime via configure() from the FPGA descriptor.
         """
         self._mcast_ip = mcast_ip
         self._port = port
-        self._fsz = fsz
-        self._hist_block_size = hist_block_size
-        self._hsz = hsz
         self._max_frame_size = max_frame_size
-        self._mask = (1 << fsz) - 1
-        self._hist_mask = (1 << hsz) - 1
+        self.configure(fsz=fsz, frac=frac, hsz=hsz,
+                       hist_block_size=hist_block_size)
 
         # Assembly buffers: shape (max_frame_size, 2), col 0 = peak_up, col 1 = peak_down
         self._asm_buf = [
@@ -98,6 +110,27 @@ class DmaUdpClient:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def configure(self, fsz=None, frac=None, hsz=None, hist_block_size=None):
+        """Set the packet-layout parameters (typically from the FPGA descriptor).
+
+        Recomputes the derived field masks and expected packet size. Call before
+        start(); only the given parameters are changed, the rest are kept.
+        """
+        if fsz is not None:
+            self._fsz = fsz
+        if frac is not None:
+            self._frac = frac
+        if hsz is not None:
+            self._hsz = hsz
+        if hist_block_size is not None:
+            self._hist_block_size = hist_block_size
+        # Peak field width IDX = fsz + frac; value is unsigned Q(fsz).frac.
+        self._idx = self._fsz + self._frac
+        self._mask = (1 << self._idx) - 1
+        self._hist_mask = (1 << self._hsz) - 1
+        self._pkt_words = self._hist_block_size + 1
+        self._pkt_bytes = self._pkt_words * 8
 
     def start(self):
         """Start the background receive thread."""
@@ -178,8 +211,8 @@ class DmaUdpClient:
             self._process_packet(data)
 
     def _process_packet(self, data):
-        if len(data) != _PKT_BYTES:
-            logger.debug("Unexpected packet length %d (expected %d)", len(data), _PKT_BYTES)
+        if len(data) != self._pkt_bytes:
+            logger.debug("Unexpected packet length %d (expected %d)", len(data), self._pkt_bytes)
             return
 
         words = np.frombuffer(data, dtype='<u8')
@@ -192,9 +225,11 @@ class DmaUdpClient:
         frame_cnt = hdr & 0xffffffff
         hist_idx = int((hdr >> 32) & self._hist_mask)
 
+        # Each peak field is IDX = fsz+frac bits wide (Q(fsz).frac fixed-point);
+        # the raw value is kept (host divides by 2**frac to get the fractional bin).
         payload = words[1:]                                  # shape (hist_block_size,)
         peak_up = (payload & self._mask).astype(np.int32)
-        peak_down = ((payload >> self._fsz) & self._mask).astype(np.int32)
+        peak_down = ((payload >> self._idx) & self._mask).astype(np.int32)
 
         if hist_idx >= self._max_frame_size:
             logger.debug("hist_idx %d >= max_frame_size %d — packet discarded",

@@ -288,6 +288,17 @@ localparam QSZ = FSZ - $clog2(FSSR) - 1;
 // Carries through the inter-channel peak-index regs and history readout (see fft_proc).
 localparam IDX = FSZ + FRAC;
 
+// DMA point-cloud packet-layout version. Single source of truth: stamped into
+// the header (low nibble, via fft_proc) and reported in the descriptor reg 0x170
+// so the host can sanity-check before decoding. Bump on any packet-format change.
+localparam [7:0] DMA_FMT_VERSION = 8'd1;
+// Fixed-width views of the build constants for the packet-format descriptor regs
+// (truncate the untyped integer parameters to a defined width).
+localparam [ 7:0] DMA_FMT_FSZ  = FSZ;             // integer bin width
+localparam [ 7:0] DMA_FMT_FRAC = FRAC;            // sub-bin fractional bits (IDX = FSZ+FRAC)
+localparam [ 7:0] DMA_FMT_HSZ  = HSZ;             // hist_index header field width
+localparam [15:0] DMA_PKT_BLK  = HIST_BLOCK_SIZE; // data words per packet (pkt = +1 header)
+
 logic [ ASZ-1: 0] adc_a_rd      ;
 logic [ ASZ-1: 0] adc_b_rd      ;
 reg   [ RSZ-1: 0] adc_wp        ;
@@ -765,7 +776,8 @@ fft_proc #(.ASZ(ASZ),
            .FFT_IMPL(FFT_IMPL),
            .READ_DELAY(FFT_RDELAY-2),
            .HIST_BLOCK_SIZE(HIST_BLOCK_SIZE),
-           .CHANNEL_ID(4'd0))
+           .CHANNEL_ID(4'd0),
+           .DMA_FMT_VERSION(DMA_FMT_VERSION[3:0]))
 fft_a (
    .adc_clk_i (adc_clk_i),
    .adc_rstn_in (fft_rstn_i),
@@ -851,7 +863,8 @@ fft_proc #(.ASZ(ASZ),
            .FFT_IMPL(FFT_IMPL),
            .READ_DELAY(FFT_RDELAY-2),
            .HIST_BLOCK_SIZE(HIST_BLOCK_SIZE),
-           .CHANNEL_ID(4'd1)
+           .CHANNEL_ID(4'd1),
+           .DMA_FMT_VERSION(DMA_FMT_VERSION[3:0])
 ) fft_b (
    .adc_clk_i (adc_clk_i),
    .adc_rstn_in (fft_rstn_i),
@@ -1678,18 +1691,25 @@ end else begin
      
      20'h0016c : begin sys_ack <= sys_en;          sys_rdata <= {{32-1{1'b0}}, pretrig_ok}          ; end
 
+     // DMA point-cloud packet-format descriptor (read-only, self-describing).
+     // Lets the host configure its UDP unpacker from hardware instead of hardcoding.
+     //   0x170 [7:0]=FSZ [15:8]=FRAC [23:16]=HSZ [31:24]=FMT_VERSION
+     //   0x194 [15:0]=HIST_BLOCK_SIZE [19:16]=channel-field width
+     // Data-word peak field width IDX = FSZ+FRAC; host: bin = field / 2^FRAC.
+     // (FRAC was previously exposed standalone here; it is now the [15:8] sub-field.)
+     20'h00170 : begin sys_ack <= sys_en;          sys_rdata <= {DMA_FMT_VERSION, DMA_FMT_HSZ, DMA_FMT_FRAC, DMA_FMT_FSZ}; end
      // Peak-bin sub-bin FRACTION (the low FRAC bits of k_interp), per channel.
-     // 0x170 = FRAC build constant (fraction scale; host: fraction = field / 2^FRAC).
      // 0x174/0x178 pack {down, up} for channel A/B — each the FRAC-bit fraction
      // zero-extended to 16, down in [31:16], up in [15:0]. Combine with the integer
      // bin from 0x44/0x7C: bin = integer + fraction/2^FRAC. All read 0 when FRAC=0.
-     20'h00170 : begin sys_ack <= sys_en;          sys_rdata <= FRAC                                    ; end
      20'h00174 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_frac_a                         ; end
      20'h00178 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_frac_b                         ; end
 
      20'h00188 : begin sys_ack <= sys_en;          sys_rdata <= {{16-RSZ{1'b0}}, y_step, {16-RSZ{1'b0}}, x_step}; end
      20'h0018C : begin sys_ack <= sys_en;          sys_rdata <= scope_sig_dly                     ; end
      20'h00190 : begin sys_ack <= sys_en;          sys_rdata <= fft_overflow_cnt                    ; end
+     // DMA packet geometry (read-only): data words per packet + channel field width.
+     20'h00194 : begin sys_ack <= sys_en;          sys_rdata <= {12'h0, 4'd4, DMA_PKT_BLK}          ; end
      // 20'h00198 : begin sys_ack <= sys_en;          sys_rdata <= fft_we_cnt[1]                       ; end
 
      20'h1???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_a_rd}              ; end

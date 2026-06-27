@@ -466,7 +466,21 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_wp_last = IntRegister(0x68, doc="FFT last write size")
 
-    fft_debug = IntRegister(0x170)
+    # DMA point-cloud packet-format descriptor (read-only, self-describing).
+    # Sub-fields of one packed FPGA register (0x170) so the host configures its
+    # UDP unpacker from hardware instead of hardcoding. Data-word peak field
+    # width is IDX = dma_fmt_fsz + dma_fmt_frac; bin = field / 2**dma_fmt_frac.
+    dma_fmt_fsz = IntRegister(0x170, bits=8, bitmask=0x000000ff,
+                              doc="DMA peak integer-bin width FSZ")
+    dma_fmt_frac = IntRegister(0x170, bits=8, bitmask=0x0000ff00,
+                               doc="DMA peak sub-bin fractional bits FRAC")
+    dma_fmt_hsz = IntRegister(0x170, bits=8, bitmask=0x00ff0000,
+                              doc="DMA header hist_index field width HSZ")
+    dma_fmt_version = IntRegister(0x170, bits=8, bitmask=0xff000000,
+                                  doc="DMA packet-layout version")
+    dma_block_size = IntRegister(0x194, bits=16, bitmask=0x0000ffff,
+                                 doc="DMA data words per packet (HIST_BLOCK_SIZE)")
+
     fft_debug2 = IntRegister(0x174)
     fft_debug3 = IntRegister(0x178)
 
@@ -583,10 +597,34 @@ class Scope(HardwareModule, AcquisitionModule):
                                         doc="whether a curve acquisition has been "
                                             "initiated")
 
+    # Highest DMA packet-layout version this host knows how to decode. Bump in
+    # lockstep with DMA_FMT_VERSION in red_pitaya_scope.sv when the format changes.
+    _DMA_FMT_VERSION_SUPPORTED = 1
+
     def __init__(self, parent, name=None):
         super().__init__(parent, name=name)
         self._dma_udp_client = DmaUdpClient()
         self._last_dma_frame_cnt = [-1, -1]
+
+    def _dma_configure_from_fpga(self):
+        """Reconfigure the UDP unpacker from the FPGA packet-format descriptor.
+
+        Reads the self-describing descriptor registers (0x170/0x194) so the host
+        layout always matches the running bitstream. Called before the receive
+        thread starts; warns (but proceeds) on a version it does not recognise.
+        """
+        version = self.dma_fmt_version
+        if version != self._DMA_FMT_VERSION_SUPPORTED:
+            self._logger.warning(
+                "DMA packet-format version %d != supported %d; decoding may be "
+                "wrong. Update pyrpl to match the FPGA bitstream.",
+                version, self._DMA_FMT_VERSION_SUPPORTED)
+        self._dma_udp_client.configure(
+            fsz=self.dma_fmt_fsz,
+            frac=self.dma_fmt_frac,
+            hsz=self.dma_fmt_hsz,
+            hist_block_size=self.dma_block_size,
+        )
 
     def _ownership_changed(self, old, new):
         """
@@ -810,6 +848,7 @@ class Scope(HardwareModule, AcquisitionModule):
         Start acquisition of a curve in rolling_mode=False
         """
         if self.fft_enable and self.dma_enabled and not self._dma_udp_client._running:
+            self._dma_configure_from_fpga()
             self._dma_udp_client.start()
         autosave_backup = self._autosave_active
         self._autosave_active = False  # Don't save anything in config file

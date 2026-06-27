@@ -113,17 +113,21 @@ int newsockfd;
  * sendmsg(iovec) to avoid a copy across the ring-buffer wrap boundary.
  *
  * Packet layout (HIST_BLOCK_SIZE+1 words of 8 bytes each):
- *   Word 0  [63:60] channel_id  [31:0] frame_cnt  [31+HSZ:32] fft_hist_index
- *   Word 1..183: { peak_bin_down, peak_bin_up }
+ *   Word 0  [63:60] channel_id  [35+HSZ:32+HSZ] fmt_version
+ *           [31+HSZ:32] fft_hist_index  [31:0] frame_cnt
+ *   Word 1..N: { peak_bin_down, peak_bin_up }  (each IDX = FSZ+FRAC bits)
  *
- * DMA_PKT_WORDS must equal HIST_BLOCK_SIZE+1 from the FPGA build.
+ * This thread forwards the payload verbatim and only depends on packet *size*;
+ * the field widths live in the FPGA descriptor regs (0x170/0x194) that the host
+ * reads. The packet size itself is discovered at runtime from the DMA register
+ * slot (dma_reg[1] = HIST_BLOCK_SIZE), so it tracks the FPGA build with no
+ * recompile; DMA_PKT_WORDS_DEFAULT is only a fallback for an old/garbage read.
  * ------------------------------------------------------------------------- */
-#define DMA_BUF_BASE     0x1e000000UL
-#define DMA_BUF_WORDS    16384           /* must match BUF_WORDS in dma_s2mm */
-#define DMA_BUF_BYTES    (DMA_BUF_WORDS * 8)
-#define DMA_REG_BASE     0x40a00000UL    /* AXI-Lite slot 5 — write pointer  */
-#define DMA_PKT_WORDS    184             /* 1 header + 183 data = 1472 B = one Ethernet MTU */
-#define DMA_PKT_BYTES    (DMA_PKT_WORDS * 8)
+#define DMA_BUF_BASE         0x1e000000UL
+#define DMA_BUF_WORDS        16384       /* must match BUF_WORDS in dma_s2mm */
+#define DMA_BUF_BYTES        (DMA_BUF_WORDS * 8)
+#define DMA_REG_BASE         0x40a00000UL /* AXI-Lite slot 5: [0]=wr_ptr [1]=hist_block */
+#define DMA_PKT_WORDS_DEFAULT 184        /* fallback: 1 header + 183 data = 1472 B = one MTU */
 #define DMA_DEFAULT_MCAST "239.255.0.1"
 #define DMA_DEFAULT_PORT  12468
 
@@ -156,6 +160,21 @@ static void *dma_poll_thread(void *arg)
         close(devfd); return NULL;
     }
 
+    /* Discover packet size from the FPGA: dma_reg[1] = HIST_BLOCK_SIZE (data
+     * words per packet); full packet = +1 header word. Fall back to the default
+     * on an out-of-range read (e.g. an older bitstream without this register). */
+    uint32_t hist_block = dma_reg[1] & 0xffff;
+    uint32_t pkt_words;
+    if (hist_block == 0 || hist_block >= DMA_BUF_WORDS) {
+        fprintf(stderr, "dma: HIST_BLOCK_SIZE read %u out of range, using default %d\n",
+                hist_block, DMA_PKT_WORDS_DEFAULT - 1);
+        pkt_words = DMA_PKT_WORDS_DEFAULT;
+    } else {
+        pkt_words = hist_block + 1;
+    }
+    uint32_t pkt_bytes = pkt_words * 8;
+    fprintf(stderr, "dma: packet = %u words (%u bytes)\n", pkt_words, pkt_bytes);
+
     sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) { perror("dma: socket"); goto cleanup; }
 
@@ -175,26 +194,26 @@ static void *dma_poll_thread(void *arg)
         uint32_t wr_ptr = dma_reg[0] & (DMA_BUF_WORDS - 1);
         uint32_t avail  = (wr_ptr - rd_ptr + DMA_BUF_WORDS) & (DMA_BUF_WORDS - 1);
 
-        if (avail < DMA_PKT_WORDS) {
+        if (avail < pkt_words) {
             nanosleep(&poll_sleep, NULL);
             continue;
         }
 
         /* scatter-gather across possible ring-buffer wrap — no memcpy */
-        uint32_t end = (rd_ptr + DMA_PKT_WORDS) & (DMA_BUF_WORDS - 1);
+        uint32_t end = (rd_ptr + pkt_words) & (DMA_BUF_WORDS - 1);
         struct iovec iov[2];
         int niov;
 
-        if (rd_ptr + DMA_PKT_WORDS <= DMA_BUF_WORDS) {
+        if (rd_ptr + pkt_words <= DMA_BUF_WORDS) {
             iov[0].iov_base = (void *)&dma_buf[rd_ptr];
-            iov[0].iov_len  = DMA_PKT_BYTES;
+            iov[0].iov_len  = pkt_bytes;
             niov = 1;
         } else {
             uint32_t first  = DMA_BUF_WORDS - rd_ptr;
             iov[0].iov_base = (void *)&dma_buf[rd_ptr];
             iov[0].iov_len  = first * 8;
             iov[1].iov_base = (void *)&dma_buf[0];
-            iov[1].iov_len  = (DMA_PKT_WORDS - first) * 8;
+            iov[1].iov_len  = (pkt_words - first) * 8;
             niov = 2;
         }
 

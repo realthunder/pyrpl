@@ -299,11 +299,17 @@ assign ps_sys_ack   = |(sys_cs & sys_ack);
 
 // unused system bus slave ports
 
-// DMA write pointer (slot 5, base 0x40A00000)
+// DMA descriptor (slot 5, base 0x40A00000):
+//   0x0 = ring-buffer write pointer (word index; PS/monitor_server polls this)
+//   0x4 = HIST_BLOCK_SIZE — data words per packet (full packet = +1 header word),
+//         so monitor_server discovers the packet size instead of hardcoding it.
 // i_dma_s2mm now runs on adc_clk, which is the same net as the system-bus clock
 // (sys_clk = axi0_clk_o = adc_clk). dma_wr_ptr is therefore already in the
 // sys_clk domain — the former fft_clk->sys_clk CDC is no longer needed.
-assign sys_rdata[5*32+:32] = {{(32-$clog2(16384)){1'b0}}, dma_wr_ptr};
+localparam [15:0] DMA_PKT_BLK = HIST_BLOCK_SIZE;
+assign sys_rdata[5*32+:32] = sys_addr[2]
+                           ? {16'h0, DMA_PKT_BLK}
+                           : {{(32-$clog2(16384)){1'b0}}, dma_wr_ptr};
 assign sys_err  [5       ] =  1'b0;
 assign sys_ack  [5       ] =  1'b1;
 

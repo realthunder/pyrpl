@@ -230,7 +230,11 @@ esac
 #   Build 1 (best): FFT_NFFT=11 FFT_WIDTH=24 FFT_CLK_SEL=1 FFT_CLK_178=1
 #                   DSP_FB_PIPELINE=1 DETERMINISTIC=10  -> adc 0.153 / ser 0.035
 #   Build 2 (fast): FFT_NFFT=9  FFT_WIDTH=24 FFT_SCALED=2 FFT_CLK_SEL=0
-#                   -> adc 0.166 / ser 1.845
+#                   DSP_FB_PIPELINE=1 DETERMINISTIC=2 (ExtraNetDelay_high)
+#                   -> adc 0.205, reproducible (see docs/BuildLog.md). FFT is on
+#                   adc_clk at 125, so ser is non-binding here.
+#                   Without the FB pipeline / non-det Default placer this point
+#                   was adc 0.166 (not run-to-run reproducible).
 # (Was FFT_IMPL=5 direct hls::fft; see HANDOFF.md / memory project-hls-direct-fft.)
 export FFT_IMPL=${FFT_IMPL:-4}
 export FFT_SSR=${FFT_SSR:-4}
