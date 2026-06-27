@@ -429,8 +429,8 @@ class Scope(HardwareModule, AcquisitionModule):
 
     status_bits = StatusBitsProperty()
 
-    fft_batch_cnt = IntRegister(0x30, doc="FFT batch counter")
-    fft_scan_batch_cnt = IntRegister(0x74, doc="FFT skipped batch counter")
+    fft_point_cnt = IntRegister(0x30, doc="FFT point counter (per detected point)")
+    fft_scan_point_cnt = IntRegister(0x74, doc="FFT scan-point counter (per scan-position change)")
 
     fft_peak_start = IntRegister(0x38, doc="FFT peak detection start index")
 

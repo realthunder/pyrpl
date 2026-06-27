@@ -57,8 +57,8 @@ module fft_proc #(
 
   output logic [ 32-1: 0] fft_we_cnt,
 
-  output logic [ 32-1: 0] frame_cnt_o,
-  output logic [ 32-1: 0] scan_frame_cnt_o,
+  output logic [ 32-1: 0] point_cnt_o,
+  output logic [ 32-1: 0] scan_point_cnt_o,
 
   input logic  [  16-1:0] fft_conf_data_in,
 
@@ -105,8 +105,14 @@ logic [ 16-1:0] overflow_cnt;
 logic [ 16-1:0] input_cnt;
 assign overflow_cnt_o = {input_cnt, overflow_cnt};
 
-logic [ 32-1: 0] frame_cnt;
-logic [ 32-1: 0] scan_frame_cnt;
+logic [ 32-1: 0] point_cnt;
+logic [ 32-1: 0] scan_point_cnt;
+// Per-2D-scan-frame counter for the DMA packet header: increments once on each
+// rising edge of fft_index_flush_i (the scan-frame boundary), so every packet of
+// one 2D frame carries the same value and the client can detect frame turnover.
+// (point_cnt above is the per-up-frame count, ~per point — wrong for this.)
+logic [ 32-1: 0] dma_frame_cnt;
+logic            fft_index_flush_d;
 
 logic [ HSZ-1:0] fft_hist_index;
 logic [ HSZ-1:0] prev_hist_index;
@@ -496,15 +502,15 @@ if (out_req) begin
     fft_peak_value_down_o <= fft_peak_value_down_;
 end
 
-// scan_frame_cnt: counts scan-position changes. fft_hist_index changes only at
-// scan-step rate, so sampling it at fft_frame_start is fine. frame_cnt moved to the
+// scan_point_cnt: counts scan-position changes. fft_hist_index changes only at
+// scan-step rate, so sampling it at fft_frame_start is fine. point_cnt moved to the
 // peak_ready_pretrig block below (gated by peak_up) — up_in is the INPUT-side phase
 // and fft_frame_start fires at FFT-processing start, so the two desync once the FFT
-// pipeline fills and frame_cnt froze.
+// pipeline fills and point_cnt froze.
 always @(posedge clk_i) begin
     if (fft_frame_start) begin
         if (prev_hist_index != fft_hist_index)
-            scan_frame_cnt <= scan_frame_cnt + 1;
+            scan_point_cnt <= scan_point_cnt + 1;
         prev_hist_index <= fft_hist_index;
     end
 end
@@ -515,9 +521,9 @@ xpm_cdc_gray #(
     .DEST_SYNC_FF (SYNC_FF)
 ) (
     .src_clk      (clk_i),
-    .src_in_bin   (frame_cnt),
+    .src_in_bin   (point_cnt),
     .dest_clk     (adc_clk_i),
-    .dest_out_bin (frame_cnt_o)
+    .dest_out_bin (point_cnt_o)
 );
 
 xpm_cdc_gray #(
@@ -525,9 +531,9 @@ xpm_cdc_gray #(
     .DEST_SYNC_FF (SYNC_FF)
 ) (
     .src_clk      (clk_i),
-    .src_in_bin   (scan_frame_cnt),
+    .src_in_bin   (scan_point_cnt),
     .dest_clk     (adc_clk_i),
-    .dest_out_bin (scan_frame_cnt_o)
+    .dest_out_bin (scan_point_cnt_o)
 );
 
 logic           fft_conf_dvalid;
@@ -737,12 +743,19 @@ always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
     fft_peak_ready <= 2'b11;
     peak_up <= 1;
+    dma_frame_cnt <= 0;
+    fft_index_flush_d <= 0;
 end else begin
 
     if (out_recv)
         out_send <= 0;
     else if (out_send_)
         out_send <= 1;
+
+    // Per-2D-frame counter: tick once on each rising edge of the scan-frame flush.
+    fft_index_flush_d <= fft_index_flush_i;
+    if (fft_index_flush_i && !fft_index_flush_d)
+        dma_frame_cnt <= dma_frame_cnt + 1;
 
     if (fft_index_flush_i)
         peak_up <= 1;
@@ -754,7 +767,7 @@ end else begin
         fft_hist_index <= fft_hist_index_o;
 
         if (peak_up) begin
-            frame_cnt <= frame_cnt + 1;   // coherent up-frame count (was up_in @ fft_frame_start)
+            point_cnt <= point_cnt + 1;   // coherent up-frame count (was up_in @ fft_frame_start)
             fft_peak_index_up <= fft_peak_idx;
             fft_peak_value_up <= fft_peak;
         end else begin
@@ -831,7 +844,9 @@ assign peak_ready     = peak_out_valid;
 // Packet = 1 header word + HIST_BLOCK_SIZE data words, tlast on last data word.
 //
 // Header word (64-bit):
-//   [31:0]           frame_cnt       (cumulative frame counter)
+//   [31:0]           dma_frame_cnt   (per-2D-scan-frame counter; constant across
+//                                      all packets of one frame, increments on the
+//                                      scan-frame flush edge)
 //   [31+HSZ:32]      fft_hist_index  (scan-position tag for this block)
 //   [35+HSZ:32+HSZ]  DMA_FMT_VERSION (4-bit packet-layout version, host sanity check)
 //   [59:36+HSZ]      reserved 0
@@ -850,7 +865,7 @@ assign peak_ready     = peak_out_valid;
 // fft_index_flush_i closes any in-progress packet cleanly (emits tlast) so the
 // downstream FIFO and dma_s2mm stay consistent with no PS intervention.
 // Header reserved span = [59:32+HSZ]; its low nibble carries DMA_FMT_VERSION.
-localparam DMA_HDR_RSVD = 64 - 4 - 32 - HSZ;  // [63:60]=channel_id [59:36+HSZ]=rsvd [35+HSZ:32+HSZ]=version [31+HSZ:32]=hist_index [31:0]=frame_cnt
+localparam DMA_HDR_RSVD = 64 - 4 - 32 - HSZ;  // [63:60]=channel_id [59:36+HSZ]=rsvd [35+HSZ:32+HSZ]=version [31+HSZ:32]=hist_index [31:0]=dma_frame_cnt
 localparam DMA_DAT_RSVD = 64 - 2*IDX;
 
 logic [15:0]    dma_data_sent;      // data words sent in current packet (0..HIST_BLOCK_SIZE)
@@ -892,7 +907,7 @@ always @(posedge clk_i) begin
     end else if (dma_emit) begin
         if (dma_data_sent == 0) begin
             // First detection of new block: send header, buffer data for next cycle
-            dma_wr_data         <= { CHANNEL_ID, {(DMA_HDR_RSVD-4){1'b0}}, DMA_FMT_VERSION, fft_hist_index, frame_cnt };
+            dma_wr_data         <= { CHANNEL_ID, {(DMA_HDR_RSVD-4){1'b0}}, DMA_FMT_VERSION, fft_hist_index, dma_frame_cnt };
             dma_wr_tlast        <= 0;
             dma_wr_en           <= 1;
             dma_saved_peak_up   <= fft_peak_index_up;

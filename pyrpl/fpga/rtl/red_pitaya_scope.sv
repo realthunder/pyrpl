@@ -590,8 +590,8 @@ end else begin : g_peak_frac_off
 end
 endgenerate
 
-logic [ 32-1: 0]    fft_frame_cnt;
-logic [ 32-1: 0]    fft_scan_frame_cnt;
+logic [ 32-1: 0]    fft_point_cnt;
+logic [ 32-1: 0]    fft_scan_point_cnt;
 logic [ 32-1: 0]    fft_we_cnt[1:0];
 logic [ 32-1: 0]    fft_skip_cnt;
 // logic               fft_index_flush = adc_rstn_i == 1'b0 || sync_rst_i;
@@ -822,8 +822,8 @@ fft_a (
    .fft_peak_index_down_o (fft_peak_index_down_a[IDX-1:0]),
    .fft_peak_value_up_o (fft_peak_up_a),
    .fft_peak_value_down_o (fft_peak_down_a),
-   .frame_cnt_o (fft_frame_cnt),
-   .scan_frame_cnt_o (fft_scan_frame_cnt),
+   .point_cnt_o (fft_point_cnt),
+   .scan_point_cnt_o (fft_scan_point_cnt),
 
    .fft_we_cnt (fft_we_cnt[0]),
 
@@ -910,7 +910,7 @@ fft_proc #(.ASZ(ASZ),
    .fft_peak_value_up_o (fft_peak_up_b),
    .fft_peak_value_down_o (fft_peak_down_b),
 
-   // .frame_cnt_o (fft_frame_cnt),
+   // .point_cnt_o (fft_point_cnt),
    .fft_we_cnt (fft_we_cnt[1]),
 
    .fft_conf_data_in (fft_conf_data)
@@ -1624,7 +1624,7 @@ end else begin
 
      20'h0002C : begin sys_ack <= sys_en;          sys_rdata <=                 adc_we_cnt          ; end
 
-     20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= fft_frame_cnt                       ; end
+     20'h00030 : begin sys_ack <= sys_en;          sys_rdata <= fft_point_cnt                       ; end
      20'h00034 : begin sys_ack <= sys_en;          sys_rdata <= DSZ                                 ; end
      20'h00038 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_start                      ; end
      20'h0003C : begin sys_ack <= sys_en;          sys_rdata <= fft_threshold_k                     ; end
@@ -1644,7 +1644,7 @@ end else begin
      20'h00068 : begin sys_ack <= sys_en;          sys_rdata <= {fft_wp_last_a, fft_wp_last_b}      ; end
      20'h0006C : begin sys_ack <= sys_en;          sys_rdata <= fft_state                           ; end
      // 20'h00070 : begin sys_ack <= sys_en;          sys_rdata <= fft_we_cnt[0]                       ; end
-     20'h00074 : begin sys_ack <= sys_en;          sys_rdata <= fft_scan_frame_cnt                  ; end
+     20'h00074 : begin sys_ack <= sys_en;          sys_rdata <= fft_scan_point_cnt                  ; end
      20'h0007C : begin sys_ack <= sys_en;          sys_rdata <= {{16-FSZ{1'b0}}, fft_peak_index_down_b[IDX-1:FRAC], {16-FSZ{1'b0}}, fft_peak_index_up_b[IDX-1:FRAC]}; end
      20'h00080 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_up_b                       ; end
      20'h00084 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_down_b                     ; end
