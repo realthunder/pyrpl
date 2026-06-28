@@ -27,6 +27,7 @@ from .widgets.startup_widget import HostnameSelectorWidget
 import logging
 import os
 import random
+import hashlib
 import socket
 from time import sleep
 import numpy as np
@@ -400,9 +401,122 @@ class RedPitaya(object):
             self.logger.debug("Found recent bitfile. Age: %s", age)
             return True
 
+    def _local_monitor_server_version(self):
+        """(md5_hex, source_path) of the bundled monitor_server.c.
+
+        The md5 of the source serves as the on-board build version marker: any
+        change to monitor_server.c triggers a fresh native compile on the next
+        connection (precompiled binaries are not portable across RedPitaya OS
+        versions, so we never trust a binary built from a different source).
+        """
+        src = os.path.join(os.path.abspath(os.path.dirname(__file__)),
+                           'monitor_server', 'monitor_server.c')
+        with open(src, 'rb') as f:
+            return hashlib.md5(f.read()).hexdigest(), src
+
+    def _monitor_server_matches(self):
+        """True if the board has a monitor_server compiled from the local source
+        (its '.version' marker matches the local monitor_server.c md5)."""
+        version, _ = self._local_monitor_server_version()
+        binpath = self.parameters['serverdirname'] + self.parameters['monitor_server_name']
+        _, marker = self.ssh.run('cat ' + binpath + '.version 2>/dev/null')
+        exists, _ = self.ssh.run('test -x ' + binpath)
+        return (version in marker) and (exists == 0)
+
+    def compile_monitor_server(self):
+        """Compile monitor_server natively on the RedPitaya when the on-board build
+        is out of date, and return its path (or None on no-compiler / build error).
+
+        Compares the local monitor_server.c md5 against a '.version' marker next to
+        the binary; on a mismatch (or missing binary) it uploads the source and
+        builds it with the board's gcc. The version marker is written by
+        installserver() once the freshly built server has launched successfully.
+        """
+        version, src = self._local_monitor_server_version()
+        serverdir = self.parameters['serverdirname']
+        name = self.parameters['monitor_server_name']
+        binpath = serverdir + name
+
+        if self._monitor_server_matches():
+            self.logger.debug("monitor_server on board matches local source (%s).",
+                              version)
+            return binpath
+
+        ccret, ccout = self.ssh.run('command -v gcc || command -v cc')
+        if ccret != 0 or not ccout.strip():
+            self.logger.warning("monitor_server is out of date but the board has no "
+                                "C compiler; falling back to precompiled binaries.")
+            return None
+        cc = ccout.strip().splitlines()[0]
+
+        self.logger.info("Compiling monitor_server on the RedPitaya "
+                         "(on-board build differs from local monitor_server.c)...")
+        self.ssh.run('mount -o remount,rw /')
+        self.ssh.run('mkdir -p ' + serverdir)
+        for i in range(3):
+            try:
+                self.ssh.scp_put(src, serverdir + 'monitor_server.c')
+            except (SCPException, SSHException):
+                self.start_ssh()
+                sleep(self.parameters['delay'])
+            else:
+                break
+        ret, out = self.ssh.run('cd ' + serverdir + ' && ' + cc +
+                                ' -O2 -o ' + name + ' monitor_server.c -lpthread')
+        built, _ = self.ssh.run('test -x ' + binpath)
+        if ret != 0 or built != 0:
+            self.logger.error("monitor_server failed to compile on the board:\n%s", out)
+            self.ssh.run('mount -o remount,ro /')
+            return None
+        self.ssh.run('chmod 755 ' + binpath)
+        self.ssh.run('mount -o remount,ro /')
+        self.logger.info("monitor_server compiled on the board (version %s).", version)
+        return binpath
+
+    def _record_monitor_server_version(self, version):
+        """Record the source md5 the running monitor_server was built/installed
+        from (next to the binary), so the next connection can skip reinstalling an
+        up-to-date server. /opt/pyrpl is on the read-only root fs, so remount it
+        rw to write the marker. Uses the real `mount` command (the rw/ro helpers in
+        /opt/redpitaya/sbin are on the PATH only in a login shell) so it works on
+        the exec channel even while the server holds the interactive shell.
+        """
+        verpath = self.parameters['serverdirname'] + self.parameters['monitor_server_name'] + '.version'
+        self.ssh.run('mount -o remount,rw /')
+        self.ssh.run('echo ' + version + ' > ' + verpath)
+        self.ssh.run('mount -o remount,ro /')
+
+    def _launch_monitor_server(self, binpath):
+        """Start an installed monitor_server in the interactive shell.
+        Returns the port on success, None if it failed to start."""
+        self.ssh.ask('ro')
+        result = self.ssh.ask(binpath + " " + str(self.parameters['port']))
+        sleep(self.parameters['delay'])
+        result += self.ssh.ask()
+        if not "sh" in result:  # 'sh' in the output means it dropped back to a shell
+            self.logger.debug("Server application started on port %d",
+                              self.parameters['port'])
+            self._serverrunning = True
+            return self.parameters['port']
+        self.endserver()
+        return None
+
     def installserver(self):
         self.endserver()
         sleep(self.parameters['delay'])
+        version, _ = self._local_monitor_server_version()
+        # Preferred: a native build matching the local monitor_server.c. Precompiled
+        # binaries are not portable across RedPitaya OS versions, so compile on the
+        # board (gcc) whenever the on-board build is out of date; the bundled
+        # binaries below are only a fallback for boards without a compiler.
+        binpath = self.compile_monitor_server()
+        if binpath is not None:
+            port = self._launch_monitor_server(binpath)
+            if port is not None:
+                self._record_monitor_server_version(version)
+                return port
+            self.logger.warning("Freshly compiled monitor_server did not start; "
+                                "trying the precompiled binaries.")
         self.ssh.ask('rw')
         sleep(self.parameters['delay'])
         self.ssh.ask('mkdir ' + self.parameters['serverdirname'])
@@ -425,6 +539,7 @@ class RedPitaya(object):
             sleep(self.parameters['delay'])
             result += self.ssh.ask()
             if not "sh" in result:
+                self._record_monitor_server_version(version)
                 self.logger.debug("Server application started on port %d",
                               self.parameters['port'])
                 return self.parameters['port']
@@ -448,6 +563,10 @@ class RedPitaya(object):
         #                      "seconds.")
         #      sleep(2.0)
         sleep(2)
+        # If the on-board monitor_server was not built from the local source,
+        # (re)install — which compiles it natively on the board.
+        if not self._monitor_server_matches():
+            return self.installserver()
         result = self.ssh.ask(self.parameters['serverdirname']+"/"+self.parameters['monitor_server_name']
                           +" "+ str(self.parameters['port']))
         if not "sh" in result: # sh in result means we tried the wrong binary version
