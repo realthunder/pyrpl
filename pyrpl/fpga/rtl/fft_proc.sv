@@ -840,86 +840,113 @@ assign fft_peak_idx   = fft_peak_valid ? peak_out_data[DSZ + IDX : DSZ + 1] : 0;
 assign fft_peak       = peak_out_data[DSZ-1 : 0];
 assign peak_ready     = peak_out_valid;
 
-// --- DMA point cloud output ---
-// Packet = 1 header word + HIST_BLOCK_SIZE data words, tlast on last data word.
+// --- DMA point cloud output (segmented, tag-bit framing) ---
+// A packet is exactly PKT_WORDS = HIST_BLOCK_SIZE+1 words — the fixed unit that
+// monitor_server reads as one datagram. Each word self-identifies via bit[63]
+// (is_header), so a packet holds one or MORE segments: a segment is a header
+// (absolute scan cell + 2D-frame counter) followed by data words whose scan cell
+// is reconstructed from a 1-bit per-point advance flag. A fresh header is emitted
+// inline ("re-anchor") whenever the scan index jumps (delta not 0/+1), a new 2D
+// frame begins (flush), or a packet boundary is crossed — so the fixed framing is
+// preserved with no per-frame padding, and one stream carries both a moving scan
+// (advance=1/point) and a stalled scan (advance=0, live updates at one cell).
 //
-// Header word (64-bit):
-//   [31:0]           dma_frame_cnt   (per-2D-scan-frame counter; constant across
-//                                      all packets of one frame, increments on the
-//                                      scan-frame flush edge)
-//   [31+HSZ:32]      fft_hist_index  (scan-position tag for this block)
-//   [35+HSZ:32+HSZ]  DMA_FMT_VERSION (4-bit packet-layout version, host sanity check)
-//   [59:36+HSZ]      reserved 0
-//   [63:60]          CHANNEL_ID      (4-bit channel tag: 0=fft_a, 1=fft_b)
+// Header word (64-bit), bit[63]=1:
+//   [63]              is_header = 1
+//   [62:59]           CHANNEL_ID      (0=fft_a, 1=fft_b)
+//   [58:55]           DMA_FMT_VERSION
+//   [54 : 55-HSZ]     hist_index      (absolute scan cell of the segment's 1st point)
+//   [54-HSZ : 0]      dma_frame_cnt   (per-2D-frame counter, low DMA_HDR_FC_W bits)
 //
-// Data word (64-bit):
-//   [IDX-1:0]       peak_bin_up    (k_interp, Q(FSZ).FRAC fixed-point)
-//   [2*IDX-1:IDX]   peak_bin_down  (k_interp, Q(FSZ).FRAC fixed-point)
-//   [63:2*IDX]      reserved 0
-//   IDX = FSZ+FRAC. Host recovers each bin = field / 2^FRAC. Requires 2*IDX <= 64.
+// Data word (64-bit), bit[63]=0:
+//   [63]              is_header = 0
+//   [62]              advance         (1 = scan cell advanced +1 before this point)
+//   [2*IDX-1 : IDX]   peak_bin_down   (k_interp, Q(FSZ).FRAC)
+//   [IDX-1 : 0]       peak_bin_up     (k_interp, Q(FSZ).FRAC)
+//   IDX = FSZ+FRAC; host bin = field / 2^FRAC. Requires 2*IDX <= 61, HSZ <= 54.
+//
+// Client: walk the PKT_WORDS words; at a header set pos=hist_index (the segment's
+// first point sits at pos); each data word does pos += advance, then emits the
+// point at pos. Mid-packet headers re-anchor pos/frame.
 //
 // Emit condition: sequential (up_toggle=1) → after down chirp (both peaks fresh);
 //                 parallel  (up_toggle=0) → every frame.
-// On the first detection of a new block the header is sent this cycle and the
-// paired data word is held one cycle (dma_data_pending).
-// fft_index_flush_i closes any in-progress packet cleanly (emits tlast) so the
-// downstream FIFO and dma_s2mm stay consistent with no PS intervention.
-// Header reserved span = [59:32+HSZ]; its low nibble carries DMA_FMT_VERSION.
-localparam DMA_HDR_RSVD = 64 - 4 - 32 - HSZ;  // [63:60]=channel_id [59:36+HSZ]=rsvd [35+HSZ:32+HSZ]=version [31+HSZ:32]=hist_index [31:0]=dma_frame_cnt
-localparam DMA_DAT_RSVD = 64 - 2*IDX;
+// fft_index_flush_i no longer closes/truncates the packet (that desynced the
+// fixed framing); it just forces the next point to start a new segment carrying
+// the incremented dma_frame_cnt.
+localparam PKT_WORDS    = HIST_BLOCK_SIZE + 1;       // fixed packet length (monitor_server unit)
+localparam WC_W         = $clog2(PKT_WORDS);
+localparam DMA_HDR_FC_W = 55 - HSZ;                  // frame-counter bits that fit in the header
+localparam DMA_DAT_RSVD = 62 - 2*IDX;                // data-word reserved span
+// Layout budget (must hold): 2*IDX <= 61 (data word), HSZ <= 54 (header).
 
-logic [15:0]    dma_data_sent;      // data words sent in current packet (0..HIST_BLOCK_SIZE)
-logic           dma_data_pending;   // first data word buffered after header
-logic [IDX-1:0] dma_saved_peak_up;
-logic [IDX-1:0] dma_saved_peak_down;
+logic [WC_W-1:0]  dma_word_cnt;     // words written in current packet (0..PKT_WORDS-1)
+logic             dma_need_hdr;     // next word must be a header (packet start / re-anchor)
+logic             dma_pend;         // a captured point is waiting to be written out
+logic             dma_pend_first;   // pending point is the segment's first (advance forced 0)
+logic             dma_pend_adv;     // captured advance bit (scan delta == +1)
+logic [IDX-1:0]   dma_pend_up, dma_pend_down;
+logic [HSZ-1:0]   dma_pend_idx;
+logic [HSZ-1:0]   dma_prev_idx;     // scan cell of the last point written out
+logic             dma_frame_pend;   // a new-2D-frame flush is pending → force a header
+
+logic [DMA_HDR_FC_W-1:0] dma_frame_field;
+assign dma_frame_field = dma_frame_cnt;              // resize (zero-extend / truncate) to header field
 
 logic [63:0]    dma_wr_data;
 logic           dma_wr_en;
 logic           dma_wr_tlast;
 
-wire dma_emit = peak_ready_trig && (peak_up || !up_toggle);
+wire dma_emit       = peak_ready_trig && (peak_up || !up_toggle);
+wire [HSZ-1:0] dma_delta = fft_hist_index - dma_prev_idx;   // 0/1 = step; else re-anchor
+wire dma_flush_rise = fft_index_flush_i && !fft_index_flush_d;
+wire dma_last_word  = (dma_word_cnt == PKT_WORDS-1);
 
 always @(posedge clk_i) begin
-    dma_wr_en <= 0;
+    dma_wr_en <= 1'b0;
     if (!rstn_i) begin
-        dma_data_sent    <= 0;
-        dma_data_pending <= 0;
-    end else if (fft_index_flush_i) begin
-        // Close any in-progress packet so the AXI-S FIFO receives a proper tlast.
-        if (dma_data_pending) begin
-            dma_wr_data  <= { {DMA_DAT_RSVD{1'b0}}, dma_saved_peak_down, dma_saved_peak_up };
-            dma_wr_tlast <= 1;
-            dma_wr_en    <= 1;
-        end else if (dma_data_sent != 0) begin
-            dma_wr_data  <= 64'h0;
-            dma_wr_tlast <= 1;
-            dma_wr_en    <= 1;
-        end
-        dma_data_sent    <= 0;
-        dma_data_pending <= 0;
-    end else if (dma_data_pending) begin
-        // Emit buffered first data word (header was sent last cycle)
-        dma_wr_data      <= { {DMA_DAT_RSVD{1'b0}}, dma_saved_peak_down, dma_saved_peak_up };
-        dma_wr_tlast     <= (HIST_BLOCK_SIZE == 1);
-        dma_wr_en        <= 1;
-        dma_data_pending <= 0;
-        dma_data_sent    <= (HIST_BLOCK_SIZE == 1) ? 16'd0 : 16'd1;
-    end else if (dma_emit) begin
-        if (dma_data_sent == 0) begin
-            // First detection of new block: send header, buffer data for next cycle
-            dma_wr_data         <= { CHANNEL_ID, {(DMA_HDR_RSVD-4){1'b0}}, DMA_FMT_VERSION, fft_hist_index, dma_frame_cnt };
-            dma_wr_tlast        <= 0;
-            dma_wr_en           <= 1;
-            dma_saved_peak_up   <= fft_peak_index_up;
-            dma_saved_peak_down <= fft_peak_index_down;
-            dma_data_pending    <= 1;
-        end else begin
-            // Subsequent detection: emit data word directly
-            dma_wr_data  <= { {DMA_DAT_RSVD{1'b0}}, fft_peak_index_down, fft_peak_index_up };
-            dma_wr_tlast <= (dma_data_sent == HIST_BLOCK_SIZE - 1);
-            dma_wr_en    <= 1;
-            dma_data_sent <= (dma_data_sent == HIST_BLOCK_SIZE - 1) ? 16'd0
-                                                                     : (dma_data_sent + 16'd1);
+        dma_word_cnt   <= '0;
+        dma_need_hdr   <= 1'b1;       // first word of the first packet is a header
+        dma_pend       <= 1'b0;
+        dma_pend_first <= 1'b0;
+        dma_prev_idx   <= '0;
+        dma_frame_pend <= 1'b0;
+        dma_wr_tlast   <= 1'b0;
+    end else begin
+        if (dma_flush_rise)
+            dma_frame_pend <= 1'b1;   // remember the 2D-frame boundary for the next header
+
+        if (dma_pend && dma_need_hdr) begin
+            // Emit the segment header for the pending point.
+            dma_wr_data    <= { 1'b1, CHANNEL_ID, DMA_FMT_VERSION, dma_pend_idx, dma_frame_field };
+            dma_wr_en      <= 1'b1;
+            dma_wr_tlast   <= dma_last_word;
+            dma_word_cnt   <= dma_last_word ? '0 : dma_word_cnt + 1'b1;
+            dma_need_hdr   <= dma_last_word;          // a wrapped packet still needs a header next
+            dma_pend_first <= 1'b1;                   // its data word is the segment's first
+            dma_prev_idx   <= dma_pend_idx;
+        end else if (dma_pend) begin
+            // Emit the pending point's data word.
+            dma_wr_data    <= { 1'b0, (dma_pend_first ? 1'b0 : dma_pend_adv),
+                                {DMA_DAT_RSVD{1'b0}}, dma_pend_down, dma_pend_up };
+            dma_wr_en      <= 1'b1;
+            dma_wr_tlast   <= dma_last_word;
+            dma_word_cnt   <= dma_last_word ? '0 : dma_word_cnt + 1'b1;
+            if (dma_last_word) dma_need_hdr <= 1'b1;  // next packet starts with a header
+            dma_pend       <= 1'b0;
+            dma_pend_first <= 1'b0;
+            dma_prev_idx   <= dma_pend_idx;
+        end else if (dma_emit) begin
+            // Capture a new point; decide whether it needs a re-anchor header.
+            dma_pend      <= 1'b1;
+            dma_pend_up   <= fft_peak_index_up;
+            dma_pend_down <= fft_peak_index_down;
+            dma_pend_idx  <= fft_hist_index;
+            dma_pend_adv  <= (dma_delta == 1);
+            if (dma_need_hdr || dma_frame_pend || dma_flush_rise ||
+                (dma_delta != 0 && dma_delta != 1))
+                dma_need_hdr <= 1'b1;
+            dma_frame_pend <= 1'b0;                    // consumed by this segment's header
         end
     end
 end
