@@ -52,7 +52,13 @@ defaultparameters = dict(
     delay=0.05,  # delay between ssh commands - console is too slow otherwise
     autostart=True,  # autostart the client?
     reloadserver=False,  # reinstall the server at startup if not necessary?
-    reloadfpga=True,  # reload the fpga bitfile at startup?
+    reloadfpga=True,  # manage the fpga bitfile at startup? (now md5-gated: only
+                      # uploads/flashes when the on-board bitstream differs or
+                      # the board rebooted — see force_reload to override)
+    force_reload=False,  # force a full FPGA reflash AND monitor_server restart
+                         # even when the on-board md5 already matches and a
+                         # server is running. Off => skip-on-match (lets several
+                         # clients share one board without clobbering each other)
     serverbinfilename='fpga.bit.bin',  # name of the binfile on the server
     serverdirname = "/opt/pyrpl/",  # server directory for server app and bitfile
     leds_off=True,  # turn off all GPIO lets at startup (improves analog performance)
@@ -290,36 +296,72 @@ class RedPitaya(object):
             str(gpiopin) + "/value")
         sleep(self.parameters['delay'])
 
+    @staticmethod
+    def _file_md5(path):
+        """md5 hex digest of a local file."""
+        with open(path, 'rb') as f:
+            return hashlib.md5(f.read()).hexdigest()
+
+    def _board_boot_id(self):
+        """The board's current-boot UUID (changes on every reboot). Used to
+        invalidate the 'fpga flashed' marker after a power-cycle, because the
+        loaded PL is volatile and reverts to the boot-default bitstream."""
+        _, out = self.ssh.run('cat /proc/sys/kernel/random/boot_id 2>/dev/null')
+        return out.strip()
+
+    def _onboard_fpga_md5(self, serverbinfilename):
+        """md5 of the bitstream file currently stored on the board ('' if none).
+        Drives the scp decision: we only re-upload when this differs from the
+        local bitstream (the file is kept on the board, not deleted after flash)."""
+        _, out = self.ssh.run('md5sum ' + serverbinfilename + ' 2>/dev/null')
+        out = out.strip()
+        return out.split()[0] if out else ''
+
+    def _fpga_flashed(self, serverbinfilename, md5):
+        """True if the running PL was flashed from this exact bitstream during the
+        current boot. Reads the '<bin>.version' marker ('<md5> <boot_id>'); a
+        boot_id mismatch means a reboot reverted the FPGA, so a reflash is due."""
+        _, marker = self.ssh.run('cat ' + serverbinfilename + '.version 2>/dev/null')
+        parts = marker.split()
+        return len(parts) >= 2 and parts[0] == md5 and parts[1] == self._board_boot_id()
+
+    def _record_fpga_flashed(self, serverbinfilename, md5):
+        """Write the '<bin>.version' marker with the just-flashed md5 + boot_id
+        (caller holds the rw remount)."""
+        self.ssh.run('echo %s %s > %s.version'
+                     % (md5, self._board_boot_id(), serverbinfilename))
+
+    def _scp_put_retry(self, src, dest):
+        """scp a file to the board, retrying (with reconnect) up to 3 times."""
+        for i in range(3):
+            try:
+                self.ssh.scp_put(src, dest)
+            except (SCPException, SSHException):
+                self.start_ssh()
+                sleep(self.parameters['delay'])
+            else:
+                return
+
     def update_fpga(self, filename=None):
         serverdirname = self.parameters['serverdirname']
         serverbinfilename = os.path.join(serverdirname, self.parameters['serverbinfilename'])
         update_cmdfile = os.path.join(serverdirname, 'update_fpga.sh')
         # For version 2.0 and higher to load a custom fpga use the update_fpga.sh script
         update_cmd = f'bash -x {update_cmdfile} pyrpl {serverbinfilename}'
+        local_update_sh = os.path.join(os.path.abspath(os.path.dirname(__file__)),
+                                       'update_fpga.sh')
+        force = self.parameters['force_reload']
         source = filename
         if filename is None:
             try:
                 source = self.parameters['filename']
             except KeyError:
                 source = None
-
-        self.end()
-        sleep(self.parameters['delay'])
-        self.ssh.ask('rw')
-        sleep(self.parameters['delay'])
-        self.ssh.ask('mkdir -p ' + serverdirname)
-        sleep(self.parameters['delay'])
         if source is None or not os.path.isfile(source):
             if source is not None:
                 self.logger.warning('Desired bitfile "%s" does not exist. Using default installation.',
                                     source)
-
-            # prior to version 2.0 fpga default is to use the default pyrpl fpga
             source = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'fpga', 'red_pitaya.bin')
-
-            # For version 2.0 fpga and higher the default is to use pyrpl fpga from redpitaya
-            #  update_cmd = '/opt/redpitaya/sbin/overlay.sh pyrpl'
-
         if not os.path.isfile(source):
             raise IOError("Wrong filename",
               "The fpga bitfile was not found at the expected location. Try passing the arguments "
@@ -328,48 +370,65 @@ class RedPitaya(object):
               + self.parameters['dirname'] +
               " current filename: "+self.parameters['filename'])
 
-        for i in range(3):
-            try:
-                self.ssh.scp_put(
-                    os.path.join(
-                        os.path.abspath(os.path.dirname(__file__)), 'update_fpga.sh'),
-                        update_cmdfile)
-            except (SCPException, SSHException):
-                # try again before failing
-                self.start_ssh()
-                sleep(self.parameters['delay'])
-            else:
-                break
-        for i in range(3):
-            try:
-                self.ssh.scp_put(source, serverbinfilename)
-            except (SCPException, SSHException):
-                # try again before failing
-                self.start_ssh()
-                sleep(self.parameters['delay'])
-            else:
-                break
+        md5 = self._file_md5(source)
+        # Cheap exec-channel checks (no rw remount / no service disruption yet):
+        #   upload only when the kept on-board bitstream differs from ours
+        #   flash  only when the running PL isn't this bitstream from this boot
+        need_upload = force or (self._onboard_fpga_md5(serverbinfilename) != md5)
+        need_flash = force or not self._fpga_flashed(serverbinfilename, md5)
+        if not need_upload and not need_flash:
+            self.logger.info("On-board FPGA bitstream up to date (md5 %s..) and "
+                             "already flashed this boot; skipping reflash.", md5[:8])
+            return
 
-        # kill all other servers to prevent reading while fpga is flashed
         self.end()
-        self.ssh.ask('killall nginx')
-        self.ssh.ask('systemctl stop redpitaya_nginx') # for 0.94 and higher
-        sleep(3) # sleep after stopping service
-        result = self.ssh.ask('cat /root/.version')
-        self.logger.debug('cat /root/.version: {}'.format(result))
-        if result.find('2.') != -1:
-            self.ssh.run(update_cmd)
-        else:
-            self.ssh.ask('cat ' + serverbinfilename + ' > //dev//xdevcfg')
+        sleep(self.parameters['delay'])
+        # /opt/pyrpl is on the read-only root fs. Use the real `mount` command
+        # (not the rw/ro helpers in /opt/redpitaya/sbin, which are only on the
+        # PATH in a login shell — ssh.ask() uses a non-login interactive shell,
+        # so `rw` -> "command not found", the fs stays ro, and every scp_put
+        # would fail and retry). Mirrors _record_monitor_server_version().
+        self.ssh.run('mount -o remount,rw /')
+        sleep(self.parameters['delay'])
+        self.ssh.ask('mkdir -p ' + serverdirname)
+        sleep(self.parameters['delay'])
 
-        sleep(self.parameters['delay'])
-        self.logger.debug('About to restart the redpitaya service')
-        self.ssh.ask('rm -f '+ serverbinfilename)
-        self.ssh.ask('rm -f '+ update_cmdfile)
-        self.ssh.ask("nginx -p //opt//www//")
-        self.ssh.ask('systemctl start redpitaya_nginx')  # for 0.94 and higher #needs test
-        sleep(self.parameters['delay'])
-        self.ssh.ask('ro')
+        if need_upload:
+            self.logger.debug("Uploading FPGA bitstream (md5 %s..).", md5[:8])
+            self._scp_put_retry(local_update_sh, update_cmdfile)
+            self._scp_put_retry(source, serverbinfilename)
+        elif self.ssh.run('test -e ' + update_cmdfile)[0] != 0:
+            # reflashing the already-present bitstream (e.g. after a reboot):
+            # only the small flash script may be missing — upload just that, not
+            # the multi-MB bitstream.
+            self._scp_put_retry(local_update_sh, update_cmdfile)
+
+        if need_flash:
+            # reflashing changes the register map under any monitor_server, so
+            # stop every instance (incl. a detached one from another client) and
+            # the web app before flashing.
+            self._kill_monitor_server()
+            self.endclient()
+            self.ssh.ask('killall nginx')
+            self.ssh.ask('systemctl stop redpitaya_nginx') # for 0.94 and higher
+            sleep(3) # sleep after stopping service
+            result = self.ssh.ask('cat /root/.version')
+            self.logger.debug('cat /root/.version: {}'.format(result))
+            if result.find('2.') != -1:
+                self.ssh.run(update_cmd)
+            else:
+                self.ssh.ask('cat ' + serverbinfilename + ' > //dev//xdevcfg')
+            sleep(self.parameters['delay'])
+            self._record_fpga_flashed(serverbinfilename, md5)
+            self.logger.debug('About to restart the redpitaya service')
+            self.ssh.ask("nginx -p //opt//www//")
+            self.ssh.ask('systemctl start redpitaya_nginx')  # for 0.94 and higher #needs test
+            sleep(self.parameters['delay'])
+
+        # NB: the bitstream + flash script are intentionally KEPT on the board
+        # (no rm) so the next connection can md5-skip the upload and reflash
+        # from the on-board copy after a reboot.
+        self.ssh.run('mount -o remount,ro /')
 
     def fpgarecentlyflashed(self):
         self.ssh.ask()
@@ -486,15 +545,29 @@ class RedPitaya(object):
         self.ssh.run('echo ' + version + ' > ' + verpath)
         self.ssh.run('mount -o remount,ro /')
 
-    def _launch_monitor_server(self, binpath):
-        """Start an installed monitor_server in the interactive shell.
-        Returns the port on success, None if it failed to start."""
-        self.ssh.ask('ro')
-        result = self.ssh.ask(binpath + " " + str(self.parameters['port']))
+    def _monitor_server_running(self):
+        """True if a monitor_server process is alive on the board (any client)."""
+        ret, _ = self.ssh.run('pgrep -x ' + self.parameters['monitor_server_name'])
+        return ret == 0
+
+    def _kill_monitor_server(self):
+        """Forcibly stop any monitor_server on the board, including a detached one
+        started by another client. Used before a forced or replacement restart."""
+        self.endserver()  # Ctrl-C an instance running in our own interactive shell
+        self.ssh.run('killall -q ' + self.parameters['monitor_server_name'])
         sleep(self.parameters['delay'])
-        result += self.ssh.ask()
-        if not "sh" in result:  # 'sh' in the output means it dropped back to a shell
-            self.logger.debug("Server application started on port %d",
+
+    def _launch_monitor_server(self, binpath):
+        """Start an installed monitor_server DETACHED (setsid + background, I/O to
+        /dev/null) so it outlives this ssh session: its DMA multicast and single
+        register link then survive a client disconnect and can be reused by other
+        clients. Returns the port on success, None if it failed to start."""
+        self.ssh.run('mount -o remount,ro /')  # fs back to ro before running
+        self.ssh.run('setsid ' + binpath + ' ' + str(self.parameters['port'])
+                     + ' </dev/null >/dev/null 2>&1 &')
+        sleep(self.parameters['delay'])
+        if self._monitor_server_running():
+            self.logger.debug("Server application started on port %d (detached)",
                               self.parameters['port'])
             self._serverrunning = True
             return self.parameters['port']
@@ -502,7 +575,7 @@ class RedPitaya(object):
         return None
 
     def installserver(self):
-        self.endserver()
+        self._kill_monitor_server()  # replace any running/detached server
         sleep(self.parameters['delay'])
         version, _ = self._local_monitor_server_version()
         # Preferred: a native build matching the local monitor_server.c. Precompiled
@@ -517,7 +590,7 @@ class RedPitaya(object):
                 return port
             self.logger.warning("Freshly compiled monitor_server did not start; "
                                 "trying the precompiled binaries.")
-        self.ssh.ask('rw')
+        self.ssh.run('mount -o remount,rw /')  # rw alias is login-shell only; use real mount
         sleep(self.parameters['delay'])
         self.ssh.ask('mkdir ' + self.parameters['serverdirname'])
         sleep(self.parameters['delay'])
@@ -534,17 +607,14 @@ class RedPitaya(object):
             sleep(self.parameters['delay'])
             self.ssh.ask('chmod 755 ./'+self.parameters['monitor_server_name'])
             sleep(self.parameters['delay'])
-            self.ssh.ask('ro')
-            result = self.ssh.ask("./"+self.parameters['monitor_server_name']+" "+ str(self.parameters['port']))
-            sleep(self.parameters['delay'])
-            result += self.ssh.ask()
-            if not "sh" in result:
+            binpath = self.parameters['serverdirname'] + self.parameters['monitor_server_name']
+            port = self._launch_monitor_server(binpath)  # detached; remounts ro
+            if port is not None:
                 self._record_monitor_server_version(version)
-                self.logger.debug("Server application started on port %d",
-                              self.parameters['port'])
-                return self.parameters['port']
-            else: # means we tried the wrong binary version. make sure server is not running and try again with next file
-                self.endserver()
+                return port
+            # wrong binary version -> make sure it is not running and try the next
+            self._kill_monitor_server()
+            self.ssh.run('mount -o remount,rw /')  # next scp needs the fs writable again
 
         #try once more on a different port
         if self.parameters['port'] == self.parameters['defaultport']:
@@ -556,25 +626,29 @@ class RedPitaya(object):
         return None
 
     def startserver(self):
-        self.endserver()
-        sleep(self.parameters['delay'])
-        #  if self.fpgarecentlyflashed():
-        #      self.logger.info("FPGA is being flashed. Please wait for 2 "
-        #                      "seconds.")
-        #      sleep(2.0)
-        sleep(2)
-        # If the on-board monitor_server was not built from the local source,
-        # (re)install — which compiles it natively on the board.
-        if not self._monitor_server_matches():
-            return self.installserver()
-        result = self.ssh.ask(self.parameters['serverdirname']+"/"+self.parameters['monitor_server_name']
-                          +" "+ str(self.parameters['port']))
-        if not "sh" in result: # sh in result means we tried the wrong binary version
-            self.logger.debug("Server application started on port %d",
-                              self.parameters['port'])
+        force = self.parameters['force_reload']
+        matches = self._monitor_server_matches()
+        running = self._monitor_server_running()
+        if not force and matches and running:
+            # An up-to-date server is already running (perhaps started by another
+            # client). Reuse it as-is — don't kill/relaunch — so concurrent
+            # clients keep working and the single register link isn't disrupted.
+            self.logger.debug("monitor_server already running and up to date; "
+                              "reusing it on port %d.", self.parameters['port'])
             self._serverrunning = True
             return self.parameters['port']
-        #something went wrong
+        if force or not matches:
+            # Forced, or the on-board binary was not built from the local source:
+            # stop any running server and (re)install (compiles natively, then
+            # relaunches detached).
+            return self.installserver()
+        # Correct binary present but not running -> just launch it (no recompile).
+        sleep(2)
+        port = self._launch_monitor_server(self.parameters['serverdirname']
+                                            + self.parameters['monitor_server_name'])
+        if port is not None:
+            return port
+        # something went wrong -> fall back to a full (re)install
         return self.installserver()
 
     def endserver(self):
