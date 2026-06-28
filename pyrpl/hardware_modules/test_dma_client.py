@@ -29,12 +29,13 @@ def _make_header(ch, ver, hist, frame, hsz):
             | (frame & ((1 << fc_w) - 1)))
 
 
-def _make_data(adv, up, dn, idx):
+def _make_data(adv, up, dn, idx, direction=0):
     m = (1 << idx) - 1
-    return (((adv & 1) << 62) | ((dn & m) << idx) | (up & m))
+    return (((adv & 1) << 62) | ((direction & 1) << 61)
+            | ((dn & m) << idx) | (up & m))
 
 
-def emit_packets(points, *, hsz, idx, hist_block_size, channel=0, version=1):
+def emit_packets(points, *, hsz, idx, hist_block_size, channel=0, version=3):
     """Encode points [(hist, frame, up, dn), ...] into a list of packet byte strings.
 
     Faithful to the RTL: packets are exactly HIST_BLOCK_SIZE+1 words; every packet
@@ -55,20 +56,29 @@ def emit_packets(points, *, hsz, idx, hist_block_size, channel=0, version=1):
 
     def emit_header(h, f):
         st['need_hdr'] = False
-        push(_make_header(channel, version, h, f, hsz))   # push may re-set need_hdr at boundary
+        # v2 header carries NCH (channel count) in [62:59]; these single-channel
+        # vectors emit NCH=1 (one data word per scan position, channel 0).
+        push(_make_header(1, version, h, f, hsz))   # push may re-set need_hdr at boundary
         st['frame'] = f
         st['first'] = True
         st['prev'] = h
 
+    back_delta = (1 << hsz) - 1            # two's-complement -1 step
     for (h, f, up, dn) in points:
         delta = (h - st['prev']) % (1 << hsz)
+        back = (delta == back_delta)
         if (st['need_hdr'] or st['frame'] is None or f != st['frame']
-                or delta not in (0, 1)):
+                or delta not in (0, 1, back_delta)):
             emit_header(h, f)
         while st['need_hdr']:              # header landed on a packet boundary -> re-header
             emit_header(h, f)
-        adv = 0 if st['first'] else (1 if delta == 1 else 0)
-        push(_make_data(adv, up, dn, idx))
+        if st['first'] or delta == 0:
+            adv, direction = 0, 0
+        elif delta == 1:
+            adv, direction = 1, 0
+        else:                              # back: -1 step (signed advance, v3)
+            adv, direction = 1, 1
+        push(_make_data(adv, up, dn, idx, direction))
         st['first'] = False
         st['prev'] = h
 
@@ -302,6 +312,52 @@ def test_pool_recycle():
     assert len(c._pool[0]) <= c._pool_cap       # pool stays bounded
     down, up = c.get_frame(0)
     assert up[0] == 21 and down[0] == 31        # last write (k=11) is visible
+    return True
+
+
+def test_two_channel_interleaved():
+    """v2 NCH=2: both channels share one header + one scan position; data words
+    interleave ch0, ch1 per index; the host routes each to its live buffer."""
+    fsz, frac, hsz, blk = 9, 8, 14, 183
+    idx = fsz + frac
+    c = DmaUdpClient(fsz=fsz, frac=frac, hsz=hsz, hist_block_size=blk,
+                     max_frame_size=256, max_interval=0.0)
+    words = [_make_header(2, 2, 5, 0, hsz)]            # NCH=2, version 2, start idx 5
+    for i in range(4):                                 # positions 5..8
+        adv = 0 if i == 0 else 1
+        words.append(_make_data(adv, 10 + i, 20 + i, idx))    # ch0
+        words.append(_make_data(0,   100 + i, 200 + i, idx))  # ch1 (same position)
+    while len(words) < blk + 1:
+        words.append(0xFFFFFFFFFFFFFFFF)               # sentinel pad
+    c._process_packet(np.array(words[:blk + 1], dtype='<u8').tobytes())
+    d0, u0 = c.get_frame(0)
+    d1, u1 = c.get_frame(1)
+    for i in range(4):
+        assert u0[5 + i] == 10 + i and d0[5 + i] == 20 + i, ('ch0', i)
+        assert u1[5 + i] == 100 + i and d1[5 + i] == 200 + i, ('ch1', i)
+    assert c._bad_count == 0
+    return True
+
+
+def test_backward_scan():
+    """v3 signed advance: a downward scan (idx steps -1) rides ONE segment (no
+    per-point re-anchor header) and reconstructs correctly."""
+    fsz, frac, hsz, blk = 9, 8, 14, 183
+    idx = fsz + frac
+    points = [(20 - i, 0, 100 + i, 200 + i) for i in range(10)]   # 20,19,...,11
+    pkts = emit_packets(points, hsz=hsz, idx=idx, hist_block_size=blk)
+    c = DmaUdpClient(fsz=fsz, frac=frac, hsz=hsz, hist_block_size=blk,
+                     max_frame_size=256, max_interval=0.0)
+    nhdr = 0
+    for pkt in pkts:
+        w = np.frombuffer(pkt, dtype='<u8')
+        nhdr += int(((w >> np.uint64(63)) & np.uint64(1)).sum()) \
+                - int((w == 0xFFFFFFFFFFFFFFFF).sum())   # headers, excl. sentinels
+        c._process_packet(pkt)
+    dn, up = c.get_frame(0)
+    for i in range(10):
+        assert up[20 - i] == 100 + i and dn[20 - i] == 200 + i, i
+    assert nhdr == 1, ("expected ONE header for the descending run", nhdr)
     return True
 
 

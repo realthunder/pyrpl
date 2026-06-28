@@ -502,65 +502,80 @@ class DmaUdpClient:
         hist_mask = (1 << hsz) - 1
         fc_mask = (1 << (55 - hsz)) - 1
 
-        # Walk each segment: header re-anchors (channel, frame, absolute pos), then
-        # its data words rebuild positions from the per-point advance bit.
+        nchan = len(self._live)
+        # Walk each segment. Packet format v2: the header's [62:59] field is NCH,
+        # the number of channels interleaved in this segment. The data words come
+        # in groups of NCH (channel 0, 1, ... NCH-1) that all share ONE scan
+        # position; the advance bit on the channel-0 word steps the position.
         for si, h in enumerate(hdr_pos):
             hw = int(words[h])
-            ch = (hw >> 59) & 0xf
-            if ch > 1:
-                # ch == 0xF is the RTL's all-ones padding sentinel for the
-                # trailing partial packet (expected, not an error); other values
-                # would be genuinely unexpected. Either way the segment is just
-                # skipped — don't count it as a bad packet (padding dominates).
-                logger.debug("Unknown CHANNEL_ID %d — segment ignored", ch)
+            nch = (hw >> 59) & 0xf
+            if nch == 0 or nch > nchan:
+                # 0xF = all-ones padding sentinel (expected); other out-of-range
+                # values are unknown -> skip the segment, not a bad packet.
                 continue
             frame_cnt = hw & fc_mask
             start_pos = (hw >> int(idx_lsb)) & hist_mask
             seg_end = hdr_pos[si + 1] if si + 1 < hdr_pos.size else words.size
             seg = words[h + 1:seg_end]
 
-            with self._lock[ch]:
-                # On a 2D-frame turnover, publish the just-completed frame
-                # (snapshot of the live buffer) BEFORE writing the new frame's
-                # points, so the published copy stays frame-coherent.
-                if (self._max_interval > 0 and self._frame_cnt[ch] != -1
-                        and frame_cnt != self._frame_cnt[ch]):
+            ngrp = seg.size // nch
+            if ngrp == 0:
+                # Header with no data (e.g. last word of packet): still note the
+                # 2D-frame for each channel so turnover publishing stays coherent.
+                empty = np.empty(0, dtype=np.int32)
+                for c in range(nch):
+                    self._write_channel(c, frame_cnt, empty, empty, empty)
+                continue
+            grp = seg[:ngrp * nch].reshape(ngrp, nch)   # rows=groups, cols=channels
+
+            # Shared scan position per group: start_pos + cumulative SIGNED step
+            # (v3). The channel-0 word carries the step: bit62 = magnitude (±1 or
+            # hold), bit61 = direction (1 = backward/-1). The first group's point
+            # is pinned at start_pos.
+            mag = ((grp[:, 0] >> np.uint64(62)) & np.uint64(1)).astype(np.int64)
+            drc = ((grp[:, 0] >> np.uint64(61)) & np.uint64(1)).astype(np.int64)
+            step = mag * (1 - 2 * drc)          # +1 fwd, -1 back, 0 hold
+            step[0] = 0
+            pos = start_pos + np.cumsum(step)
+            keep = (pos >= 0) & (pos < self._max_frame_size)
+            p = pos[keep].astype(np.int64)
+
+            for c in range(nch):
+                col = grp[:, c]
+                up = (col & pmask).astype(np.int32)[keep]
+                down = ((col >> np.uint64(idx)) & pmask).astype(np.int32)[keep]
+                self._write_channel(c, frame_cnt, p, up, down)
+
+    def _write_channel(self, ch, frame_cnt, p, up, down):
+        """Write one channel's points for a segment into its live buffer (COW),
+        handling 2D-frame turnover/interval publishing. p/up/down are aligned
+        arrays (may be empty -> just notes the frame counter)."""
+        with self._lock[ch]:
+            # On a 2D-frame turnover, publish the just-completed frame BEFORE
+            # writing the new frame's points, so the snapshot stays coherent.
+            if (self._max_interval > 0 and self._frame_cnt[ch] != -1
+                    and frame_cnt != self._frame_cnt[ch]):
+                self._publish(ch)
+            self._frame_cnt[ch] = frame_cnt
+            if p.size == 0:
+                return
+            # Copy-on-write: if a reader holds the live buffer, freeze it by
+            # copying the populated extent into a recycled buffer before writing.
+            if id(self._live[ch]) in self._out[ch]:
+                m = self._max_pos[ch] + 1
+                fresh = self._take_buffer(ch)
+                fresh[:m] = self._live[ch][:m]
+                self._live[ch] = fresh
+            self._live[ch][p, 0] = up
+            self._live[ch][p, 1] = down
+            self._max_pos[ch] = max(self._max_pos[ch], int(p.max()))
+            self._seen[ch] = True
+            self._update_seq[ch] += 1
+            # Interval publish: refresh at most once per max_interval even
+            # without a turnover (e.g. a paused scanner).
+            if self._max_interval > 0:
+                now = self._time()
+                if (self._last_publish_time[ch] is None
+                        or now - self._last_publish_time[ch] >= self._max_interval):
                     self._publish(ch)
-                self._frame_cnt[ch] = frame_cnt
-
-                if seg.size == 0:
-                    continue                    # header with no data (e.g. last word of packet)
-
-                # Position of each data word = start_pos + cumulative advance,
-                # with the first point of the segment pinned at start_pos.
-                adv = ((seg >> np.uint64(62)) & np.uint64(1)).astype(np.int64)
-                adv[0] = 0
-                pos = start_pos + np.cumsum(adv)
-                up = (seg & pmask).astype(np.int32)
-                down = ((seg >> np.uint64(idx)) & pmask).astype(np.int32)
-
-                keep = pos < self._max_frame_size
-                p = pos[keep]
-                if p.size == 0:
-                    continue
-                # Copy-on-write: if a reader holds the live buffer, freeze it by
-                # copying the populated extent into a recycled buffer before
-                # writing (allocates only if the pool is empty).
-                if id(self._live[ch]) in self._out[ch]:
-                    m = self._max_pos[ch] + 1
-                    fresh = self._take_buffer(ch)
-                    fresh[:m] = self._live[ch][:m]
-                    self._live[ch] = fresh
-                self._live[ch][p, 0] = up[keep]
-                self._live[ch][p, 1] = down[keep]
-                self._max_pos[ch] = max(self._max_pos[ch], int(p.max()))
-                self._seen[ch] = True
-                self._update_seq[ch] += 1
-
-                # Interval publish: refresh the snapshot at most once per
-                # max_interval even without a turnover (e.g. a paused scanner).
-                if self._max_interval > 0:
-                    now = self._time()
-                    if (self._last_publish_time[ch] is None
-                            or now - self._last_publish_time[ch] >= self._max_interval):
-                        self._publish(ch)
