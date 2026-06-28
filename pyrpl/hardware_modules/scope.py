@@ -249,6 +249,20 @@ class DmaMaxIntervalProperty(FloatProperty):
         return val
 
 
+class DmaEnabledProperty(BoolProperty):
+    """BoolProperty that tears down a running DMA UDP client the moment it is
+    disabled, so toggling it off takes effect live. The (re)start side is gated
+    in Scope._start_trace_acquisition, so enabling it just lets the next
+    acquisition spin the receiver back up."""
+    def set_value(self, obj, val):
+        super(DmaEnabledProperty, self).set_value(obj, val)
+        if not val:
+            client = getattr(obj, '_dma_udp_client', None)
+            if client is not None:
+                client.stop()
+        return val
+
+
 class Scope(HardwareModule, AcquisitionModule):
     MIN_DELAY_CONTINUOUS_ROLLING_MS = 20
     addr_base = 0x40200000
@@ -429,7 +443,7 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_enable = BoolRegister(0x0, 5, doc="Enable fft")
 
-    dma_enabled = BoolProperty(default=True,
+    dma_enabled = DmaEnabledProperty(default=True,
                                doc="Stream FFT peak history over the "
                                    "point-cloud DMA/UDP client. Disable for "
                                    "FPGA binaries built without the DMA path.")
@@ -654,9 +668,12 @@ class Scope(HardwareModule, AcquisitionModule):
         """
         if new is not None:
             self.stop()
-
-    def stop(self):
-        super().stop()
+        # The DMA multicast receiver is tied to the acquisition *session*, not
+        # the per-trace state machine: stop() is called once per trace (e.g. by
+        # Lidar._start_trace_acquisition) to re-arm the scope, so tearing the
+        # socket+thread down there churned it every frame. Tear it down only on
+        # a genuine ownership change instead — scope freed at the end of a run,
+        # or slaved away by another module.
         self._dma_udp_client.stop()
 
     @property
