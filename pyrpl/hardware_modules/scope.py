@@ -641,6 +641,12 @@ class Scope(HardwareModule, AcquisitionModule):
         self._dma_udp_client = DmaUdpClient()
         self._last_dma_update = [-1, -1]
 
+    @property
+    def dma_stats(self):
+        """Receiver-health snapshot from the DMA UDP client (packets/s, kernel
+        drop count, per-channel update counters …). See DmaUdpClient.stats()."""
+        return self._dma_udp_client.stats()
+
     def _dma_configure_from_fpga(self):
         """Reconfigure the UDP unpacker from the FPGA packet-format descriptor.
 

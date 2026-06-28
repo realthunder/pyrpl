@@ -40,6 +40,7 @@ update.
 """
 
 import socket
+import struct
 import threading
 import logging
 import time
@@ -49,6 +50,11 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MCAST_IP = '239.255.0.1'
 _DEFAULT_PORT = 12468
+
+# Linux ancillary message reporting cumulative datagrams dropped by the socket
+# receive buffer (set via SO_RX_QUEUE_OVFL). Not exported by Python's socket on
+# all builds, so fall back to the well-known constant value (40 on Linux).
+_SO_RX_QUEUE_OVFL = getattr(socket, 'SO_RX_QUEUE_OVFL', 40)
 
 
 class _FrameLease:
@@ -187,6 +193,16 @@ class DmaUdpClient:
         self._thread = None
         self._running = False
 
+        # Receiver-health counters (written by the recv thread, read by the GUI):
+        self._pkt_count = 0       # total datagrams received this session
+        self._bad_count = 0       # malformed datagrams discarded by the parser
+        self._ovfl_drops = 0      # cumulative kernel SO_RX_QUEUE_OVFL drops
+        self._ovfl_enabled = False
+        # Packet-rate smoothing for stats() (GUI-thread-only state):
+        self._stats_t0 = None
+        self._stats_pkt0 = 0
+        self._stats_pps = 0.0
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -219,6 +235,14 @@ class DmaUdpClient:
         """Start the background receive thread."""
         if self._running:
             return
+        # Fresh counters per session (the socket — and its kernel drop counter —
+        # is recreated below, so the rates/drops reflect the current run only).
+        self._pkt_count = 0
+        self._bad_count = 0
+        self._ovfl_drops = 0
+        self._stats_t0 = None
+        self._stats_pkt0 = 0
+        self._stats_pps = 0.0
         self._running = True
         self._sock = self._create_socket()
         self._thread = threading.Thread(
@@ -335,6 +359,42 @@ class DmaUdpClient:
         """Return the most recent 2D-frame counter seen for this channel."""
         return self._frame_cnt[channel]
 
+    def stats(self, min_window=0.5):
+        """Receiver-health snapshot for display/diagnostics. Returns a dict:
+
+          pkt_per_s : smoothed received-packet rate (recomputed every min_window s)
+          drops     : cumulative UDP datagrams dropped by the kernel socket buffer
+                      (SO_RX_QUEUE_OVFL); stays 0 on platforms without it
+          bad       : malformed datagrams discarded by the parser
+          packets   : total datagrams received this session
+          update    : (ch0, ch1) monotonic new-data counters (see update_count)
+          frames    : (ch0, ch1) latest 2D-frame counters
+          running   : receive thread active
+
+        Call from one thread only (the rate state is unlocked); the underlying
+        counters are plain ints written by the recv thread, read atomically here.
+        """
+        now = self._time()
+        pkt = self._pkt_count
+        if self._stats_t0 is None:
+            self._stats_t0 = now
+            self._stats_pkt0 = pkt
+        else:
+            dt = now - self._stats_t0
+            if dt >= min_window:
+                self._stats_pps = (pkt - self._stats_pkt0) / dt
+                self._stats_t0 = now
+                self._stats_pkt0 = pkt
+        return {
+            'pkt_per_s': self._stats_pps,
+            'drops': self._ovfl_drops,
+            'bad': self._bad_count,
+            'packets': pkt,
+            'update': (self.update_count(0), self.update_count(1)),
+            'frames': (self._frame_cnt[0], self._frame_cnt[1]),
+            'running': self._running,
+        }
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
@@ -350,16 +410,36 @@ class DmaUdpClient:
         mreq = socket.inet_aton(self._mcast_ip) + socket.inet_aton('0.0.0.0')
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
         sock.settimeout(1.0)
+        # Ask the kernel to report receive-queue overflow drops (Linux). Lets
+        # stats() show real UDP loss when the host can't keep up with the FPGA.
+        self._ovfl_enabled = False
+        if hasattr(sock, 'recvmsg'):
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, _SO_RX_QUEUE_OVFL, 1)
+                self._ovfl_enabled = True
+            except (OSError, AttributeError):
+                pass
         return sock
 
     def _recv_loop(self):
+        use_ovfl = self._ovfl_enabled
+        ancsize = socket.CMSG_SPACE(4) if use_ovfl else 0
         while self._running:
             try:
-                data = self._sock.recv(65536)
+                if use_ovfl:
+                    data, ancdata, _flags, _addr = self._sock.recvmsg(65536, ancsize)
+                    for lvl, typ, cdata in ancdata:
+                        if (lvl == socket.SOL_SOCKET and typ == _SO_RX_QUEUE_OVFL
+                                and len(cdata) >= 4):
+                            # cumulative drops since socket creation
+                            self._ovfl_drops = struct.unpack('I', cdata[:4])[0]
+                else:
+                    data = self._sock.recv(65536)
             except socket.timeout:
                 continue
             except OSError:
                 break
+            self._pkt_count += 1
             self._process_packet(data)
 
     def _publish(self, ch):
@@ -387,6 +467,7 @@ class DmaUdpClient:
     def _process_packet(self, data):
         if len(data) != self._pkt_bytes:
             logger.debug("Unexpected packet length %d (expected %d)", len(data), self._pkt_bytes)
+            self._bad_count += 1
             return
 
         words = np.frombuffer(data, dtype='<u8')
@@ -394,6 +475,7 @@ class DmaUdpClient:
         hdr_pos = np.nonzero(is_header)[0]
         if hdr_pos.size == 0:
             logger.debug("Packet with no header word — ignored")
+            self._bad_count += 1
             return
 
         idx = self._idx
@@ -409,6 +491,10 @@ class DmaUdpClient:
             hw = int(words[h])
             ch = (hw >> 59) & 0xf
             if ch > 1:
+                # ch == 0xF is the RTL's all-ones padding sentinel for the
+                # trailing partial packet (expected, not an error); other values
+                # would be genuinely unexpected. Either way the segment is just
+                # skipped — don't count it as a bad packet (padding dominates).
                 logger.debug("Unknown CHANNEL_ID %d — segment ignored", ch)
                 continue
             frame_cnt = hw & fc_mask
