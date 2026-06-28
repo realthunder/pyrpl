@@ -106,7 +106,7 @@ class DmaUdpClient:
     def __init__(self, mcast_ip=_DEFAULT_MCAST_IP, port=_DEFAULT_PORT,
                  fsz=13, frac=8, hist_block_size=183, hsz=14,
                  max_frame_size=128*1024, max_interval=0.0, time_fn=None,
-                 pool_size=4):
+                 pool_size=4, max_parse_rate=2000):
         """
         Parameters
         ----------
@@ -151,6 +151,7 @@ class DmaUdpClient:
         self._port = port
         self._max_frame_size = max_frame_size
         self._max_interval = max_interval
+        self._max_parse_rate = max_parse_rate
         self._time = time_fn or time.monotonic
         self.configure(fsz=fsz, frac=frac, hsz=hsz,
                        hist_block_size=hist_block_size)
@@ -208,7 +209,7 @@ class DmaUdpClient:
     # ------------------------------------------------------------------
 
     def configure(self, fsz=None, frac=None, hsz=None, hist_block_size=None,
-                  max_interval=None):
+                  max_interval=None, max_parse_rate=None):
         """Set the packet-layout / delivery parameters (typically from the scope).
 
         Recomputes the derived field masks and expected packet size. Call before
@@ -224,12 +225,23 @@ class DmaUdpClient:
             self._hist_block_size = hist_block_size
         if max_interval is not None:
             self._max_interval = max_interval
+        if max_parse_rate is not None:
+            self._max_parse_rate = max_parse_rate
         # Peak field width IDX = fsz + frac; value is unsigned Q(fsz).frac.
         self._idx = self._fsz + self._frac
         self._mask = (1 << self._idx) - 1
         self._hist_mask = (1 << self._hsz) - 1
         self._pkt_words = self._hist_block_size + 1
         self._pkt_bytes = self._pkt_words * 8
+        # Cap how often packets are PARSED. The board re-streams the full history
+        # far faster than the display needs (~5000 pkt/s); parsing every packet in
+        # a tight thread starves the GUI of the GIL (point cloud AND scope slow).
+        # Sleeping between parses bounds CPU and yields the GIL; the kernel drops
+        # the un-recv'd excess — harmless, since the persistent history is resent,
+        # so every scan position still refreshes well above the display rate.
+        # 0 disables the cap. ~2000/s covers a 16k-point history at >20 Hz.
+        self._parse_min_interval = (1.0 / self._max_parse_rate
+                                    if self._max_parse_rate else 0.0)
 
     def start(self):
         """Start the background receive thread."""
@@ -441,6 +453,11 @@ class DmaUdpClient:
                 break
             self._pkt_count += 1
             self._process_packet(data)
+            # Yield the GIL and bound CPU: the board sends far faster than the
+            # display needs. Sleeping here lets the GUI thread run (otherwise this
+            # tight loop starves it); the kernel drops the packets we skip.
+            if self._parse_min_interval:
+                time.sleep(self._parse_min_interval)
 
     def _publish(self, ch):
         """Snapshot the live buffer into the published frame (caller holds lock).
