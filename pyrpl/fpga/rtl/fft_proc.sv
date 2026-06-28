@@ -41,10 +41,14 @@ module fft_proc #(
   output logic [ IDX-1:0] fft_hist_rdata_up_o,
   output logic [ IDX-1:0] fft_hist_rdata_down_o,
 
-  output logic [ 63:0]    m_dma_tdata,
-  output logic            m_dma_tvalid,
-  input  logic            m_dma_tready,
-  output logic            m_dma_tlast,
+  // Per-position point output (one strobe per detected scan position). The DMA
+  // packet assembly + 2-channel interleaving + clk crossing now live in
+  // red_pitaya_scope.sv; this just streams the captured {up,down} peak indices
+  // and the aligned scan position on the FFT clock (clk_i).
+  output logic            dma_point_valid_o,
+  output logic [ IDX-1:0] dma_point_up_o,
+  output logic [ IDX-1:0] dma_point_down_o,
+  output logic [ HSZ-1:0] dma_point_idx_o,
 
   output logic [  6-1: 0] status_o,
   output logic            fft_done_o,
@@ -874,108 +878,24 @@ assign peak_ready     = peak_out_valid;
 // fft_index_flush_i no longer closes/truncates the packet (that desynced the
 // fixed framing); it just forces the next point to start a new segment carrying
 // the incremented dma_frame_cnt.
-localparam PKT_WORDS    = HIST_BLOCK_SIZE + 1;       // fixed packet length (monitor_server unit)
-localparam WC_W         = $clog2(PKT_WORDS);
-localparam DMA_HDR_FC_W = 55 - HSZ;                  // frame-counter bits that fit in the header
-localparam DMA_DAT_RSVD = 62 - 2*IDX;                // data-word reserved span
-// Layout budget (must hold): 2*IDX <= 61 (data word), HSZ <= 54 (header).
-
-logic [WC_W-1:0]  dma_word_cnt;     // words written in current packet (0..PKT_WORDS-1)
-logic             dma_need_hdr;     // next word must be a header (packet start / re-anchor)
-logic             dma_pend;         // a captured point is waiting to be written out
-logic             dma_pend_first;   // pending point is the segment's first (advance forced 0)
-logic             dma_pend_adv;     // captured advance bit (scan delta == +1)
-logic [IDX-1:0]   dma_pend_up, dma_pend_down;
-logic [HSZ-1:0]   dma_pend_idx;
-logic [HSZ-1:0]   dma_prev_idx;     // scan cell of the last point written out
-logic             dma_frame_pend;   // a new-2D-frame flush is pending → force a header
-
-logic [DMA_HDR_FC_W-1:0] dma_frame_field;
-assign dma_frame_field = dma_frame_cnt;              // resize (zero-extend / truncate) to header field
-
-logic [63:0]    dma_wr_data;
-logic           dma_wr_en;
-logic           dma_wr_tlast;
 
 wire dma_emit       = peak_ready_trig && (peak_up || !up_toggle);
-wire [HSZ-1:0] dma_delta = fft_hist_index - dma_prev_idx;   // 0/1 = step; else re-anchor
-wire dma_flush_rise = fft_index_flush_i && !fft_index_flush_d;
-wire dma_last_word  = (dma_word_cnt == PKT_WORDS-1);
-
+// One registered point per detected scan position. Both fft_proc instances
+// share the scan pipeline, so fft_a/fft_b assert dma_point_valid_o on the same
+// cycle; red_pitaya_scope.sv captures both and assembles the interleaved packet
+// (header framing + clk crossing now live there).
 always @(posedge clk_i) begin
-    dma_wr_en <= 1'b0;
     if (!rstn_i) begin
-        dma_word_cnt   <= '0;
-        dma_need_hdr   <= 1'b1;       // first word of the first packet is a header
-        dma_pend       <= 1'b0;
-        dma_pend_first <= 1'b0;
-        dma_prev_idx   <= '0;
-        dma_frame_pend <= 1'b0;
-        dma_wr_tlast   <= 1'b0;
+        dma_point_valid_o <= 1'b0;
     end else begin
-        if (dma_flush_rise)
-            dma_frame_pend <= 1'b1;   // remember the 2D-frame boundary for the next header
-
-        if (dma_pend && dma_need_hdr) begin
-            // Emit the segment header for the pending point.
-            dma_wr_data    <= { 1'b1, CHANNEL_ID, DMA_FMT_VERSION, dma_pend_idx, dma_frame_field };
-            dma_wr_en      <= 1'b1;
-            dma_wr_tlast   <= dma_last_word;
-            dma_word_cnt   <= dma_last_word ? '0 : dma_word_cnt + 1'b1;
-            dma_need_hdr   <= dma_last_word;          // a wrapped packet still needs a header next
-            dma_pend_first <= 1'b1;                   // its data word is the segment's first
-            dma_prev_idx   <= dma_pend_idx;
-        end else if (dma_pend) begin
-            // Emit the pending point's data word.
-            dma_wr_data    <= { 1'b0, (dma_pend_first ? 1'b0 : dma_pend_adv),
-                                {DMA_DAT_RSVD{1'b0}}, dma_pend_down, dma_pend_up };
-            dma_wr_en      <= 1'b1;
-            dma_wr_tlast   <= dma_last_word;
-            dma_word_cnt   <= dma_last_word ? '0 : dma_word_cnt + 1'b1;
-            if (dma_last_word) dma_need_hdr <= 1'b1;  // next packet starts with a header
-            dma_pend       <= 1'b0;
-            dma_pend_first <= 1'b0;
-            dma_prev_idx   <= dma_pend_idx;
-        end else if (dma_emit) begin
-            // Capture a new point; decide whether it needs a re-anchor header.
-            dma_pend      <= 1'b1;
-            dma_pend_up   <= fft_peak_index_up;
-            dma_pend_down <= fft_peak_index_down;
-            dma_pend_idx  <= fft_hist_index;
-            dma_pend_adv  <= (dma_delta == 1);
-            if (dma_need_hdr || dma_frame_pend || dma_flush_rise ||
-                (dma_delta != 0 && dma_delta != 1))
-                dma_need_hdr <= 1'b1;
-            dma_frame_pend <= 1'b0;                    // consumed by this segment's header
+        dma_point_valid_o <= dma_emit;
+        if (dma_emit) begin
+            dma_point_up_o   <= fft_peak_index_up;
+            dma_point_down_o <= fft_peak_index_down;
+            dma_point_idx_o  <= fft_hist_index;
         end
     end
 end
-
-// Independent-clock FIFO: written on the FFT/ser clock (clk_i, 250 MHz), read on
-// the DMA/adc clock (adc_clk_i, 125 MHz). This bridges the FFT output to a
-// 125 MHz DMA so the DMA's a_tready handshake is no longer a 250 MHz cross-chip
-// path; the FIFO synchronisers handle the clock crossing. Point-cloud data is
-// sparse, so 125 MHz read keeps up easily.
-xpm_fifo_axis #(
-    .TDATA_WIDTH      (64),
-    .FIFO_DEPTH       (1 << $clog2(HIST_BLOCK_SIZE * 2 + 4)),
-    .CLOCKING_MODE    ("independent_clock"),
-    .RELATED_CLOCKS   (0),
-    .CDC_SYNC_STAGES  (2),
-    .USE_ADV_FEATURES (16'h0000)
-) fifo_dma_out (
-    .s_aclk          (clk_i),
-    .m_aclk          (adc_clk_i),
-    .s_aresetn       (rstn_i),
-    .s_axis_tdata    (dma_wr_data),
-    .s_axis_tvalid   (dma_wr_en),
-    .s_axis_tready   (),
-    .s_axis_tlast    (dma_wr_tlast),
-    .m_axis_tdata    (m_dma_tdata),
-    .m_axis_tvalid   (m_dma_tvalid),
-    .m_axis_tready   (m_dma_tready),
-    .m_axis_tlast    (m_dma_tlast)
-);
 
 generate
 if (FFT_IMPL == 1) begin : gen_fft_single

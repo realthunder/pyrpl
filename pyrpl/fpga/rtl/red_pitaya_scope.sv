@@ -291,7 +291,9 @@ localparam IDX = FSZ + FRAC;
 // DMA point-cloud packet-layout version. Single source of truth: stamped into
 // the header (low nibble, via fft_proc) and reported in the descriptor reg 0x170
 // so the host can sanity-check before decoding. Bump on any packet-format change.
-localparam [7:0] DMA_FMT_VERSION = 8'd1;
+localparam [7:0] DMA_FMT_VERSION = 8'd3;          // v3: NCH-interleaved + signed advance (data[61]=dir)
+// Max DMA channels physically present in this build (fft_b omitted when single).
+localparam [3:0] DMA_MAXCH = FFT_SINGLE ? 4'd1 : 4'd2;
 // Fixed-width views of the build constants for the packet-format descriptor regs
 // (truncate the untyped integer parameters to a defined width).
 localparam [ 7:0] DMA_FMT_FSZ  = FSZ;             // integer bin width
@@ -572,6 +574,16 @@ logic [ DSZ-1: 0]   fft_peak_down_a;
 logic [ DSZ-1: 0]   fft_peak_up_b;
 logic [ DSZ-1: 0]   fft_peak_down_b;
 
+// Per-position point output from each fft_proc (on fft_input_clk); the combined
+// DMA packet assembler below interleaves both channels under one header.
+logic               dma_point_valid_a, dma_point_valid_b;
+logic [ IDX-1: 0]   dma_point_up_a, dma_point_down_a;
+logic [ IDX-1: 0]   dma_point_up_b, dma_point_down_b;
+logic [ HSZ-1: 0]   dma_point_idx_a, dma_point_idx_b;
+// NCH = number of active DMA channels (0=off, 1=ch0, 2=ch0+ch1). Set via the
+// control register; bounded to the channels physically present.
+logic [ 3:0]        dma_nch;
+
 // Sub-bin FRACTION of each peak index (low FRAC bits of k_interp), zero-extended to
 // 16 and packed {down, up} per channel for the 0x174/0x178 registers (down in [31:16],
 // up in [15:0]). Guarded for FRAC=0 (interpolation disabled) where the [FRAC-1:0]
@@ -810,10 +822,10 @@ fft_a (
    .fft_hist_rdata_up_o (fft_hist_rdata_up_a_),
    .fft_hist_rdata_down_o (fft_hist_rdata_down_a_),
 
-   .m_dma_tdata   (dma_a_tdata),
-   .m_dma_tvalid  (dma_a_tvalid),
-   .m_dma_tready  (dma_a_tready),
-   .m_dma_tlast   (dma_a_tlast),
+   .dma_point_valid_o (dma_point_valid_a),
+   .dma_point_up_o    (dma_point_up_a),
+   .dma_point_down_o  (dma_point_down_a),
+   .dma_point_idx_o   (dma_point_idx_a),
 
    .status_o (fft_status[0]),
    .fft_done_o (fft_done[0]),
@@ -848,9 +860,10 @@ if (FFT_SINGLE) begin : gen_no_fft_b
    assign fft_peak_up_b          = '0;
    assign fft_peak_down_b        = '0;
    assign fft_we_cnt[1]          = '0;
-   assign dma_b_tdata            = '0;
-   assign dma_b_tvalid           = 1'b0;
-   assign dma_b_tlast            = 1'b0;
+   assign dma_point_valid_b      = 1'b0;
+   assign dma_point_up_b         = '0;
+   assign dma_point_down_b       = '0;
+   assign dma_point_idx_b        = '0;
 end else begin : gen_fft_b
 fft_proc #(.ASZ(ASZ),
            .QSZ(QSZ),
@@ -897,10 +910,10 @@ fft_proc #(.ASZ(ASZ),
    .fft_hist_rdata_up_o (fft_hist_rdata_up_b_),
    .fft_hist_rdata_down_o (fft_hist_rdata_down_b_),
 
-   .m_dma_tdata   (dma_b_tdata),
-   .m_dma_tvalid  (dma_b_tvalid),
-   .m_dma_tready  (dma_b_tready),
-   .m_dma_tlast   (dma_b_tlast),
+   .dma_point_valid_o (dma_point_valid_b),
+   .dma_point_up_o    (dma_point_up_b),
+   .dma_point_down_o  (dma_point_down_b),
+   .dma_point_idx_o   (dma_point_idx_b),
 
    .status_o (fft_status[1]),
    .fft_done_o (fft_done[1]),
@@ -917,6 +930,169 @@ fft_proc #(.ASZ(ASZ),
 );
 end
 
+// ===========================================================================
+// Combined point-cloud DMA assembler (packet format v2).
+// Reads both fft_proc channels at the shared scan position and emits ONE
+// segmented packet stream. Format (64-bit words):
+//   header [63]=1: [62:59]=NCH (active channels), [58:55]=version,
+//                  [54 : 55-HSZ]=hist_index, [54-HSZ : 0]=frame_cnt
+//   data   [63]=0: [62]=advance (set on the ch0 word only), [2*IDX-1:IDX]=down,
+//                  [IDX-1:0]=up.  One group per scan index = NCH data words
+//                  (ch0, ch1, ...); the host steps position on the ch0 advance.
+//   sentinel = all-ones (header bit + NCH nibble 0xF): pads a packet tail too
+//              small to hold a whole group, so a group never straddles packets.
+// A header is (re)emitted on packet start, scan-position jump (delta not 0/1),
+// 2D-frame change, or NCH change. Runs on fft_input_clk; xpm_fifo_axis crosses
+// to adc_clk (dma_s2mm). The two fft_proc point strobes are cycle-aligned, so
+// dma_point_valid_a gates both channels.
+localparam int ASM_PKT  = HIST_BLOCK_SIZE + 1;       // words per packet
+localparam int ASM_WCW  = $clog2(ASM_PKT);
+localparam int ASM_FCW  = 55 - HSZ;                  // frame-counter bits in header
+localparam int ASM_RSVD = 62 - 2*IDX;                // data-word reserved span
+localparam [1:0] S_HDR = 2'd0, S_DATA = 2'd1, S_PAD = 2'd2;
+
+logic [ASM_WCW-1:0] asm_wc;          // next word index within the packet
+logic               asm_need_hdr;
+logic [HSZ-1:0]     asm_prev_idx;
+logic [3:0]         asm_nch_seg;     // NCH stamped in the active segment header
+logic               asm_flush_d, asm_frame_pend;
+logic [ASM_FCW-1:0] asm_frame_cnt;       // per-2D-frame counter (header field width)
+logic               asm_busy;
+logic [1:0]         asm_state;
+logic [3:0]         asm_ch;
+logic [IDX-1:0]     pt_up0, pt_dn0, pt_up1, pt_dn1;
+logic [HSZ-1:0]     pt_idx;
+logic               pt_adv;       // step magnitude (1 = ±1 advance, 0 = hold)
+logic               pt_dir;       // step direction (1 = -1 backward, 0 = +1 forward)
+logic [3:0]         pt_nch;
+logic [63:0]        asm_tdata;
+logic               asm_tvalid, asm_tlast;
+
+wire [HSZ-1:0] asm_delta = dma_point_idx_a - asm_prev_idx;
+wire asm_inc = (asm_delta == 1);              // scan stepped +1
+wire asm_dec = (asm_delta == {HSZ{1'b1}});    // scan stepped -1 (two's-complement all-ones)
+wire asm_flush_rise = fft_index_flush && !asm_flush_d;
+wire asm_last_word  = (asm_wc == ASM_PKT-1);
+// A header is needed unless the scan held (delta 0) or stepped by ±1 (which the
+// signed advance bits encode). The signed step lets BOTH scan directions ride a
+// single segment, instead of a re-anchor header per point when the scan runs
+// downward.
+wire asm_hdr_need   = asm_need_hdr || asm_frame_pend || asm_flush_rise ||
+                      (asm_delta != 0 && !asm_inc && !asm_dec) ||
+                      (dma_nch != asm_nch_seg);
+
+always @(posedge fft_input_clk) begin
+    asm_tvalid <= 1'b0;
+    if (!fft_rstn_i) begin
+        asm_wc         <= '0;
+        asm_need_hdr   <= 1'b1;
+        asm_prev_idx   <= '0;
+        asm_nch_seg    <= '0;
+        asm_frame_pend <= 1'b0;
+        asm_frame_cnt  <= '0;
+        asm_flush_d    <= 1'b0;
+        asm_busy       <= 1'b0;
+        asm_tlast      <= 1'b0;
+    end else begin
+        asm_flush_d <= fft_index_flush;
+        if (asm_flush_rise) begin
+            asm_frame_cnt  <= asm_frame_cnt + 1'b1;
+            asm_frame_pend <= 1'b1;
+        end
+
+        if (!asm_busy) begin
+            if (dma_point_valid_a && dma_nch != 0) begin
+                pt_up0 <= dma_point_up_a;  pt_dn0 <= dma_point_down_a;
+                pt_up1 <= dma_point_up_b;  pt_dn1 <= dma_point_down_b;
+                pt_idx <= dma_point_idx_a;
+                pt_nch <= dma_nch;
+                pt_adv <= asm_inc || asm_dec;     // ±1 step rides the advance bits
+                pt_dir <= asm_dec;                // 1 = backward (-1)
+                asm_frame_pend <= 1'b0;
+                asm_busy <= 1'b1;
+                // Pad the packet tail if a header+group could not fit (reserve a
+                // header word for safety); otherwise emit header-if-needed/data.
+                if ((asm_wc + 1 + dma_nch) > ASM_PKT)
+                    asm_state <= S_PAD;
+                else begin
+                    asm_state <= asm_hdr_need ? S_HDR : S_DATA;
+                    asm_ch    <= '0;
+                end
+            end
+        end else case (asm_state)
+            S_PAD: begin
+                asm_tdata  <= {64{1'b1}};            // all-ones sentinel
+                asm_tvalid <= 1'b1;
+                asm_tlast  <= asm_last_word;
+                if (asm_last_word) begin
+                    asm_wc       <= '0;
+                    asm_need_hdr <= 1'b1;
+                    asm_state    <= S_HDR;           // new packet -> header
+                    asm_ch       <= '0;
+                    pt_adv       <= 1'b0;            // re-anchored at the new header
+                    pt_dir       <= 1'b0;
+                end else
+                    asm_wc <= asm_wc + 1'b1;
+            end
+            S_HDR: begin
+                asm_tdata    <= {1'b1, pt_nch, DMA_FMT_VERSION[3:0],
+                                 pt_idx, asm_frame_cnt[ASM_FCW-1:0]};
+                asm_tvalid   <= 1'b1;
+                asm_tlast    <= asm_last_word;
+                asm_wc       <= asm_last_word ? '0 : asm_wc + 1'b1;
+                asm_need_hdr <= asm_last_word;
+                asm_nch_seg  <= pt_nch;
+                asm_prev_idx <= pt_idx;
+                pt_adv       <= 1'b0;                // ch0 sits at the header idx
+                pt_dir       <= 1'b0;
+                asm_state    <= S_DATA;
+                asm_ch       <= '0;
+            end
+            S_DATA: begin
+                asm_tdata  <= {1'b0, (asm_ch == 0 ? pt_adv : 1'b0),
+                               (asm_ch == 0 ? pt_dir : 1'b0),
+                               {(ASM_RSVD-1){1'b0}},
+                               (asm_ch == 0 ? pt_dn0 : pt_dn1),
+                               (asm_ch == 0 ? pt_up0 : pt_up1)};
+                asm_tvalid <= 1'b1;
+                asm_tlast  <= asm_last_word;
+                asm_wc     <= asm_last_word ? '0 : asm_wc + 1'b1;
+                if (asm_last_word) asm_need_hdr <= 1'b1;
+                if (asm_ch == 0) asm_prev_idx <= pt_idx;   // advance consumed
+                if (asm_ch + 1 >= pt_nch) asm_busy <= 1'b0;
+                else                      asm_ch   <= asm_ch + 1'b1;
+            end
+            default: asm_busy <= 1'b0;
+        endcase
+    end
+end
+
+// Independent-clock FIFO: assemble on fft_input_clk, drain on adc_clk (dma_s2mm).
+xpm_fifo_axis #(
+    .TDATA_WIDTH      (64),
+    .FIFO_DEPTH       (1 << $clog2(HIST_BLOCK_SIZE * 4 + 4)),
+    .CLOCKING_MODE    ("independent_clock"),
+    .RELATED_CLOCKS   (0),
+    .CDC_SYNC_STAGES  (2),
+    .USE_ADV_FEATURES (16'h0000)
+) i_dma_pkt_fifo (
+    .s_aclk          (fft_input_clk),
+    .m_aclk          (adc_clk_i),
+    .s_aresetn       (fft_rstn_i),
+    .s_axis_tdata    (asm_tdata),
+    .s_axis_tvalid   (asm_tvalid),
+    .s_axis_tready   (),
+    .s_axis_tlast    (asm_tlast),
+    .m_axis_tdata    (dma_a_tdata),
+    .m_axis_tvalid   (dma_a_tvalid),
+    .m_axis_tready   (dma_a_tready),
+    .m_axis_tlast    (dma_a_tlast)
+);
+// Single combined stream now; second dma_s2mm input idle.
+assign dma_b_tdata  = '0;
+assign dma_b_tvalid = 1'b0;
+assign dma_b_tlast  = 1'b0;
+
 always @(posedge adc_clk_i)
 if (adc_rstn_i == 1'b0) begin
     fft_enable  <= 1'b0 ;
@@ -929,6 +1105,7 @@ if (adc_rstn_i == 1'b0) begin
     fft_acq2_cnt <= (2**(FSZ-1) - 200) & ~(FSSR-1);
     fft_trig_sync <= 0;
     fft_clk_sel <= 0;
+    dma_nch <= DMA_MAXCH;                 // default: stream all present channels
 end else if (sys_wen) begin
     if (sys_addr[19:0]==20'h0)  begin
         fft_parallel <= sys_wdata[4];
@@ -936,6 +1113,9 @@ end else if (sys_wen) begin
         fft_trig_sync <= sys_wdata[6];
         fft_clk_sel <= sys_wdata[11];
     end
+    // DMA channel count (0=off,1,2); clamp to channels physically present.
+    if (sys_addr[19:0]==20'h98)
+        dma_nch <= (sys_wdata[3:0] > DMA_MAXCH) ? DMA_MAXCH : sys_wdata[3:0];
     if (sys_addr[19:0]==20'h38) fft_peak_start <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h3C) fft_threshold_k <= sys_wdata[16-1:0];
     if (sys_addr[19:0]==20'h40) fft_peak_minimum <= sys_wdata[DSZ-1:0];
@@ -1697,6 +1877,7 @@ end else begin
      //   0x194 [15:0]=HIST_BLOCK_SIZE [19:16]=channel-field width
      // Data-word peak field width IDX = FSZ+FRAC; host: bin = field / 2^FRAC.
      // (FRAC was previously exposed standalone here; it is now the [15:8] sub-field.)
+     20'h00098 : begin sys_ack <= sys_en;          sys_rdata <= {28'h0, dma_nch}                          ; end
      20'h00170 : begin sys_ack <= sys_en;          sys_rdata <= {DMA_FMT_VERSION, DMA_FMT_HSZ, DMA_FMT_FRAC, DMA_FMT_FSZ}; end
      // Peak-bin sub-bin FRACTION (the low FRAC bits of k_interp), per channel.
      // 0x174/0x178 pack {down, up} for channel A/B — each the FRAC-bit fraction

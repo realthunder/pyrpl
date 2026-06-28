@@ -443,10 +443,10 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_enable = BoolRegister(0x0, 5, doc="Enable fft")
 
-    dma_enabled = DmaEnabledProperty(default=True,
-                               doc="Stream FFT peak history over the "
-                                   "point-cloud DMA/UDP client. Disable for "
-                                   "FPGA binaries built without the DMA path.")
+    dma_nch = IntRegister(0x98,
+                          doc="Number of FFT channels streamed over the point-"
+                              "cloud DMA: 0 = DMA off, 1 = ch0 only, 2 = ch0+ch1. "
+                              "Clamped in the FPGA to the channels present.")
 
     dma_max_interval = DmaMaxIntervalProperty(default=0.0, min=0.0, max=100.0,
                                      doc="Max seconds between published point-cloud "
@@ -634,7 +634,7 @@ class Scope(HardwareModule, AcquisitionModule):
 
     # Highest DMA packet-layout version this host knows how to decode. Bump in
     # lockstep with DMA_FMT_VERSION in red_pitaya_scope.sv when the format changes.
-    _DMA_FMT_VERSION_SUPPORTED = 1
+    _DMA_FMT_VERSION_SUPPORTED = 3
 
     def __init__(self, parent, name=None):
         super().__init__(parent, name=name)
@@ -918,7 +918,7 @@ class Scope(HardwareModule, AcquisitionModule):
         """
         Start acquisition of a curve in rolling_mode=False
         """
-        if self.fft_enable and self.dma_enabled and not self._dma_udp_client._running:
+        if self.fft_enable and self.dma_nch and not self._dma_udp_client._running:
             self._dma_configure_from_fpga()
             self._dma_udp_client.start()
         autosave_backup = self._autosave_active
