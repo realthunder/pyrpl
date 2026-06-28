@@ -121,6 +121,7 @@ large an integrator gain will quickly saturate the outputs.
 """
 
 import time
+import contextlib
 from .dsp import all_inputs, dsp_addr_base, InputSelectRegister
 from .dma_client import DmaUdpClient
 from ..acquisition_module import AcquisitionModule
@@ -237,6 +238,17 @@ class SamplingTimeProperty(SelectProperty):
         instance.decimation = float(value) / 8e-9
 
 
+class DmaMaxIntervalProperty(FloatProperty):
+    """FloatProperty that also pushes the new value into a running DMA UDP client,
+    so the publish cadence applies live (no acquisition restart needed)."""
+    def set_value(self, obj, val):
+        super(DmaMaxIntervalProperty, self).set_value(obj, val)
+        client = getattr(obj, '_dma_udp_client', None)
+        if client is not None:
+            client.configure(max_interval=float(val))
+        return val
+
+
 class Scope(HardwareModule, AcquisitionModule):
     MIN_DELAY_CONTINUOUS_ROLLING_MS = 20
     addr_base = 0x40200000
@@ -259,7 +271,8 @@ class Scope(HardwareModule, AcquisitionModule):
                        "math_formula",
                        "xy_mode"]
     # running_state last for proper acquisition setup
-    _setup_attributes = _gui_attributes + ["rolling_mode", "fft_enable", 'fft_parallel', 'nfft']
+    _setup_attributes = _gui_attributes + ["rolling_mode", "fft_enable", 'fft_parallel',
+                                           'nfft', 'dma_max_interval']
     # changing these resets the acquisition and autoscale (calls setup())
 
     data_length = data_length  # to use it in a list comprehension
@@ -420,6 +433,14 @@ class Scope(HardwareModule, AcquisitionModule):
                                doc="Stream FFT peak history over the "
                                    "point-cloud DMA/UDP client. Disable for "
                                    "FPGA binaries built without the DMA path.")
+
+    dma_max_interval = DmaMaxIntervalProperty(default=0.0, min=0.0, max=100.0,
+                                     doc="Max seconds between published point-cloud "
+                                         "frames when points keep arriving but the 2D "
+                                         "scan does not turn over (e.g. a paused "
+                                         "scanner). 0 = always expose the live buffer "
+                                         "on any update; >0 = frame-coherent snapshot "
+                                         "refreshed at least this often. Applies live.")
 
     fft_parallel = BoolRegister(0x0, 4, doc="Running dual fft in parallel for up and down")
 
@@ -604,7 +625,7 @@ class Scope(HardwareModule, AcquisitionModule):
     def __init__(self, parent, name=None):
         super().__init__(parent, name=name)
         self._dma_udp_client = DmaUdpClient()
-        self._last_dma_frame_cnt = [-1, -1]
+        self._last_dma_update = [-1, -1]
 
     def _dma_configure_from_fpga(self):
         """Reconfigure the UDP unpacker from the FPGA packet-format descriptor.
@@ -624,6 +645,7 @@ class Scope(HardwareModule, AcquisitionModule):
             frac=self.dma_fmt_frac,
             hsz=self.dma_fmt_hsz,
             hist_block_size=self.dma_block_size,
+            max_interval=self.dma_max_interval,
         )
 
     def _ownership_changed(self, old, new):
@@ -660,23 +682,49 @@ class Scope(HardwareModule, AcquisitionModule):
         """raw data from fft history.
 
         If channel (0=fft_a, 1=fft_b) is given, reads from the DMA UDP client
-        instead of AXI-Lite registers and returns None when frame_cnt has not
-        advanced since the last call.
+        instead of AXI-Lite registers and returns None when no new point data
+        has arrived since the last call (liveness-driven, so it keeps updating
+        even while the 2D scan is paused; see DmaUdpClient.max_interval).
         """
         if channel is not None:
-            current_cnt = self._dma_udp_client.frame_count(channel)
-            if current_cnt == self._last_dma_frame_cnt[channel]:
+            current = self._dma_udp_client.update_count(channel)
+            if current == self._last_dma_update[channel]:
                 return None
-            self._last_dma_frame_cnt[channel] = current_cnt
-            frame = self._dma_udp_client.get_frame(channel)
+            self._last_dma_update[channel] = current
+            frame = self._dma_udp_client.get_frame(channel, length)
             if frame is None:
                 return None
             peak_down, peak_up = frame
-            return peak_down[:length], peak_up[:length]
+            return peak_down, peak_up
         d = np.array(self._reads(addr, length), dtype=np.uint32)
         d1 = np.array(d & 0xffff, dtype=np.int32)
         d2 = np.array(d >> 16, dtype=np.int32)
         return d2, d1
+
+    @contextlib.contextmanager
+    def fft_history_frame(self, channel, length, gate=True):
+        """Zero-copy, recycled point-cloud frame from the DMA client (DMA only).
+
+        Use as a context manager so the buffer is released back to the pool when
+        done (no per-poll allocation at large frame sizes)::
+
+            with scope.fft_history_frame(0, n) as f:
+                if f is not None:
+                    peak_down, peak_up = f    # READ-ONLY, valid only in the block
+
+        gate=True (default) yields None when no new point data has arrived since
+        the last gated call on this channel (liveness poll, mirrors
+        get_fft_history); pass gate=False to always grab (e.g. a secondary
+        channel already gated on the primary).
+        """
+        if gate:
+            current = self._dma_udp_client.update_count(channel)
+            if current == self._last_dma_update[channel]:
+                yield None
+                return
+            self._last_dma_update[channel] = current
+        with self._dma_udp_client.frame(channel, length) as f:
+            yield f
 
     @property
     def _fftdata_ch1(self):
