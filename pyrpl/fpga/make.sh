@@ -173,6 +173,9 @@ fi
 #             FFT_CLK_SEL=1), placed with ExtraPostPlacementOpt (DETERMINISTIC=5).
 #             Closes timing reproducibly: pll_adc +0.083, pll_ser(FFT@200) +0.101,
 #             0 failing endpoints. Archive: out.d/2025.2-ssr2n13-fft200-closed-*.
+#   n9-125    — IMPL=4 SSR=4 NFFT=9 (512-pt), FFT on adc_clk @ 125 MHz, dsz24/frac8/
+#             scaled2/approx + DSP fb pipeline, place WLDrivenBlockPlacement
+#             (DETERMINISTIC=4). Best n9/125: pll_adc +0.272 (ser non-binding).
 case "${PROFILE:-}" in
     ""|none) ;;
     fft200ssr2)
@@ -220,8 +223,28 @@ case "${PROFILE:-}" in
         export PHYS_OPT=${PHYS_OPT:-Explore}
         echo "==> PROFILE=fft178ssr8n11: SSR=8 NFFT=11 FFT@178.57MHz, fft_b disabled (FFT_SINGLE=1), place EarlyBlockPlacement (DETERMINISTIC=6), phys_opt Explore — EXPERIMENTAL"
         ;;
+    n9-125)
+        # Fast/closing native-SSR build: IMPL=4 SSR=4 NFFT=9 (512-pt), FFT on
+        # adc_clk @ 125 MHz (FFT_CLK_SEL=0). dsz24 + sub-bin frac8 + FFT_SCALED=2 +
+        # approx twiddles + DSP feedback pipeline; placed WLDrivenBlockPlacement
+        # (DETERMINISTIC=4), phys_opt AggressiveExplore. Best n9/125 point:
+        # pll_adc +0.272, pll_ser +1.845 (ser non-binding — FFT runs on adc_clk).
+        # Archive: out.d/20260629-1131-...-impl4ssr4n9-125-dsz24-fbpipe-det4wldriven-adc0.272.
+        export FFT_IMPL=${FFT_IMPL:-4}
+        export FFT_SSR=${FFT_SSR:-4}
+        export FFT_NFFT=${FFT_NFFT:-9}
+        export FFT_WIDTH=${FFT_WIDTH:-24}
+        export PEAK_FRAC=${PEAK_FRAC:-8}
+        export FFT_SCALED=${FFT_SCALED:-2}
+        export FFT_USE_APPROX=${FFT_USE_APPROX:-1}
+        export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
+        export DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-1}
+        export DETERMINISTIC=${DETERMINISTIC:-4}
+        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
+        echo "==> PROFILE=n9-125: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe, place WLDrivenBlockPlacement (DETERMINISTIC=4), phys_opt AggressiveExplore"
+        ;;
     *)
-        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 fft178ssr4n11 fft178ssr8n11)" >&2; exit 1 ;;
+        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 fft178ssr4n11 fft178ssr8n11 n9-125)" >&2; exit 1 ;;
 esac
 
 # ---- Active build defaults (override on the command line, e.g. FFT_IMPL=5 ./make.sh) ----
