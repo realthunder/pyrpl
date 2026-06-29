@@ -52,6 +52,7 @@ _DEFAULT_MCAST_IP = '239.255.0.1'
 _DEFAULT_PORT = 12468
 _DEFAULT_UNI_PORT = 12466   # unicast workaround for multicast-unfriendly hosts
 _REG_MAGIC = b'RPDMAREG'    # NAT hole-punch registration datagram (content ignored)
+_PARSE_MARGIN = 1.25        # parse this much faster than the frame demand (headroom)
 
 # Linux ancillary message reporting cumulative datagrams dropped by the socket
 # receive buffer (set via SO_RX_QUEUE_OVFL). Not exported by Python's socket on
@@ -221,10 +222,16 @@ class DmaUdpClient:
         self._running = False
 
         # Receiver-health counters (written by the recv thread, read by the GUI):
-        self._pkt_count = 0       # total datagrams received this session
+        self._pkt_count = 0       # datagrams received+parsed this session
+        self._parse_count = 0     # datagrams parsed into the point cloud (== pkt_count)
         self._bad_count = 0       # malformed datagrams discarded by the parser
-        self._ovfl_drops = 0      # cumulative kernel SO_RX_QUEUE_OVFL drops
+        self._ovfl_drops = 0      # kernel SO_RX_QUEUE_OVFL = surplus the kernel shed
+        self._genuine_drops = 0   # frame-demand shortfall while surplus was shed (real loss)
         self._ovfl_enabled = False
+        # Genuine-loss attribution window (recv thread only):
+        self._loss_t0 = 0.0
+        self._loss_parsed0 = 0
+        self._loss_ovfl0 = 0
         # Packet-rate smoothing for stats() (GUI-thread-only state):
         self._stats_t0 = None
         self._stats_pkt0 = 0
@@ -259,14 +266,14 @@ class DmaUdpClient:
         self._hist_mask = (1 << self._hsz) - 1
         self._pkt_words = self._hist_block_size + 1
         self._pkt_bytes = self._pkt_words * 8
-        # Cap how often packets are PARSED. The board re-streams the full history
-        # far faster than the display needs (~5000 pkt/s); parsing every packet in
-        # a tight thread starves the GUI of the GIL (point cloud AND scope slow).
-        # Sleeping between parses bounds CPU and yields the GIL; the kernel drops
-        # the un-recv'd excess — harmless, since the persistent history is resent,
-        # so every scan position still refreshes well above the display rate.
-        # 0 disables the cap. ~2000/s covers a 16k-point history at >20 Hz.
-        self._parse_min_interval = (1.0 / self._max_parse_rate
+        # _max_parse_rate is the FRAME DEMAND: packets/s the receiver must parse to
+        # refresh the whole point cloud at the desired fps (Lidar sets it from
+        # frame_rate x packets-per-frame). The recv loop paces itself to a little
+        # above that (x _PARSE_MARGIN) and SLEEPS between packets, which yields the
+        # GIL so the GUI keeps its frame rate — draining every packet instead starves
+        # Python and drops the fps. The board sends far more than the demand; the
+        # kernel sheds that surplus (reported as throttled, NOT loss). 0 = no cap.
+        self._parse_min_interval = (1.0 / (self._max_parse_rate * _PARSE_MARGIN)
                                     if self._max_parse_rate else 0.0)
 
     def start(self):
@@ -276,8 +283,10 @@ class DmaUdpClient:
         # Fresh counters per session (the socket — and its kernel drop counter —
         # is recreated below, so the rates/drops reflect the current run only).
         self._pkt_count = 0
+        self._parse_count = 0
         self._bad_count = 0
         self._ovfl_drops = 0
+        self._genuine_drops = 0
         self._stats_t0 = None
         self._stats_pkt0 = 0
         self._stats_pps = 0.0
@@ -405,11 +414,17 @@ class DmaUdpClient:
     def stats(self, min_window=0.5):
         """Receiver-health snapshot for display/diagnostics. Returns a dict:
 
-          pkt_per_s : smoothed received-packet rate (recomputed every min_window s)
-          drops     : cumulative UDP datagrams dropped by the kernel socket buffer
-                      (SO_RX_QUEUE_OVFL); stays 0 on platforms without it
+          pkt_per_s : smoothed parsed-packet rate (recomputed every min_window s)
+          drops     : cumulative GENUINE loss — frame-demand shortfall accrued while
+                      the kernel was shedding surplus (cells left un-refreshed because
+                      the host couldn't keep up with the desired fps). 0 when keeping
+                      up. Excludes the intentional surplus (see throttled).
+          throttled : datagrams the kernel shed because the board over-sends past the
+                      frame demand (SO_RX_QUEUE_OVFL); expected, NOT loss — the
+                      history is resent so every cell still refreshes in time
           bad       : malformed datagrams discarded by the parser
-          packets   : total datagrams received this session
+          packets   : total datagrams received+parsed this session
+          parsed    : datagrams parsed into the point cloud (== packets)
           update    : (ch0, ch1) monotonic new-data counters (see update_count)
           frames    : (ch0, ch1) latest 2D-frame counters
           running   : receive thread active
@@ -430,9 +445,11 @@ class DmaUdpClient:
                 self._stats_pkt0 = pkt
         return {
             'pkt_per_s': self._stats_pps,
-            'drops': self._ovfl_drops,
+            'drops': self._genuine_drops,
+            'throttled': self._ovfl_drops,
             'bad': self._bad_count,
             'packets': pkt,
+            'parsed': self._parse_count,
             'update': (self.update_count(0), self.update_count(1)),
             'frames': (self._frame_cnt[0], self._frame_cnt[1]),
             'running': self._running,
@@ -448,6 +465,14 @@ class DmaUdpClient:
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         except AttributeError:
+            pass
+        # Generous receive buffer so a transient burst (the board can emit a
+        # short flurry faster than one recv loop iteration) is absorbed rather
+        # than overflowing — keeps SO_RX_QUEUE_OVFL reporting genuine, sustained
+        # loss instead of momentary jitter.
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+        except OSError:
             pass
         if self._unicast:
             # Unicast: monitor_server sends straight to this host's address, so
@@ -490,6 +515,9 @@ class DmaUdpClient:
     def _recv_loop(self):
         use_ovfl = self._ovfl_enabled
         ancsize = socket.CMSG_SPACE(4) if use_ovfl else 0
+        self._loss_t0 = self._time()
+        self._loss_parsed0 = self._parse_count
+        self._loss_ovfl0 = self._ovfl_drops
         while self._running:
             self._maybe_register()
             try:
@@ -498,7 +526,7 @@ class DmaUdpClient:
                     for lvl, typ, cdata in ancdata:
                         if (lvl == socket.SOL_SOCKET and typ == _SO_RX_QUEUE_OVFL
                                 and len(cdata) >= 4):
-                            # cumulative drops since socket creation
+                            # cumulative datagrams the kernel shed (the over-send surplus)
                             self._ovfl_drops = struct.unpack('I', cdata[:4])[0]
                 else:
                     data = self._sock.recv(65536)
@@ -507,12 +535,34 @@ class DmaUdpClient:
             except OSError:
                 break
             self._pkt_count += 1
+            self._parse_count += 1
             self._process_packet(data)
-            # Yield the GIL and bound CPU: the board sends far faster than the
-            # display needs. Sleeping here lets the GUI thread run (otherwise this
-            # tight loop starves it); the kernel drops the packets we skip.
+            self._account_loss()
+            # Always sleep a slice after parsing: this UNCONDITIONALLY yields the
+            # GIL so the GUI thread runs, which is what keeps the frame rate up.
+            # (A deadline-style "sleep only if ahead" throttle stops yielding once
+            # parse time exceeds the interval and starves the GUI to a standstill.)
             if self._parse_min_interval:
                 time.sleep(self._parse_min_interval)
+
+    def _account_loss(self):
+        """Attribute GENUINE loss over ~0.5 s windows. The kernel sheds the board's
+        over-send surplus (expected, not loss). It only becomes real loss if the
+        host ALSO failed to parse the frame demand while surplus was being shed — then
+        cells went un-refreshed within the frame period. No surplus shed in a window
+        means a low parse count is just low data, not loss."""
+        now = self._time()
+        dt = now - self._loss_t0
+        if dt < 0.5:
+            return
+        parsed = self._parse_count - self._loss_parsed0
+        shed = self._ovfl_drops - self._loss_ovfl0
+        demand = self._max_parse_rate
+        if demand and shed > 0 and parsed < demand * dt:
+            self._genuine_drops += int(demand * dt - parsed)
+        self._loss_t0 = now
+        self._loss_parsed0 = self._parse_count
+        self._loss_ovfl0 = self._ovfl_drops
 
     def _publish(self, ch):
         """Snapshot the live buffer into the published frame (caller holds lock).

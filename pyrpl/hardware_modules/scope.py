@@ -660,6 +660,20 @@ class Scope(HardwareModule, AcquisitionModule):
         drop count, per-channel update counters …). See DmaUdpClient.stats()."""
         return self._dma_udp_client.stats()
 
+    @property
+    def dma_max_parse_rate(self):
+        """DMA frame-demand rate: packets/s the receiver must parse to refresh the
+        whole point cloud at the desired fps. Normally driven from the display frame
+        rate by Lidar (frame_rate x packets-per-frame); the receiver paces itself to
+        a little above this (sleeping to yield the GIL) and the kernel sheds the
+        board's over-send surplus. 0 parses every packet. A plain proxy to the client
+        (computed value, not a persisted register)."""
+        return self._dma_udp_client._max_parse_rate
+
+    @dma_max_parse_rate.setter
+    def dma_max_parse_rate(self, value):
+        self._dma_udp_client.configure(max_parse_rate=value)
+
     def _dma_configure_from_fpga(self):
         """Reconfigure the UDP unpacker from the FPGA packet-format descriptor.
 
