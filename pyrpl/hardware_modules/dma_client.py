@@ -495,6 +495,10 @@ class DmaUdpClient:
             self._bad_count += 1
             return
 
+        # Format dispatch: header bits [58:55] carry the format version.
+        if ((int(words[hdr_pos[0]]) >> 55) & 0xf) == 4:
+            return self._process_packet_v4(words, is_header)
+
         idx = self._idx
         pmask = np.uint64(self._mask)
         hsz = self._hsz
@@ -546,6 +550,63 @@ class DmaUdpClient:
                 up = (col & pmask).astype(np.int32)[keep]
                 down = ((col >> np.uint64(idx)) & pmask).astype(np.int32)[keep]
                 self._write_channel(c, frame_cnt, p, up, down)
+
+    def _process_packet_v4(self, words, is_header):
+        """Packet format v4 (per-channel tag). Each word self-describes its
+        channel: header [62:59] = tag, data [60:57] = tag. Channels stream
+        INDEPENDENTLY — each re-anchors with its own header on a jump, so the
+        words for the N channels are interleaved. We route by tag, then walk
+        each channel's filtered stream: a header sets the absolute position,
+        each data word advances it by a signed step (bit62 mag, bit61 dir; the
+        word right after a header carries step 0 so it sits on the anchor)."""
+        idx_sh = np.uint64(self._idx)
+        pmask = np.uint64(self._mask)
+        hsz = self._hsz
+        idx_lsb = np.uint64(55 - hsz)
+        hist_mask = (1 << hsz) - 1
+        fc_mask = (1 << (55 - hsz)) - 1
+        nchan = len(self._live)
+
+        hdr_tag  = ((words >> np.uint64(59)) & np.uint64(0xf)).astype(np.int64)
+        data_tag = ((words >> np.uint64(57)) & np.uint64(0xf)).astype(np.int64)
+        tag = np.where(is_header, hdr_tag, data_tag)
+        mag = ((words >> np.uint64(62)) & np.uint64(1)).astype(np.int64)
+        drc = ((words >> np.uint64(61)) & np.uint64(1)).astype(np.int64)
+        hidx = ((words >> idx_lsb) & np.uint64(hist_mask)).astype(np.int64)
+        fcnt = (words & np.uint64(fc_mask))
+        up_all = (words & pmask).astype(np.int32)
+        dn_all = ((words >> idx_sh) & pmask).astype(np.int32)
+
+        for c in range(nchan):
+            sel = np.nonzero(tag == c)[0]                # this channel's words, in order
+            if sel.size == 0:
+                continue
+            sh = is_header[sel]
+            if not sh.any():
+                continue                                 # no anchor in this packet -> skip
+            first = int(np.argmax(sh))                   # drop leading orphan data
+            sel = sel[first:]; sh = sh[first:]
+            seg_id = np.cumsum(sh) - 1                    # which header each row belongs to
+            step = np.where(sh, 0, mag[sel] * (1 - 2 * drc[sel]))
+            cs = np.cumsum(step)
+            anchors = hidx[sel][sh]                       # absolute pos at each header
+            seg_fc = fcnt[sel][sh]
+            seg_start_cs = cs[sh]
+            pos = anchors[seg_id] + (cs - seg_start_cs[seg_id])
+            data_rows = ~sh
+            # Emit per segment so 2D-frame turnover (frame_cnt change) publishes coherently.
+            for s in range(anchors.size):
+                rows = data_rows & (seg_id == s)
+                if not rows.any():
+                    self._write_channel(c, int(seg_fc[s]),
+                                        np.empty(0, np.int32), np.empty(0, np.int32),
+                                        np.empty(0, np.int32))
+                    continue
+                p = pos[rows]
+                keep = (p >= 0) & (p < self._max_frame_size)
+                p = p[keep].astype(np.int64)
+                srows = sel[rows][keep]
+                self._write_channel(c, int(seg_fc[s]), p, up_all[srows], dn_all[srows])
 
     def _write_channel(self, ch, frame_cnt, p, up, down):
         """Write one channel's points for a segment into its live buffer (COW),

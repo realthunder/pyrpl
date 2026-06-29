@@ -291,7 +291,20 @@ localparam IDX = FSZ + FRAC;
 // DMA point-cloud packet-layout version. Single source of truth: stamped into
 // the header (low nibble, via fft_proc) and reported in the descriptor reg 0x170
 // so the host can sanity-check before decoding. Bump on any packet-format change.
-localparam [7:0] DMA_FMT_VERSION = 8'd3;          // v3: NCH-interleaved + signed advance (data[61]=dir)
+// DMA point-cloud packet format selector (build option DMA_PER_CHAN_TAG):
+//   DMA_PCT=0 -> v3 combined: one shared header per scan index, NCH-interleaved
+//                data words sharing a single position. Lowest overhead (~2.4%).
+//   DMA_PCT=1 -> v4 per-channel tag: each data word carries a 4-bit channel tag
+//                and each channel re-anchors its own position with its own header
+//                (independent/sparse-ready, 16-ch friendly). ~3.9% overhead.
+// The host (dma_client.py) auto-detects the version from the packet header.
+`ifdef DMA_PER_CHAN_TAG
+localparam int   DMA_PCT         = 1;
+localparam [7:0] DMA_FMT_VERSION = 8'd4;
+`else
+localparam int   DMA_PCT         = 0;
+localparam [7:0] DMA_FMT_VERSION = 8'd3;
+`endif
 // Max DMA channels physically present in this build (fft_b omitted when single).
 localparam [3:0] DMA_MAXCH = FFT_SINGLE ? 4'd1 : 4'd2;
 // Fixed-width views of the build constants for the packet-format descriptor regs
@@ -964,6 +977,7 @@ logic [IDX-1:0]     pt_up0, pt_dn0, pt_up1, pt_dn1;
 logic [HSZ-1:0]     pt_idx;
 logic               pt_adv;       // step magnitude (1 = ±1 advance, 0 = hold)
 logic               pt_dir;       // step direction (1 = -1 backward, 0 = +1 forward)
+logic               pt_hdr;       // v4 tagged: this index needs a (per-channel) header
 logic [3:0]         pt_nch;
 logic [63:0]        asm_tdata;
 logic               asm_tvalid, asm_tlast;
@@ -1008,11 +1022,13 @@ always @(posedge fft_input_clk) begin
                 pt_nch <= dma_nch;
                 pt_adv <= asm_inc || asm_dec;     // ±1 step rides the advance bits
                 pt_dir <= asm_dec;                // 1 = backward (-1)
+                pt_hdr <= asm_hdr_need;           // v4: each channel re-anchors on a jump
                 asm_frame_pend <= 1'b0;
                 asm_busy <= 1'b1;
-                // Pad the packet tail if a header+group could not fit (reserve a
-                // header word for safety); otherwise emit header-if-needed/data.
-                if ((asm_wc + 1 + dma_nch) > ASM_PKT)
+                // Reserve the worst-case index span so it never straddles a packet:
+                //   v3 combined  = 1 shared header + NCH data
+                //   v4 tagged    = NCH headers + NCH data
+                if ((asm_wc + (DMA_PCT ? 2*dma_nch : (1 + dma_nch))) > ASM_PKT)
                     asm_state <= S_PAD;
                 else begin
                     asm_state <= asm_hdr_need ? S_HDR : S_DATA;
@@ -1029,13 +1045,16 @@ always @(posedge fft_input_clk) begin
                     asm_need_hdr <= 1'b1;
                     asm_state    <= S_HDR;           // new packet -> header
                     asm_ch       <= '0;
-                    pt_adv       <= 1'b0;            // re-anchored at the new header
+                    pt_hdr       <= 1'b1;            // v4: re-anchor every channel
+                    pt_adv       <= 1'b0;            // v3: point re-anchored at header
                     pt_dir       <= 1'b0;
                 end else
                     asm_wc <= asm_wc + 1'b1;
             end
-            S_HDR: begin
-                asm_tdata    <= {1'b1, pt_nch, DMA_FMT_VERSION[3:0],
+            S_HDR: begin   // header field: v3 = NCH (one shared header),
+                           //               v4 = channel tag (one header per channel)
+                asm_tdata    <= {1'b1, (DMA_PCT ? asm_ch : pt_nch),
+                                 DMA_FMT_VERSION[3:0],
                                  pt_idx, asm_frame_cnt[ASM_FCW-1:0]};
                 asm_tvalid   <= 1'b1;
                 asm_tlast    <= asm_last_word;
@@ -1043,24 +1062,40 @@ always @(posedge fft_input_clk) begin
                 asm_need_hdr <= asm_last_word;
                 asm_nch_seg  <= pt_nch;
                 asm_prev_idx <= pt_idx;
-                pt_adv       <= 1'b0;                // ch0 sits at the header idx
-                pt_dir       <= 1'b0;
-                asm_state    <= S_DATA;
-                asm_ch       <= '0;
+                asm_state    <= S_DATA;             // emit data next
+                if (!DMA_PCT) begin                 // v3: data starts at channel 0,
+                    asm_ch <= '0;                   //     pinned to the header idx
+                    pt_adv <= 1'b0;
+                    pt_dir <= 1'b0;
+                end
             end
             S_DATA: begin
-                asm_tdata  <= {1'b0, (asm_ch == 0 ? pt_adv : 1'b0),
-                               (asm_ch == 0 ? pt_dir : 1'b0),
-                               {(ASM_RSVD-1){1'b0}},
-                               (asm_ch == 0 ? pt_dn0 : pt_dn1),
-                               (asm_ch == 0 ? pt_up0 : pt_up1)};
+                // v3 combined: advance rides the channel-0 word only (shared pos);
+                // v4 tagged:   every word carries its channel tag and (after its own
+                //              header, pt_hdr) sits on the anchor with advance 0.
+                if (DMA_PCT)
+                    asm_tdata <= {1'b0, (pt_hdr ? 1'b0 : pt_adv),
+                                  (pt_hdr ? 1'b0 : pt_dir),
+                                  asm_ch,                         // 4-bit channel tag
+                                  {(ASM_RSVD-5){1'b0}},
+                                  (asm_ch == 0 ? pt_dn0 : pt_dn1),
+                                  (asm_ch == 0 ? pt_up0 : pt_up1)};
+                else
+                    asm_tdata <= {1'b0, (asm_ch == 0 ? pt_adv : 1'b0),
+                                  (asm_ch == 0 ? pt_dir : 1'b0),
+                                  {(ASM_RSVD-1){1'b0}},
+                                  (asm_ch == 0 ? pt_dn0 : pt_dn1),
+                                  (asm_ch == 0 ? pt_up0 : pt_up1)};
                 asm_tvalid <= 1'b1;
                 asm_tlast  <= asm_last_word;
                 asm_wc     <= asm_last_word ? '0 : asm_wc + 1'b1;
                 if (asm_last_word) asm_need_hdr <= 1'b1;
-                if (asm_ch == 0) asm_prev_idx <= pt_idx;   // advance consumed
-                if (asm_ch + 1 >= pt_nch) asm_busy <= 1'b0;
-                else                      asm_ch   <= asm_ch + 1'b1;
+                asm_prev_idx <= pt_idx;                          // shared position
+                if (asm_ch + 1 >= pt_nch) asm_busy <= 1'b0;      // index done
+                else begin
+                    asm_ch <= asm_ch + 1'b1;
+                    if (DMA_PCT) asm_state <= pt_hdr ? S_HDR : S_DATA;  // v4: re-header next ch on jump
+                end                                              // v3: stays in S_DATA
             end
             default: asm_busy <= 1'b0;
         endcase

@@ -361,6 +361,86 @@ def test_backward_scan():
     return True
 
 
+def _make_data_v4(adv, direction, tag, up, dn, idx):
+    m = (1 << idx) - 1
+    return (((adv & 1) << 62) | ((direction & 1) << 61) | ((tag & 0xF) << 57)
+            | ((dn & m) << idx) | (up & m))
+
+
+def emit_packets_v4(points, *, hsz, idx, hist_block_size, nch=2):
+    """Encode a shared-scan, multi-channel point stream into v4 (per-channel tag)
+    packets, faithful to the red_pitaya_scope.sv assembler. Each channel streams
+    INDEPENDENTLY: on a jump/frame/boundary every channel re-anchors with its own
+    tagged header, so the channels' words interleave. The data word right after a
+    header carries advance 0 (sits on the anchor). Worst case per scan index is
+    2*nch words (nch headers + nch data); the tail is padded if it won't fit.
+    points = [(hist, frame, [(up0,dn0), (up1,dn1), ...]), ...]."""
+    PKT = hist_block_size + 1
+    words = []
+    st = {'wc': 0, 'need_hdr': True, 'prev': 0, 'frame': None}
+
+    def push(w):
+        words.append(w); st['wc'] += 1
+        if st['wc'] == PKT:
+            st['wc'] = 0; st['need_hdr'] = True
+
+    back_delta = (1 << hsz) - 1
+    for (h, f, chvals) in points:
+        if st['wc'] + 2 * nch > PKT:           # reserve worst case -> no straddle
+            while st['wc'] != 0:
+                push(0xFFFFFFFFFFFFFFFF)
+        delta = (h - st['prev']) % (1 << hsz)
+        hdr_need = (st['need_hdr'] or st['frame'] is None or f != st['frame']
+                    or delta not in (0, 1, back_delta))
+        if hdr_need or delta == 0:
+            adv, direction = 0, 0
+        elif delta == 1:
+            adv, direction = 1, 0
+        else:                                  # -1 backward step
+            adv, direction = 1, 1
+        for c in range(nch):
+            if hdr_need:
+                push(_make_header(c, 4, h, f, hsz))    # tag in [62:59], version 4
+            up, dn = chvals[c]
+            push(_make_data_v4(adv, direction, c, up, dn, idx))
+        st['need_hdr'] = False
+        st['frame'] = f
+        st['prev'] = h
+
+    while st['wc'] != 0:
+        push(0xFFFFFFFFFFFFFFFF)
+    buf = np.array(words, dtype='<u8').tobytes()
+    return [buf[i:i + PKT * 8] for i in range(0, len(buf), PKT * 8)]
+
+
+def test_per_channel_tag_v4():
+    """v4 round-trip: two channels share a scan that holds, steps ±1, and jumps;
+    each channel must reconstruct independently from its own tagged words."""
+    fsz, frac, hsz, hbs = 13, 8, 14, 20
+    idx = fsz + frac
+    m = (1 << idx) - 1
+    seq = [100, 101, 102, 101, 103, 103, 200, 201, 150, 149]   # holds/+1/-1/jumps
+    points = [(h, 0, [(h & m, h & m), ((h + 5000) & m, (h + 5000) & m)])
+              for h in seq]
+
+    client = DmaUdpClient(fsz=fsz, frac=frac, hsz=hsz, hist_block_size=hbs,
+                          max_frame_size=256, max_interval=0.0)
+    pkts = emit_packets_v4(points, hsz=hsz, idx=idx, hist_block_size=hbs, nch=2)
+    for pkt in pkts:
+        assert len(pkt) == client._pkt_bytes, (len(pkt), client._pkt_bytes)
+        client._process_packet(pkt)
+
+    for c in range(2):
+        peak_down, peak_up = client.get_frame(c)
+        cells = {h: chv[c] for (h, _, chv) in points}     # last-write-wins
+        for cell, (up, dn) in cells.items():
+            assert peak_up[cell] == up, (c, 'up', cell, peak_up[cell], up)
+            assert peak_down[cell] == dn, (c, 'dn', cell, peak_down[cell], dn)
+        nz = set(np.nonzero(peak_up)[0]) | set(np.nonzero(peak_down)[0])
+        assert nz <= set(cells), (c, 'unexpected', nz - set(cells))
+    return True
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:

@@ -632,9 +632,10 @@ class Scope(HardwareModule, AcquisitionModule):
                                         doc="whether a curve acquisition has been "
                                             "initiated")
 
-    # Highest DMA packet-layout version this host knows how to decode. Bump in
-    # lockstep with DMA_FMT_VERSION in red_pitaya_scope.sv when the format changes.
-    _DMA_FMT_VERSION_SUPPORTED = 3
+    # DMA packet-layout versions this host can decode. The parser auto-detects the
+    # version per packet (header [58:55]); both formats ship from the same RTL via
+    # the DMA_PER_CHAN_TAG build option (3 = combined, 4 = per-channel tag).
+    _DMA_FMT_VERSIONS_SUPPORTED = (3, 4)
 
     def __init__(self, parent, name=None):
         super().__init__(parent, name=name)
@@ -655,11 +656,11 @@ class Scope(HardwareModule, AcquisitionModule):
         thread starts; warns (but proceeds) on a version it does not recognise.
         """
         version = self.dma_fmt_version
-        if version != self._DMA_FMT_VERSION_SUPPORTED:
+        if version not in self._DMA_FMT_VERSIONS_SUPPORTED:
             self._logger.warning(
-                "DMA packet-format version %d != supported %d; decoding may be "
+                "DMA packet-format version %d not in supported %s; decoding may be "
                 "wrong. Update pyrpl to match the FPGA bitstream.",
-                version, self._DMA_FMT_VERSION_SUPPORTED)
+                version, self._DMA_FMT_VERSIONS_SUPPORTED)
         self._dma_udp_client.configure(
             fsz=self.dma_fmt_fsz,
             frac=self.dma_fmt_frac,

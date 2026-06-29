@@ -92,6 +92,13 @@ set fft_clk_178    [expr {[info exists env(FFT_CLK_178)]    ? $env(FFT_CLK_178) 
 # multicycled).  Adds 1 cycle of loopback latency, taken only in digital_loop mode
 # (opt-in functional change); drives a Verilog define.  Default 0.
 set dsp_fb_pipeline [expr {[info exists env(DSP_FB_PIPELINE)] ? $env(DSP_FB_PIPELINE) : 0}]
+# DMA_PER_CHAN_TAG: select the DMA point-cloud packet format in red_pitaya_scope.sv.
+#   0 (default) = v3 combined  — one shared header per scan index, NCH-interleaved
+#                 data, shared position. Lowest wire overhead (~2.4%).
+#   1           = v4 per-channel tag — each channel self-tags and re-anchors its own
+#                 position (independent channels, sparse/16-ch ready), ~3.9% overhead.
+# Drives a Verilog define; the host auto-detects the version from the packet header.
+set dma_per_chan_tag [expr {[info exists env(DMA_PER_CHAN_TAG)] ? $env(DMA_PER_CHAN_TAG) : 0}]
 # fft_width = DSZ (magnitude output bits). Override with FFT_WIDTH env var if needed.
 if {[info exists env(FFT_WIDTH)]} {
     set fft_width $env(FFT_WIDTH)
@@ -254,6 +261,7 @@ set verilog_defines [expr {$fft_runtime_nfft ? "-verilog_define FFT_RUNTIME_NFFT
 if {$fft_clk_200} { lappend verilog_defines -verilog_define FFT_CLK_200 }
 if {$fft_clk_178} { lappend verilog_defines -verilog_define FFT_CLK_178 }
 if {$dsp_fb_pipeline} { lappend verilog_defines -verilog_define DSP_FB_PIPELINE }
+if {$dma_per_chan_tag} { lappend verilog_defines -verilog_define DMA_PER_CHAN_TAG }
 synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivalent_registers \
     {*}$verilog_defines \
     -generic ADC_SZ=$adc_sz \
