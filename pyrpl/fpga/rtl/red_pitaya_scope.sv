@@ -548,6 +548,17 @@ logic [ FSZ-1: 0]   fft_wait2_cnt;
 logic [ FSZ-1: 0]   fft_acq1_cnt, fft_a_acq1_cnt, fft_b_acq1_cnt;
 logic [ FSZ-1: 0]   fft_acq2_cnt, fft_a_acq2_cnt, fft_b_acq2_cnt;
 logic [ FSZ-1: 0]   fft_state_cnt;
+// "Active" window counts: the FSM thresholds and the fft_proc engines run off
+// these; they are latched from the AXI-written (pending) fft_*_cnt only at the
+// frame boundary (S_IDLE) so a write never changes a window mid-frame (which
+// under-fed the FFT input FIFO and froze the engine). On an acq change the
+// engine reconfigures (its conf handshake forces fft_done high during its own
+// reset, so &fft_done can't gate us) -> hold S_IDLE for fft_reconf_wait cycles
+// until that handshake+reset has settled before feeding the next frame.
+logic [ FSZ-1: 0]   fft_wait1_cnt_act, fft_wait2_cnt_act;
+logic [ FSZ-1: 0]   fft_acq1_cnt_act,  fft_acq2_cnt_act;
+logic [  8-1: 0]    fft_reconf_wait;
+localparam [7:0]    RECONF_CYCLES = 8'd64;  // > adc->clk_i handshake + RESET_DELAY + done resync
 
 localparam IDX_PIPELINE = 3-1;
 logic [ HSZ-1: 0]   fft_hist_index[0:IDX_PIPELINE];
@@ -778,10 +789,10 @@ assign fft_hist_rdata_down_b = fft_hist_rdata_down_b_;
 assign fft_hist_rdata_down_a = fft_parallel ? fft_hist_rdata_up_b_ : fft_hist_rdata_down_a_;
 
 always @(posedge adc_clk_i) begin
-    fft_a_acq1_cnt <= fft_acq1_cnt;
-    fft_b_acq1_cnt <= fft_acq1_cnt;
-    fft_a_acq2_cnt <= fft_acq2_cnt;
-    fft_b_acq2_cnt <= fft_acq2_cnt;
+    fft_a_acq1_cnt <= fft_acq1_cnt_act;
+    fft_b_acq1_cnt <= fft_acq1_cnt_act;
+    fft_a_acq2_cnt <= fft_acq2_cnt_act;
+    fft_b_acq2_cnt <= fft_acq2_cnt_act;
     fft_a_peak_start <= fft_peak_start;
     fft_b_peak_start <= fft_peak_start;
     fft_a_peak_minimum <= fft_peak_minimum;
@@ -1176,6 +1187,13 @@ end
 always @(posedge adc_clk_i)
 if (fft_rstn_i == 0) begin
     fft_state <= S_IDLE;
+    // Active window counts mirror the AXI defaults (see fft_*_cnt reset below);
+    // they re-latch from pending on the next S_IDLE cycle anyway.
+    fft_wait1_cnt_act <= 100;
+    fft_wait2_cnt_act <= 200;
+    fft_acq1_cnt_act  <= (2**(FSZ-1) - 200) & ~(FSSR-1);
+    fft_acq2_cnt_act  <= (2**(FSZ-1) - 200) & ~(FSSR-1);
+    fft_reconf_wait   <= 0;
 end else begin
     if (sys_wen && (sys_addr[19:0]==20'h0) && sys_wdata[9]) begin
         fft_peak_ready[0] <= 0;
@@ -1189,20 +1207,36 @@ end else begin
     end
 
     case (fft_state)
-    S_IDLE: 
-        if (fft_trig_i && &fft_done) begin
+    S_IDLE: begin
+        // Frame boundary: latch the pending (AXI-written) window counts into the
+        // active set used by the FSM and the fft_proc engines. They stay constant
+        // for the whole WAIT1..FFT_DOWN frame (not reassigned in the other states).
+        fft_wait1_cnt_act <= fft_wait1_cnt;
+        fft_wait2_cnt_act <= fft_wait2_cnt;
+        fft_acq1_cnt_act  <= fft_acq1_cnt;
+        fft_acq2_cnt_act  <= fft_acq2_cnt;
+        // An acq change re-arms the engine's conf handshake + reset; hold here
+        // until it settles (fft_done is forced high through that reset, so it
+        // cannot gate us). A wait-only change touches the FSM alone -> no hold.
+        if (fft_acq1_cnt != fft_acq1_cnt_act || fft_acq2_cnt != fft_acq2_cnt_act)
+            fft_reconf_wait <= RECONF_CYCLES;
+        else if (fft_reconf_wait != 0)
+            fft_reconf_wait <= fft_reconf_wait - 1'b1;
+
+        if (fft_trig_i && &fft_done && fft_reconf_wait == 0) begin
             fft_state_cnt <= 0;
             fft_state <= S_WAIT1;
         end else
             fft_active_o <= 0;
+    end
     S_WAIT1:
-        if (fft_state_cnt >= fft_wait1_cnt) begin
+        if (fft_state_cnt >= fft_wait1_cnt_act) begin
             fft_state_cnt <= 0;
             fft_state <= S_FFT_UP;
         end else if (fft_dvalid)
             fft_state_cnt <= fft_state_cnt + 1;
     S_FFT_UP:
-        if (fft_state_cnt >= fft_acq1_cnt) begin
+        if (fft_state_cnt >= fft_acq1_cnt_act) begin
             fft_state_cnt <= 0;
             fft_state <= S_WAIT2;
             // fft_active_o <= 0;
@@ -1211,13 +1245,13 @@ end else begin
             fft_state_cnt <= fft_state_cnt + 1;
         end
     S_WAIT2:
-        if (fft_state_cnt >= fft_wait2_cnt) begin
+        if (fft_state_cnt >= fft_wait2_cnt_act) begin
             fft_state_cnt <= 0;
             fft_state <= S_FFT_DOWN;
         end else if (fft_dvalid)
             fft_state_cnt <= fft_state_cnt + 1;
     S_FFT_DOWN:
-        if (fft_state_cnt >= fft_acq2_cnt) begin
+        if (fft_state_cnt >= fft_acq2_cnt_act) begin
             fft_state_cnt <= 0;
             fft_state <= S_IDLE;
         end else if (fft_dvalid) begin
@@ -1776,6 +1810,12 @@ assign sys_en = sys_wen | sys_ren;
 logic scope_sig;
 logic [32-1:0] scope_sig_pre_cnt;
 logic [8-1:0] scope_sig_post_cnt;
+// Width of the scope_sig_o scan-trigger pulse, in adc cycles. Was 125 (1 us) only
+// so a cheap oscilloscope could see it; that 1 us is ~30% of the 300 kHz chirp
+// period and, since scope_sig blocks re-arming while high, it made the scan-
+// trigger FSM overrun the chirp period and skip chirps. A few cycles is plenty to
+// edge-trigger the fast-axis ASG (same adc_clk domain).
+localparam [7:0] SCAN_SIG_POST = 8'd4;
 assign scope_sig_o = scope_sig && scope_sig_pre_cnt == 0;
 
 assign scope_done_o = (!fft_enable && !adc_we) || (fft_enable && fft_state==S_IDLE);
@@ -1793,7 +1833,7 @@ end else begin
    if (!scope_sig) begin
      scope_sig <= fft_trig_i && &fft_done;
      scope_sig_pre_cnt <= scope_sig_dly;
-     scope_sig_post_cnt <= 125; // 1us fixed delay for debugging purpose (so that cheap oscilloscope can capture)
+     scope_sig_post_cnt <= SCAN_SIG_POST; // short scan-trigger pulse (was 125 = 1us debug)
    end else if (scope_sig_pre_cnt != 0)
        scope_sig_pre_cnt <= scope_sig_pre_cnt - 1;
    else if (scope_sig_post_cnt != 0)
