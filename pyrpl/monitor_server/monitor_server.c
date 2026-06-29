@@ -130,8 +130,24 @@ int newsockfd;
 #define DMA_PKT_WORDS_DEFAULT 184        /* fallback: 1 header + 183 data = 1472 B = one MTU */
 #define DMA_DEFAULT_MCAST "239.255.0.1"
 #define DMA_DEFAULT_PORT  12468
+#define DMA_DEFAULT_UNI_PORT 12466       /* unicast workaround for multicast-unfriendly hosts */
 
 typedef struct { int port; const char *group; } dma_thread_args_t;
+
+/* Unicast point-cloud target. A multi-homed host (e.g. Windows with several
+ * virtual NICs) often joins the multicast group on the wrong interface and
+ * never receives anything. As a workaround the DMA thread ALSO unicasts every
+ * packet to the host that opened the TCP register link — discovered from the
+ * accept() source address, so no host-side IP config is needed. g_uni_ip is 0
+ * (disabled) until a register client connects. Both are written once from the
+ * main thread and only read by the DMA thread, so plain volatiles suffice. */
+static volatile uint32_t g_uni_ip   = 0;                    /* dest, network order; 0 = off */
+static volatile uint16_t g_uni_port = DMA_DEFAULT_UNI_PORT;  /* dest, host order */
+/* Local UDP port the DMA socket binds: where the point cloud egresses from AND
+ * where host registration datagrams arrive. Keeping send and recv on one port
+ * is what makes the NAT hole-punch work — the board replies to a NAT'd host
+ * along the exact mapping that host's registration opened. */
+static volatile uint16_t g_uni_listen_port = DMA_DEFAULT_UNI_PORT;
 
 static void *dma_poll_thread(void *arg)
 {
@@ -183,14 +199,44 @@ static void *dma_poll_thread(void *arg)
         setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
     }
 
+    /* Bind the unicast/registration port so the point cloud egresses from it and
+     * host hole-punch registrations land here. */
+    {
+        struct sockaddr_in bind_addr;
+        int reuse = 1;
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        memset(&bind_addr, 0, sizeof(bind_addr));
+        bind_addr.sin_family      = AF_INET;
+        bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        bind_addr.sin_port        = htons(g_uni_listen_port);
+        if (bind(sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0)
+            perror("dma: bind unicast port");
+    }
+
     memset(&mcast_addr, 0, sizeof(mcast_addr));
     mcast_addr.sin_family      = AF_INET;
     mcast_addr.sin_port        = htons((uint16_t)port);
     mcast_addr.sin_addr.s_addr = inet_addr(mcast_group);
 
-    fprintf(stderr, "dma: multicasting on %s:%d\n", mcast_group, port);
+    fprintf(stderr, "dma: multicasting on %s:%d (unicast workaround on port %d)\n",
+            mcast_group, port, (int)g_uni_port);
 
     while (1) {
+        /* Pick up host registration datagrams (NAT hole-punch). Any datagram on
+         * this port re-points the unicast stream at its post-NAT source — for a
+         * NAT'd host that's the gateway's IP and the mapped port, reachable only
+         * this way. Drains non-blocking so the send loop never stalls. */
+        {
+            struct sockaddr_in src;
+            socklen_t slen = sizeof(src);
+            char rbuf[64];
+            while (recvfrom(sock, rbuf, sizeof(rbuf), MSG_DONTWAIT,
+                            (struct sockaddr *)&src, &slen) > 0) {
+                g_uni_ip   = src.sin_addr.s_addr;
+                g_uni_port = ntohs(src.sin_port);
+            }
+        }
+
         uint32_t wr_ptr = dma_reg[0] & (DMA_BUF_WORDS - 1);
         uint32_t avail  = (wr_ptr - rd_ptr + DMA_BUF_WORDS) & (DMA_BUF_WORDS - 1);
 
@@ -224,6 +270,25 @@ static void *dma_poll_thread(void *arg)
             .msg_iovlen  = niov,
         };
         sendmsg(sock, &msg, 0);
+
+        /* Also unicast to the register client's host, if one has connected.
+         * Same iov (the ring-buffer payload is still valid — rd_ptr has not
+         * advanced yet). Lets multicast-unfriendly hosts get the point cloud. */
+        uint32_t uni_ip = g_uni_ip;
+        if (uni_ip) {
+            struct sockaddr_in uni_addr;
+            memset(&uni_addr, 0, sizeof(uni_addr));
+            uni_addr.sin_family      = AF_INET;
+            uni_addr.sin_port        = htons(g_uni_port);
+            uni_addr.sin_addr.s_addr = uni_ip;
+            struct msghdr umsg = {
+                .msg_name    = &uni_addr,
+                .msg_namelen = sizeof(uni_addr),
+                .msg_iov     = iov,
+                .msg_iovlen  = niov,
+            };
+            sendmsg(sock, &umsg, 0);
+        }
 
         rd_ptr = end;
     }
@@ -312,6 +377,15 @@ int main(int argc, char *argv[])
          strncpy(dma_group, DMA_DEFAULT_MCAST, sizeof(dma_group));
          if (argc >= 3)
              sscanf(argv[2], "%63[^:]:%d", dma_group, &dma_port);
+         /* Optional argv[3] overrides the unicast point-cloud port (default
+          * 12466) — both the local listen/egress port and the fallback dest
+          * port. A registering host later overrides the dest with its real
+          * post-NAT address. */
+         if (argc >= 4) {
+             uint16_t up = (uint16_t)atoi(argv[3]);
+             g_uni_listen_port = up;
+             g_uni_port        = up;
+         }
          dma_args.port  = dma_port;
          dma_args.group = dma_group;
          pthread_t dma_tid;
@@ -338,10 +412,20 @@ int main(int argc, char *argv[])
      newsockfd = accept(sockfd, 
                  (struct sockaddr *) &cli_addr, 
                  &clilen);
-     if (newsockfd < 0) 
+     if (newsockfd < 0)
           error("ERROR on accept");
-	 else
+	 else {
+		 /* Fallback unicast target: whoever just connected for register access
+		  * (the host running the GUI), at the unicast listen port. Good enough
+		  * for a directly-reachable host; a NAT'd host (e.g. WSL) instead sends a
+		  * registration datagram that the DMA thread uses to learn its real
+		  * post-NAT address and port, overriding this. */
+		 g_uni_ip   = cli_addr.sin_addr.s_addr;
+		 g_uni_port = g_uni_listen_port;
+		 fprintf(stderr, "dma: unicast fallback target %s:%d (until host registers)\n",
+		         inet_ntoa(cli_addr.sin_addr), (int)g_uni_port);
 		 printf("Incoming client connection accepted!");
+	 }
 	
 	//open_map_base();
 	 //service loop

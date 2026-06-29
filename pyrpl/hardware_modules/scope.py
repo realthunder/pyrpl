@@ -249,17 +249,20 @@ class DmaMaxIntervalProperty(FloatProperty):
         return val
 
 
-class DmaEnabledProperty(BoolProperty):
-    """BoolProperty that tears down a running DMA UDP client the moment it is
-    disabled, so toggling it off takes effect live. The (re)start side is gated
-    in Scope._start_trace_acquisition, so enabling it just lets the next
-    acquisition spin the receiver back up."""
+class DmaUnicastProperty(BoolProperty):
+    """BoolProperty selecting how the host receives the DMA point cloud:
+    True  = unicast (monitor_server sends straight to this host; default),
+    False = join the multicast group. Unicast avoids multicast interface-
+    selection problems on multi-homed hosts (e.g. Windows with several virtual
+    NICs). Changing it updates the UDP client and, if a receiver is already
+    running, stops it so the next acquisition restarts in the new mode (the
+    (re)start is gated in Scope._start_trace_acquisition)."""
     def set_value(self, obj, val):
-        super(DmaEnabledProperty, self).set_value(obj, val)
-        if not val:
-            client = getattr(obj, '_dma_udp_client', None)
-            if client is not None:
-                client.stop()
+        super(DmaUnicastProperty, self).set_value(obj, val)
+        client = getattr(obj, '_dma_udp_client', None)
+        if client is not None and client._unicast != bool(val):
+            client._unicast = bool(val)
+            client.stop()  # restarted in the new mode on the next acquisition
         return val
 
 
@@ -286,7 +289,7 @@ class Scope(HardwareModule, AcquisitionModule):
                        "xy_mode"]
     # running_state last for proper acquisition setup
     _setup_attributes = _gui_attributes + ["rolling_mode", "fft_enable", 'fft_parallel',
-                                           'nfft', 'dma_max_interval']
+                                           'nfft', 'dma_max_interval', 'dma_unicast']
     # changing these resets the acquisition and autoscale (calls setup())
 
     data_length = data_length  # to use it in a list comprehension
@@ -455,6 +458,15 @@ class Scope(HardwareModule, AcquisitionModule):
                                          "scanner). 0 = always expose the live buffer "
                                          "on any update; >0 = frame-coherent snapshot "
                                          "refreshed at least this often. Applies live.")
+
+    dma_unicast = DmaUnicastProperty(default=True,
+                                     doc="Receive the DMA point cloud as unicast "
+                                         "(monitor_server sends it straight to this "
+                                         "host) instead of joining the multicast "
+                                         "group. Avoids multicast interface-selection "
+                                         "problems on multi-homed hosts (e.g. Windows "
+                                         "with several virtual NICs). Applies on the "
+                                         "next acquisition.")
 
     fft_parallel = BoolRegister(0x0, 4, doc="Running dual fft in parallel for up and down")
 
@@ -920,6 +932,16 @@ class Scope(HardwareModule, AcquisitionModule):
         Start acquisition of a curve in rolling_mode=False
         """
         if self.fft_enable and self.dma_nch and not self._dma_udp_client._running:
+            self._dma_udp_client._unicast = self.dma_unicast
+            # Board IP for the unicast NAT hole-punch registration. Prefer the
+            # live peer address of the register link (already resolved); fall
+            # back to the configured hostname.
+            board_ip = None
+            try:
+                board_ip = self._client.socket.getpeername()[0]
+            except (OSError, AttributeError):
+                board_ip = getattr(self._client, '_hostname', None)
+            self._dma_udp_client._board_ip = board_ip
             self._dma_configure_from_fpga()
             self._dma_udp_client.start()
         autosave_backup = self._autosave_active

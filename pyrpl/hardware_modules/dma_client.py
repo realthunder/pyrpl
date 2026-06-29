@@ -50,6 +50,8 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MCAST_IP = '239.255.0.1'
 _DEFAULT_PORT = 12468
+_DEFAULT_UNI_PORT = 12466   # unicast workaround for multicast-unfriendly hosts
+_REG_MAGIC = b'RPDMAREG'    # NAT hole-punch registration datagram (content ignored)
 
 # Linux ancillary message reporting cumulative datagrams dropped by the socket
 # receive buffer (set via SO_RX_QUEUE_OVFL). Not exported by Python's socket on
@@ -104,6 +106,7 @@ class DmaUdpClient:
     """
 
     def __init__(self, mcast_ip=_DEFAULT_MCAST_IP, port=_DEFAULT_PORT,
+                 unicast=True, unicast_port=_DEFAULT_UNI_PORT, board_ip=None,
                  fsz=13, frac=8, hist_block_size=183, hsz=14,
                  max_frame_size=128*1024, max_interval=0.0, time_fn=None,
                  pool_size=4, max_parse_rate=2000):
@@ -114,6 +117,24 @@ class DmaUdpClient:
             Multicast group address (must match monitor_server argv[2]).
         port : int
             UDP port (must match monitor_server argv[2]).
+        unicast : bool
+            If True (default) receive the unicast point-cloud stream that
+            monitor_server sends straight to this host, binding ``unicast_port``
+            and NOT joining the multicast group. This sidesteps multicast
+            interface-selection problems on multi-homed hosts (e.g. Windows with
+            several virtual NICs). If False, join the multicast group on ``port``
+            as before.
+        unicast_port : int
+            UDP port for the unicast stream (must match monitor_server argv[3],
+            default 12466). Also the port we register on (see board_ip).
+        board_ip : str or None
+            Board IP/hostname. In unicast mode the receiver periodically sends a
+            small registration datagram FROM its receive socket TO
+            board_ip:unicast_port, so monitor_server learns this host's address
+            and replies through the same path. This is a NAT hole-punch: it lets
+            a NAT'd host (e.g. WSL, whose outbound traffic the gateway rewrites to
+            the gateway's own IP) still receive the stream. None disables
+            registration (fine for a native host the board can already reach).
         fsz : int
             FFT peak integer-bin width in bits (default 13).
         frac : int
@@ -149,6 +170,11 @@ class DmaUdpClient:
         """
         self._mcast_ip = mcast_ip
         self._port = port
+        self._unicast = unicast
+        self._unicast_port = unicast_port
+        self._board_ip = board_ip
+        self._reg_interval = 1.0   # seconds between hole-punch registrations
+        self._last_reg = 0.0
         self._max_frame_size = max_frame_size
         self._max_interval = max_interval
         self._max_parse_rate = max_parse_rate
@@ -255,12 +281,17 @@ class DmaUdpClient:
         self._stats_t0 = None
         self._stats_pkt0 = 0
         self._stats_pps = 0.0
+        self._last_reg = 0.0   # register immediately on the first loop iteration
         self._running = True
         self._sock = self._create_socket()
         self._thread = threading.Thread(
             target=self._recv_loop, daemon=True, name='dma-udp-recv')
         self._thread.start()
-        logger.info("DmaUdpClient started on %s:%d", self._mcast_ip, self._port)
+        if self._unicast:
+            logger.info("DmaUdpClient started (unicast) on port %d", self._unicast_port)
+        else:
+            logger.info("DmaUdpClient started (multicast) on %s:%d",
+                        self._mcast_ip, self._port)
 
     def stop(self):
         """Stop the background receive thread and close the socket."""
@@ -418,9 +449,15 @@ class DmaUdpClient:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         except AttributeError:
             pass
-        sock.bind(('', self._port))
-        mreq = socket.inet_aton(self._mcast_ip) + socket.inet_aton('0.0.0.0')
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        if self._unicast:
+            # Unicast: monitor_server sends straight to this host's address, so
+            # just bind the port — no multicast group join (which is what trips
+            # up multi-homed hosts that join on the wrong interface).
+            sock.bind(('', self._unicast_port))
+        else:
+            sock.bind(('', self._port))
+            mreq = socket.inet_aton(self._mcast_ip) + socket.inet_aton('0.0.0.0')
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
         sock.settimeout(1.0)
         # Ask the kernel to report receive-queue overflow drops (Linux). Lets
         # stats() show real UDP loss when the host can't keep up with the FPGA.
@@ -433,10 +470,28 @@ class DmaUdpClient:
                 pass
         return sock
 
+    def _maybe_register(self):
+        """Unicast NAT hole-punch: periodically poke the board from our receive
+        socket so monitor_server learns our (post-NAT) source address and streams
+        back through the same mapping. Required for NAT'd hosts (e.g. WSL) where
+        the board would otherwise only see the gateway IP; a no-op without a
+        board_ip or in multicast mode."""
+        if not self._unicast or self._board_ip is None or self._sock is None:
+            return
+        now = self._time()
+        if now - self._last_reg < self._reg_interval:
+            return
+        self._last_reg = now
+        try:
+            self._sock.sendto(_REG_MAGIC, (self._board_ip, self._unicast_port))
+        except OSError:
+            pass
+
     def _recv_loop(self):
         use_ovfl = self._ovfl_enabled
         ancsize = socket.CMSG_SPACE(4) if use_ovfl else 0
         while self._running:
+            self._maybe_register()
             try:
                 if use_ovfl:
                     data, ancdata, _flags, _addr = self._sock.recvmsg(65536, ancsize)
