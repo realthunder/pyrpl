@@ -309,6 +309,29 @@ class RedPitaya(object):
         _, out = self.ssh.run('cat /proc/sys/kernel/random/boot_id 2>/dev/null')
         return out.strip()
 
+    def _remount_root_rw(self):
+        """Remount the root fs read-write for an upload/flash/marker write.
+
+        /opt/pyrpl lives on the root fs, which on legacy Red Pitaya images is
+        kept read-only (SD-card protection). But newer images boot root rw (the
+        kernel mounts ro, then systemd-remount-fs makes it rw per an fstab with
+        no 'ro'). Forcing root back to ro afterwards strands /tmp and the whole
+        rootfs read-only on those images, breaking every later write (incl. the
+        next flash's marker) until reboot. So we cache the ORIGINAL state — first
+        observed this connection, before pyrpl's own remounts corrupt it — and
+        _restore_root_mount() only re-applies ro when it was genuinely ro.
+        """
+        if getattr(self, '_root_orig_ro', None) is None:
+            _, opts = self.ssh.run("awk '$2==\"/\"{print $4; exit}' /proc/mounts")
+            self._root_orig_ro = (opts.strip().split(',')[0] == 'ro')
+        self.ssh.run('mount -o remount,rw /')
+
+    def _restore_root_mount(self):
+        """Restore the root fs to its original state: only remount read-only if
+        it was read-only when first observed this connection (see _remount_root_rw)."""
+        if getattr(self, '_root_orig_ro', None):
+            self.ssh.run('mount -o remount,ro /')
+
     def _onboard_fpga_md5(self, serverbinfilename):
         """md5 of the bitstream file currently stored on the board ('' if none).
         Drives the scp decision: we only re-upload when this differs from the
@@ -327,9 +350,18 @@ class RedPitaya(object):
 
     def _record_fpga_flashed(self, serverbinfilename, md5):
         """Write the '<bin>.version' marker with the just-flashed md5 + boot_id
-        (caller holds the rw remount)."""
-        self.ssh.run('echo %s %s > %s.version'
-                     % (md5, self._board_boot_id(), serverbinfilename))
+        (caller holds the rw remount). Verify + retry once: the marker echo over
+        pyrpl's interactive shell occasionally fails ('write error: Invalid
+        argument') right after the flash; a dropped marker silently costs a
+        redundant reflash next connect, so confirm it landed."""
+        marker = '%s %s' % (md5, self._board_boot_id())
+        for _ in range(2):
+            self.ssh.run('echo %s > %s.version' % (marker, serverbinfilename))
+            _, back = self.ssh.run('cat %s.version 2>/dev/null' % serverbinfilename)
+            if back.strip() == marker:
+                return
+        self.logger.warning("Could not confirm the FPGA flash marker on the board; "
+                            "the next connection may redundantly reflash.")
 
     def _scp_put_retry(self, src, dest):
         """scp a file to the board, retrying (with reconnect) up to 3 times."""
@@ -383,12 +415,13 @@ class RedPitaya(object):
 
         self.end()
         sleep(self.parameters['delay'])
-        # /opt/pyrpl is on the read-only root fs. Use the real `mount` command
-        # (not the rw/ro helpers in /opt/redpitaya/sbin, which are only on the
-        # PATH in a login shell — ssh.ask() uses a non-login interactive shell,
-        # so `rw` -> "command not found", the fs stays ro, and every scp_put
-        # would fail and retry). Mirrors _record_monitor_server_version().
-        self.ssh.run('mount -o remount,rw /')
+        # /opt/pyrpl lives on the root fs, which may be mounted read-only. Use
+        # the real `mount` command (not the rw/ro helpers in /opt/redpitaya/sbin,
+        # which are only on the PATH in a login shell — ssh.ask() uses a non-login
+        # interactive shell, so `rw` -> "command not found", the fs stays ro, and
+        # every scp_put would fail and retry). _remount_root_rw() caches the
+        # original state so we don't strand a normally-rw rootfs read-only.
+        self._remount_root_rw()
         sleep(self.parameters['delay'])
         self.ssh.ask('mkdir -p ' + serverdirname)
         sleep(self.parameters['delay'])
@@ -428,7 +461,7 @@ class RedPitaya(object):
         # NB: the bitstream + flash script are intentionally KEPT on the board
         # (no rm) so the next connection can md5-skip the upload and reflash
         # from the on-board copy after a reboot.
-        self.ssh.run('mount -o remount,ro /')
+        self._restore_root_mount()
 
     def fpgarecentlyflashed(self):
         self.ssh.ask()
@@ -510,7 +543,7 @@ class RedPitaya(object):
 
         self.logger.info("Compiling monitor_server on the RedPitaya "
                          "(on-board build differs from local monitor_server.c)...")
-        self.ssh.run('mount -o remount,rw /')
+        self._remount_root_rw()
         self.ssh.run('mkdir -p ' + serverdir)
         for i in range(3):
             try:
@@ -525,10 +558,10 @@ class RedPitaya(object):
         built, _ = self.ssh.run('test -x ' + binpath)
         if ret != 0 or built != 0:
             self.logger.error("monitor_server failed to compile on the board:\n%s", out)
-            self.ssh.run('mount -o remount,ro /')
+            self._restore_root_mount()
             return None
         self.ssh.run('chmod 755 ' + binpath)
-        self.ssh.run('mount -o remount,ro /')
+        self._restore_root_mount()
         self.logger.info("monitor_server compiled on the board (version %s).", version)
         return binpath
 
@@ -541,9 +574,9 @@ class RedPitaya(object):
         the exec channel even while the server holds the interactive shell.
         """
         verpath = self.parameters['serverdirname'] + self.parameters['monitor_server_name'] + '.version'
-        self.ssh.run('mount -o remount,rw /')
+        self._remount_root_rw()
         self.ssh.run('echo ' + version + ' > ' + verpath)
-        self.ssh.run('mount -o remount,ro /')
+        self._restore_root_mount()
 
     def _monitor_server_running(self):
         """True if a monitor_server process is alive on the board (any client)."""
@@ -562,7 +595,7 @@ class RedPitaya(object):
         /dev/null) so it outlives this ssh session: its DMA multicast and single
         register link then survive a client disconnect and can be reused by other
         clients. Returns the port on success, None if it failed to start."""
-        self.ssh.run('mount -o remount,ro /')  # fs back to ro before running
+        self._restore_root_mount()  # fs back to its original state before running
         self.ssh.run('setsid ' + binpath + ' ' + str(self.parameters['port'])
                      + ' </dev/null >/dev/null 2>&1 &')
         sleep(self.parameters['delay'])
@@ -590,7 +623,7 @@ class RedPitaya(object):
                 return port
             self.logger.warning("Freshly compiled monitor_server did not start; "
                                 "trying the precompiled binaries.")
-        self.ssh.run('mount -o remount,rw /')  # rw alias is login-shell only; use real mount
+        self._remount_root_rw()  # rw alias is login-shell only; use real mount
         sleep(self.parameters['delay'])
         self.ssh.ask('mkdir ' + self.parameters['serverdirname'])
         sleep(self.parameters['delay'])
@@ -614,7 +647,7 @@ class RedPitaya(object):
                 return port
             # wrong binary version -> make sure it is not running and try the next
             self._kill_monitor_server()
-            self.ssh.run('mount -o remount,rw /')  # next scp needs the fs writable again
+            self._remount_root_rw()  # next scp needs the fs writable again
 
         #try once more on a different port
         if self.parameters['port'] == self.parameters['defaultport']:
