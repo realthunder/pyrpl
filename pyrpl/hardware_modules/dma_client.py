@@ -277,6 +277,28 @@ class DmaUdpClient:
         self._parse_min_interval = (1.0 / (self._max_parse_rate * _PARSE_MARGIN)
                                     if self._max_parse_rate else 0.0)
 
+    def set_max_frame_size(self, n):
+        """Resize the per-channel point buffers to hold n scan cells. The lidar links
+        this to the scan GRID (x_count*y_count): a cell index >= max_frame_size is
+        dropped, so it MUST be >= the grid or the DMA frame is shorter than the
+        consumer's point-cloud arrays (shape mismatch). Safe while running — both
+        per-channel locks are held together so max_frame_size and the buffers stay
+        consistent; in-flight checked-out frames keep their old, still-valid buffers."""
+        n = max(1, int(n))
+        if n == self._max_frame_size:
+            return
+        with self._lock[0], self._lock[1]:
+            self._max_frame_size = n
+            for ch in (0, 1):
+                self._live[ch] = np.zeros((n, 2), dtype=np.int32)
+                self._published[ch] = None
+                self._published_frame_cnt[ch] = -1
+                self._last_publish_time[ch] = None
+                self._pool[ch] = []
+                self._out[ch] = {}
+                self._max_pos[ch] = -1
+                self._seen[ch] = False
+
     def start(self):
         """Start the background receive thread."""
         if self._running:
@@ -727,6 +749,14 @@ class DmaUdpClient:
             self._frame_cnt[ch] = frame_cnt
             if p.size == 0:
                 return
+            # Defensive: drop cells beyond the (possibly just-resized) buffer. Normally
+            # the parser already filtered p < max_frame_size; this only bites during a
+            # concurrent set_max_frame_size shrink. p is one segment (small).
+            if int(p.max()) >= self._max_frame_size:
+                keep = p < self._max_frame_size
+                p, up, down = p[keep], up[keep], down[keep]
+                if p.size == 0:
+                    return
             # Copy-on-write: if a reader holds the live buffer, freeze it by
             # copying the populated extent into a recycled buffer before writing.
             if id(self._live[ch]) in self._out[ch]:
