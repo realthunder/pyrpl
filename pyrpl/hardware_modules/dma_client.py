@@ -53,6 +53,8 @@ _DEFAULT_PORT = 12468
 _DEFAULT_UNI_PORT = 12466   # unicast workaround for multicast-unfriendly hosts
 _REG_MAGIC = b'RPDMAREG'    # NAT hole-punch registration datagram (content ignored)
 _PARSE_MARGIN = 1.25        # parse this much faster than the frame demand (headroom)
+_MIN_PARSE_YIELD = 0.0001   # 100 us: floor on the per-packet sleep so the GUI thread
+                            # always gets a GIL slice even when the parse loop is behind
 
 # Linux ancillary message reporting cumulative datagrams dropped by the socket
 # receive buffer (set via SO_RX_QUEUE_OVFL). Not exported by Python's socket on
@@ -221,6 +223,7 @@ class DmaUdpClient:
         self._sock = None
         self._thread = None
         self._running = False
+        self._next_parse_t = 0.0   # deadline-pacing target for the recv loop
 
         # Receiver-health counters (written by the recv thread, read by the GUI):
         self._pkt_count = 0       # datagrams received+parsed this session
@@ -561,12 +564,27 @@ class DmaUdpClient:
             self._parse_count += 1
             self._process_packet(data)
             self._account_loss()
-            # Always sleep a slice after parsing: this UNCONDITIONALLY yields the
-            # GIL so the GUI thread runs, which is what keeps the frame rate up.
-            # (A deadline-style "sleep only if ahead" throttle stops yielding once
-            # parse time exceeds the interval and starves the GUI to a standstill.)
+            # Deadline pacing: sleep only the time REMAINING to the next target parse
+            # instant, not a flat _parse_min_interval. A fixed post-parse sleep makes the
+            # achieved rate 1/(parse_time + interval), which falls below the demand on a
+            # large grid -> the kernel sheds packets the host needed (real loss). Advance
+            # the target by one interval and sleep only the remainder so the loop actually
+            # hits demand x _PARSE_MARGIN; always sleep >= _MIN_PARSE_YIELD so the GUI
+            # thread still gets GIL slices. Don't reset the target on a slight lag (that
+            # degenerates back to a fixed sleep) — only resync if more than an interval
+            # behind (e.g. a GUI hitch), to avoid a catch-up burst.
+            # (A dedicated recv thread was tried and is WORSE here: when the socket is
+            # backlogged its recv returns without blocking, so it hogs the GIL and starves
+            # the parser. Single-loop interleave + this pacing is the right CPython design.)
             if self._parse_min_interval:
-                time.sleep(self._parse_min_interval)
+                self._next_parse_t += self._parse_min_interval
+                delay = self._next_parse_t - self._time()
+                if delay > _MIN_PARSE_YIELD:
+                    time.sleep(delay)
+                else:
+                    time.sleep(_MIN_PARSE_YIELD)
+                    if delay < -self._parse_min_interval:
+                        self._next_parse_t = self._time()
 
     def _account_loss(self):
         """Attribute GENUINE loss over ~0.5 s windows. The kernel sheds the board's
