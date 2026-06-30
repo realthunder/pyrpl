@@ -72,6 +72,11 @@ set fft_use_approx    [expr {[info exists env(FFT_USE_APPROX)]    ? $env(FFT_USE
 # fft_proc.sv connects it. Global var name (lowercase) is read by fft_hls_direct_bd.tcl.
 set fft_runtime_nfft  [expr {[info exists env(FFT_RUNTIME_NFFT)]  ? $env(FFT_RUNTIME_NFFT)  : 0}]
 set hist_block_size   [expr {[info exists env(HIST_BLOCK_SIZE)]   ? $env(HIST_BLOCK_SIZE)   : 183}]
+# HSZ: scan-index (hist_index) width in bits. Sets the absolute scan-cell range
+# (2^HSZ cells) and the header hist_index field; frame_cnt gets the remaining
+# 55-HSZ header bits. Must be <= 54. Self-describing: reported in reg 0x170 so the
+# host DMA client auto-adapts.
+set hist_sz           [expr {[info exists env(HSZ)]              ? $env(HSZ)              : 24}]
 # FFT_CLK_200: retune the PLL's CLKOUT4 (clk_ser, which currently feeds only the
 # FFT clock mux) from VCO/4 = 250 MHz to VCO/5 = 200 MHz.  Drives a Verilog define
 # read by red_pitaya_pll.sv and redefines the pll_ser_clk generated clock below so
@@ -274,7 +279,8 @@ synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivale
     -generic FFT_FRAC=$fft_frac \
     -generic FFT_IMPL=$fft_impl \
     -generic FFT_SINGLE=$fft_single \
-    -generic HIST_BLOCK_SIZE=$hist_block_size
+    -generic HIST_BLOCK_SIZE=$hist_block_size \
+    -generic HSZ=$hist_sz
 
 # Per-FFT-implementation constraints.  read_xdc's restricted interpreter rejects
 # tcl `if`/`set`/`expr`, so the impl conditioning lives here (real tcl) and each
@@ -506,7 +512,7 @@ if {![catch {open $path_out/BUILD_INFO.txt a} bi]} {
     puts $bi "module red_pitaya_top   (synth -generic):"
     foreach {k v} [list FFT_NFFT $fft_nfft  FFT_SSR $fft_ssr  FFT_WIDTH $fft_width \
                         FFT_IMPL $fft_impl  FFT_SINGLE $fft_single  ADC_SZ $adc_sz \
-                        HIST_BLOCK_SIZE $hist_block_size] {
+                        HIST_BLOCK_SIZE $hist_block_size  HSZ $hist_sz] {
         puts $bi [format "    %-16s= %s" $k $v]
     }
     puts $bi "module red_pitaya_scope #(.ASZ,.FSZ,.FSSR,.DSZ,...):"
@@ -517,6 +523,7 @@ if {![catch {open $path_out/BUILD_INFO.txt a} bi]} {
     puts $bi [format "    %-16s= %-5s (= PEAK_FRAC, k_interp sub-bin frac bits; 0=off)" FRAC $fft_frac]
     puts $bi [format "    %-16s= %-5s (= FSZ + FRAC, peak index out width)" IDX [expr {$fft_nfft + $fft_frac}]]
     puts $bi [format "    %-16s= %-5s (= FSZ - log2(FSSR) - 1, input FIFO depth)" QSZ $bi_qsz]
+    puts $bi [format "    %-16s= %-5s (= HSZ knob; header frame_cnt gets %s bits)" HSZ $hist_sz [expr {55 - $hist_sz}]]
     puts $bi "module fft_proc:"
     puts $bi [format "    %-16s= %-5s (= log2(FSSR))"                  SSR_BITS      $ssr_bits]
     puts $bi [format "    %-16s= %-5s (= FSZ - SSR_BITS, sub-FFT nfft)" NFFT_FIXED    $sub_nfft]

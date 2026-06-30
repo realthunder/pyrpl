@@ -108,7 +108,7 @@ class DmaUdpClient:
 
     def __init__(self, mcast_ip=_DEFAULT_MCAST_IP, port=_DEFAULT_PORT,
                  unicast=True, unicast_port=_DEFAULT_UNI_PORT, board_ip=None,
-                 fsz=13, frac=8, hist_block_size=183, hsz=14,
+                 fsz=13, frac=8, hist_block_size=183, hsz=24,
                  max_frame_size=128*1024, max_interval=0.0, time_fn=None,
                  pool_size=4, max_parse_rate=2000):
         """
@@ -145,7 +145,8 @@ class DmaUdpClient:
         hist_block_size : int
             Data words per packet (= HIST_BLOCK_SIZE build parameter, default 183).
         hsz : int
-            fft_hist_index field width in header word (default 14).
+            fft_hist_index field width in header word (default 24). Overridden at
+            runtime from FPGA descriptor reg 0x170 via Scope._configure_dma_client.
         max_frame_size : int
             Maximum number of (peak_up, peak_down) pairs per frame.  Points whose
             scan cell >= max_frame_size are silently discarded.  Defaults to

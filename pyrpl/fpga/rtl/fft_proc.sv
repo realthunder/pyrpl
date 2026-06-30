@@ -8,6 +8,7 @@ module fft_proc #(
   parameter RSZ,        // RAM size 2^RSZ
   parameter HSZ,        // fft history buffer size 2^HSZ (Note: consider word size of 32bit, better not exceed 64KBytes in total)
   parameter QSZ,        // FFT queue size 2^QSZ
+  parameter IQSZ = 5,   // scan-index queue depth = 2^IQSZ (see fifo_index below)
   parameter READ_DELAY,  // memory output read delay
   parameter HIST_BLOCK_SIZE = 183,  // DMA packet size in detection words (183+1 hdr = 184×8 = 1472 B = one Ethernet MTU)
   parameter [3:0] CHANNEL_ID = 0,  // 4-bit channel tag stamped into header bits [63:60]
@@ -684,9 +685,19 @@ xpm_fifo_async #(
 
 logic  [ HSZ-1:0] fft_hist_index_o;
 
+// Scan-index queue: one entry per in-flight FFT frame. The write side (adc clk)
+// pushes the scan cell on every acquisition trigger (fft_index_valid_i, which is
+// gated by `fft_trig && &fft_done` — a new frame can't be triggered until the
+// previous feed completes and the FFT->peak->DMA chain isn't stalled). The read
+// side (clk_i) pops one per peak-ready, exactly rate-matched in steady state. The
+// only depth requirement is to cover the frames in flight between a frame's
+// trigger and its peak readout = (FFT+peak pipeline latency) / (per-frame feed
+// period) — a handful of frames even for the smallest transform, and the queue is
+// flush-reset every 2D frame. Depth is therefore decoupled into IQSZ (default 32,
+// ~8x margin over the realistic in-flight count; was a hardcoded 128).
 xpm_fifo_async #(
     // .FIFO_MEMORY_TYPE("block"),
-    .FIFO_WRITE_DEPTH(128),
+    .FIFO_WRITE_DEPTH(1<<IQSZ),
     .WRITE_DATA_WIDTH(HSZ),
     .READ_DATA_WIDTH (HSZ),
     .FIFO_READ_LATENCY(0),

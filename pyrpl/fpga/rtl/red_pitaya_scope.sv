@@ -72,7 +72,7 @@ module red_pitaya_scope #(
   parameter FSZ  = 13,  // FFT transform length 2^FSZ (max runtime size)
   parameter FRAC = 8,   // sub-bin interpolation fractional bits (k_interp = Q(FSZ).FRAC); 0=off
   parameter RSZ  = 14,  // RAM size 2^RSZ
-  parameter HSZ  = 14,  // fft history buffer size 2^HSZ
+  parameter HSZ  = 24,  // scan-index (hist_index) width; build knob, default 24
   parameter FSSR     = 1, // FFT super sample rate (parallel channels)
   parameter FFT_IMPL = 3,  // 1=LogiCORE, 2=HLS SSR (DIT), 3=IP SSR (DIF)
   parameter FFT_SINGLE = 0, // 1 = build only fft_a, omit fft_b (e.g. SSR=8 to fit)
@@ -287,6 +287,12 @@ localparam FFT_RDELAY = (7-1);
 // drained them -> dropped beats -> the FFT engine under-fed and fft_done wedged
 // low -> FFT hang. Sizing for r=1 makes any wait1 (incl. 0) safe.
 localparam QSZ = FSZ - $clog2(FSSR);
+
+// Scan-index queue depth (2^IQSZ) handed to both fft_proc engines. Holds one entry
+// per in-flight FFT frame; production/consumption are rate-matched and flush-reset
+// per 2D frame, so only the few frames between trigger and peak readout need to be
+// buffered. 32 gives ~8x margin (see fifo_index in fft_proc.sv).
+localparam IQSZ = 5;
 
 // Output peak-index width: integer bin + FRAC sub-bin fractional bits (Q(FSZ).FRAC).
 // Carries through the inter-channel peak-index regs and history readout (see fft_proc).
@@ -730,6 +736,21 @@ end else begin
         end
     `endif
 
+    // Absolute scan cell = row(y_step) * row_stride(fft_hist_step) + col(x_step).
+    // WIDTH INVARIANT: fft_hist_step is HSZ-wide (not RSZ) ON PURPOSE — it forces
+    // this multiply to evaluate at the HSZ-bit index width, so the product fills
+    // the full 2^HSZ cell space. Narrowing it to RSZ would truncate y*stride to
+    // RSZ bits *before* this assignment and silently re-wrap the index at 2^RSZ
+    // (the old HSZ==RSZ==14 coincidence hid this). x_step/y_step stay RSZ (one
+    // axis <= 2^RSZ steps); only the combined cell index needs the HSZ range.
+    //
+    // TIMING/SIZING: single-cycle is sufficient — this infers ONE registered
+    // DSP48E1 MACC (A=fft_hist_step, B=y_step, C=x_step -> P-reg). A DSP's mult
+    // delay is fixed by the 25x18 array, so HSZ 14->24 leaves the path delay (and
+    // its >0.7 ns slack on the 8 ns / 125 MHz adc_clk) essentially unchanged; no
+    // extra pipeline stage is needed. Keep HSZ <= 24 (unsigned A on the 25-bit
+    // signed port) to stay in ONE DSP; HSZ >= 25 cascades to two DSPs (still meets
+    // timing). fft_hist_index[0]->[1]->[2] are alignment delays, NOT mult pipeline.
     fft_hist_index[0] <= y_step * fft_hist_step + x_step;
     for (int i=0; i<IDX_PIPELINE; i=i+1)
         fft_hist_index[i+1] <= fft_hist_index[i];
@@ -811,6 +832,7 @@ end
 
 fft_proc #(.ASZ(ASZ),
            .QSZ(QSZ),
+           .IQSZ(IQSZ),
            .DSZ(DSZ),
            .FSZ(FSZ),
            .FRAC(FRAC),
@@ -902,6 +924,7 @@ if (FFT_SINGLE) begin : gen_no_fft_b
 end else begin : gen_fft_b
 fft_proc #(.ASZ(ASZ),
            .QSZ(QSZ),
+           .IQSZ(IQSZ),
            .DSZ(DSZ),
            .FSZ(FSZ),
            .FRAC(FRAC),

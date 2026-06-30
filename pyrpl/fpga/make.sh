@@ -163,6 +163,12 @@ fi
 #   Default 183 → 184 * 8 = 1472 B = one standard Ethernet MTU (no fragmentation).
 #export HIST_BLOCK_SIZE=183
 
+# HSZ: scan-index (hist_index) width in bits → 2^HSZ addressable scan cells.
+#   The DMA header splits 55 bits between hist_index (HSZ) and frame_cnt (55-HSZ),
+#   so larger HSZ shrinks the frame counter (HSZ=24 → 31-bit frame_cnt). Must be
+#   <= 54. Self-describing via reg 0x170 — the host DMA client adapts automatically.
+#export HSZ=24
+
 # ---- Named build profiles -------------------------------------------------
 # PROFILE=<name> ./make.sh applies a known-good combination of FFT_*/DETERMINISTIC
 # settings as the defaults. Individual vars on the command line still override the
@@ -318,7 +324,7 @@ else
     _fftclk="250MHz (SEL=1)"
 fi
 if [[ $_ssr -ge 8 ]]; then _single_def=1; else _single_def=0; fi
-echo "==> Build config: IMPL=${FFT_IMPL} SSR=${_ssr} NFFT=${FFT_NFFT:-12} SCALED=${FFT_SCALED:-2} WIDTH=${FFT_WIDTH:-auto} SINGLE=${FFT_SINGLE:-$_single_def}"
+echo "==> Build config: IMPL=${FFT_IMPL} SSR=${_ssr} NFFT=${FFT_NFFT:-12} SCALED=${FFT_SCALED:-2} WIDTH=${FFT_WIDTH:-auto} SINGLE=${FFT_SINGLE:-$_single_def} HSZ=${HSZ:-24}"
 echo "                  FFT_CLK=${_fftclk} | DET=${DETERMINISTIC} PHYS_OPT=${PHYS_OPT:-AggressiveExplore} DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-0}"
 unset _ssr _fftclk _single_def
 
@@ -480,7 +486,7 @@ manifest="$WORKROOT/out/BUILD_INFO.txt"
     echo "# and derived module parameters are appended below by red_pitaya_vivado.tcl):"
     for v in FPGA_PART ADC_SZ CLK_MULT CLK_ADC_DIV FFT_IMPL FFT_SSR FFT_NFFT \
              FFT_WIDTH PEAK_FRAC FFT_SCALED FFT_INTERNAL_W FFT_CLK_PERIOD FFT_CLK_SEL FFT_CLK_200 FFT_CLK_178 \
-             FFT_MULT_LUT FFT_USE_APPROX FFT_UNSCALED FFT_CORDIC_ITER HIST_BLOCK_SIZE PHYS_OPT OPT_DIRECTIVE FFT_SINGLE; do
+             FFT_MULT_LUT FFT_USE_APPROX FFT_UNSCALED FFT_CORDIC_ITER HIST_BLOCK_SIZE HSZ PHYS_OPT OPT_DIRECTIVE FFT_SINGLE; do
         printf '%-14s= %s\n' "$v" "${!v:-}"
     done
 } > "$manifest"
