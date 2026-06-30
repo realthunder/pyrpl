@@ -41,7 +41,6 @@ update.
 
 import socket
 import select
-import struct
 import threading
 import logging
 import time
@@ -70,11 +69,6 @@ _SO_RCVBUF_REQUEST = 64 * 1024 * 1024
 # kernel buffer fast (recv is cheap, parse is the slow step), shrinking the
 # overflow window. Capped so the parser still yields the GIL ~every batch.
 _MAX_RECV_BATCH = 32
-
-# Linux ancillary message reporting cumulative datagrams dropped by the socket
-# receive buffer (set via SO_RX_QUEUE_OVFL). Not exported by Python's socket on
-# all builds, so fall back to the well-known constant value (40 on Linux).
-_SO_RX_QUEUE_OVFL = getattr(socket, 'SO_RX_QUEUE_OVFL', 40)
 
 
 class _FrameLease:
@@ -249,15 +243,8 @@ class DmaUdpClient:
         self._pkt_count = 0       # datagrams received+parsed this session
         self._parse_count = 0     # datagrams parsed into the point cloud (== pkt_count)
         self._bad_count = 0       # malformed datagrams discarded by the parser
-        self._ovfl_drops = 0      # kernel SO_RX_QUEUE_OVFL = surplus the kernel shed
-        self._genuine_drops = 0   # frame-demand shortfall while surplus was shed (real loss)
         self._seq_last = None     # last per-packet seq seen (None = not yet / disabled)
         self._seq_drops = 0       # datagrams lost per the FPGA seq gaps (transport loss; any OS)
-        self._ovfl_enabled = False
-        # Genuine-loss attribution window (recv thread only):
-        self._loss_t0 = 0.0
-        self._loss_parsed0 = 0
-        self._loss_ovfl0 = 0
         # Packet-rate smoothing for stats() (GUI-thread-only state):
         self._stats_t0 = None
         self._stats_pkt0 = 0
@@ -303,10 +290,10 @@ class DmaUdpClient:
         # _max_parse_rate is the FRAME DEMAND: packets/s the receiver must parse to
         # refresh the whole point cloud at the desired fps (Lidar sets it from
         # frame_rate x packets-per-frame). The recv loop paces itself to a little
-        # above that (x _PARSE_MARGIN) and SLEEPS between packets, which yields the
-        # GIL so the GUI keeps its frame rate — draining every packet instead starves
-        # Python and drops the fps. The board sends far more than the demand; the
-        # kernel sheds that surplus (reported as throttled, NOT loss). 0 = no cap.
+        # above that (x _PARSE_MARGIN) and SLEEPS between batches, which yields the
+        # GIL so the GUI keeps its frame rate — draining flat-out instead starves
+        # Python and drops the fps. The board may send more than the demand; the
+        # surplus is shed by the kernel buffer (not a functional loss). 0 = no cap.
         self._parse_min_interval = (1.0 / (self._max_parse_rate * _PARSE_MARGIN)
                                     if self._max_parse_rate else 0.0)
 
@@ -336,13 +323,11 @@ class DmaUdpClient:
         """Start the background receive thread."""
         if self._running:
             return
-        # Fresh counters per session (the socket — and its kernel drop counter —
-        # is recreated below, so the rates/drops reflect the current run only).
+        # Fresh counters per session (the socket is recreated below, so the
+        # rates/drops reflect the current run only).
         self._pkt_count = 0
         self._parse_count = 0
         self._bad_count = 0
-        self._ovfl_drops = 0
-        self._genuine_drops = 0
         self._seq_last = None
         self._seq_drops = 0
         self._stats_t0 = None
@@ -473,20 +458,9 @@ class DmaUdpClient:
         """Receiver-health snapshot for display/diagnostics. Returns a dict:
 
           pkt_per_s : smoothed parsed-packet rate (recomputed every min_window s)
-          drops     : cumulative GENUINE loss — frame-demand shortfall accrued while
-                      the kernel was shedding surplus (cells left un-refreshed because
-                      the host couldn't keep up with the desired fps). 0 when keeping
-                      up. Excludes the intentional surplus (see throttled). Linux-only
-                      (needs the kernel shed counter).
-          seq_drops : cumulative TRANSPORT loss from the FPGA per-packet sequence gaps
-                      (socket-buffer overflow, NIC, vSwitch). Works on ANY OS, incl.
-                      Windows. 0 unless the bitstream stamps a seq (seq_bits > 0). May
-                      exceed `drops` when the board over-sends (a shed packet whose
-                      cells are re-streamed next sweep counts here but isn't functional
-                      loss).
-          throttled : datagrams the kernel shed because the board over-sends past the
-                      frame demand (SO_RX_QUEUE_OVFL); expected, NOT loss — the
-                      history is resent so every cell still refreshes in time
+          seq_drops : cumulative datagram loss from the FPGA per-packet sequence gaps
+                      (socket-buffer overflow, NIC, vSwitch). OS-independent (incl.
+                      Windows). 0 unless the bitstream stamps a seq (seq_bits > 0).
           bad       : malformed datagrams discarded by the parser
           packets   : total datagrams received+parsed this session
           parsed    : datagrams parsed into the point cloud (== packets)
@@ -510,9 +484,7 @@ class DmaUdpClient:
                 self._stats_pkt0 = pkt
         return {
             'pkt_per_s': self._stats_pps,
-            'drops': self._genuine_drops,
             'seq_drops': self._seq_drops,
-            'throttled': self._ovfl_drops,
             'bad': self._bad_count,
             'packets': pkt,
             'parsed': self._parse_count,
@@ -532,10 +504,8 @@ class DmaUdpClient:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         except AttributeError:
             pass
-        # Generous receive buffer so a transient burst (the board can emit a
-        # short flurry faster than one recv loop iteration) is absorbed rather
-        # than overflowing — keeps SO_RX_QUEUE_OVFL reporting genuine, sustained
-        # loss instead of momentary jitter.
+        # Generous receive buffer so a burst (the board emits a full scan-grid
+        # sweep faster than one recv pass) is absorbed rather than overflowing.
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, _SO_RCVBUF_REQUEST)
             # Read back the effective size. Linux reports 2x the granted bytes,
@@ -564,16 +534,9 @@ class DmaUdpClient:
             sock.bind(('', self._port))
             mreq = socket.inet_aton(self._mcast_ip) + socket.inet_aton('0.0.0.0')
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-        sock.settimeout(1.0)
-        # Ask the kernel to report receive-queue overflow drops (Linux). Lets
-        # stats() show real UDP loss when the host can't keep up with the FPGA.
-        self._ovfl_enabled = False
-        if hasattr(sock, 'recvmsg'):
-            try:
-                sock.setsockopt(socket.SOL_SOCKET, _SO_RX_QUEUE_OVFL, 1)
-                self._ovfl_enabled = True
-            except (OSError, AttributeError):
-                pass
+        # _recv_loop puts the socket in non-blocking mode and waits via select();
+        # drop detection is the FPGA per-packet seq (OS-independent), so there is no
+        # kernel-shed counter to enable here.
         return sock
 
     def _maybe_register(self):
@@ -594,16 +557,12 @@ class DmaUdpClient:
             pass
 
     def _recv_loop(self):
-        use_ovfl = self._ovfl_enabled
-        ancsize = socket.CMSG_SPACE(4) if use_ovfl else 0
         sock = self._sock
         # Non-blocking + select: lets one pass DRAIN all queued datagrams (see
         # _MAX_RECV_BATCH) instead of one-recv-one-parse. select's 1 s timeout
-        # keeps _running checked ~1/s for a responsive stop().
+        # keeps _running checked ~1/s for a responsive stop(). Plain recv() (no
+        # recvmsg) -> works on every OS; drops are detected from the FPGA seq.
         sock.setblocking(False)
-        self._loss_t0 = self._time()
-        self._loss_parsed0 = self._parse_count
-        self._loss_ovfl0 = self._ovfl_drops
         while self._running:
             self._maybe_register()
             try:
@@ -613,28 +572,18 @@ class DmaUdpClient:
             if not ready:
                 continue
             # Drain pass: pull every queued datagram (up to the batch cap) with no
-            # parse in between, so the kernel receive buffer empties fast and the
-            # overflow window after a stall is minimal. recvmsg still carries the
-            # SO_RX_QUEUE_OVFL ancillary per datagram, so the shed counter stays live.
+            # parse in between, so the receive buffer empties fast and the overflow
+            # window after a stall is minimal (recv is cheap, parse is the slow step).
             batch = []
             closed = False
             for _ in range(_MAX_RECV_BATCH):
                 try:
-                    if use_ovfl:
-                        data, ancdata, _flags, _addr = sock.recvmsg(65536, ancsize)
-                        for lvl, typ, cdata in ancdata:
-                            if (lvl == socket.SOL_SOCKET and typ == _SO_RX_QUEUE_OVFL
-                                    and len(cdata) >= 4):
-                                # cumulative datagrams the kernel shed (over-send surplus)
-                                self._ovfl_drops = struct.unpack('I', cdata[:4])[0]
-                    else:
-                        data = sock.recv(65536)
+                    batch.append(sock.recv(65536))
                 except BlockingIOError:
                     break          # socket buffer drained
                 except OSError:
                     closed = True   # socket closed by stop(), or a real error
                     break
-                batch.append(data)
             if closed:
                 break
             if not batch:
@@ -644,9 +593,8 @@ class DmaUdpClient:
                 self._pkt_count += 1
                 self._parse_count += 1
                 self._process_packet(data)
-            self._account_loss()
-            # Deadline pacing (now per BATCH): advance the target by n intervals and
-            # sleep only the remainder, so the long-run rate still tracks demand x
+            # Deadline pacing (per BATCH): advance the target by n intervals and sleep
+            # only the remainder, so the long-run rate still tracks demand x
             # _PARSE_MARGIN while the parser yields the GIL ~once per batch (not per
             # packet) — fewer context switches, faster backlog drain. Always sleep
             # >= _MIN_PARSE_YIELD so the GUI thread still gets a slice; only resync the
@@ -664,32 +612,12 @@ class DmaUdpClient:
                     if delay < -self._parse_min_interval * n:
                         self._next_parse_t = self._time()
 
-    def _account_loss(self):
-        """Attribute GENUINE loss over ~0.5 s windows. The kernel sheds the board's
-        over-send surplus (expected, not loss). It only becomes real loss if the
-        host ALSO failed to parse the frame demand while surplus was being shed — then
-        cells went un-refreshed within the frame period. No surplus shed in a window
-        means a low parse count is just low data, not loss."""
-        now = self._time()
-        dt = now - self._loss_t0
-        if dt < 0.5:
-            return
-        parsed = self._parse_count - self._loss_parsed0
-        shed = self._ovfl_drops - self._loss_ovfl0
-        demand = self._max_parse_rate
-        if demand and shed > 0 and parsed < demand * dt:
-            self._genuine_drops += int(demand * dt - parsed)
-        self._loss_t0 = now
-        self._loss_parsed0 = self._parse_count
-        self._loss_ovfl0 = self._ovfl_drops
-
     def _track_seq(self, seq):
         """Gap-count the per-packet FPGA sequence (wrap-safe within seq_bits). A
         forward jump of d means d-1 datagrams were lost between this and the previous
         packet; a backward jump (reorder, or a monitor_server/FPGA restart) just
         resyncs without counting. Counts ALL transport loss (socket-buffer overflow,
-        NIC, vSwitch) on any OS — distinct from _genuine_drops (functional frame-demand
-        shortfall, Linux-only) and _ovfl_drops (kernel-shed surplus)."""
+        NIC, vSwitch) on any OS — this is the receiver's sole drop metric."""
         last = self._seq_last
         self._seq_last = seq
         if last is None:
