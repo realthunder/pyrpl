@@ -19,6 +19,7 @@
 
 import numpy as np
 import socket
+import threading
 import logging
 try:
     raise  # disable sound output for now
@@ -48,6 +49,12 @@ class MonitorClient(object):
         CLIENT_NUMBER += 1
         self.client_number = CLIENT_NUMBER
         self.logger.debug("Client number %s started", self.client_number)
+        # Serialize the single TCP register link: the request/response pair
+        # (socket.send + socket.recv in _reads/_writes) MUST be atomic, because
+        # the lidar now offloads scope-acquisition register I/O to a worker thread
+        # (run_in_executor) while the GUI thread still issues occasional reads/writes.
+        # monitor_server accepts only one client, so both share this socket.
+        self._io_lock = threading.RLock()
         # start setting up client
         self._restartserver = restartserver
         self._hostname = hostname
@@ -95,13 +102,15 @@ class MonitorClient(object):
         self._read_counter+=1
         if hasattr(self, '_sound_debug') and self._sound_debug:
             sine(440, 0.05)
-        return self.try_n_times(self._reads, addr, length)
+        with self._io_lock:
+            return self.try_n_times(self._reads, addr, length)
 
     def writes(self, addr, values):
         self._write_counter += 1
         if hasattr(self, '_sound_debug') and self._sound_debug:
             sine(880, 0.05)
-        return self.try_n_times(self._writes, addr, values)
+        with self._io_lock:
+            return self.try_n_times(self._writes, addr, values)
     
     # the actual code
     def _reads(self, addr, length):
