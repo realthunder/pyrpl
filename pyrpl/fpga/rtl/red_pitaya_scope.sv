@@ -1010,6 +1010,12 @@ localparam int ASM_PKT  = HIST_BLOCK_SIZE + 1;       // words per packet
 localparam int ASM_WCW  = $clog2(ASM_PKT);
 localparam int ASM_FCW  = 55 - HSZ;                  // frame-counter bits in header
 localparam int ASM_RSVD = 62 - 2*IDX;                // data-word reserved span
+// Per-packet (datagram) sequence stamped in the LOW DMA_SEQ_W bits of the header
+// frame_cnt field; the host strips them and gap-counts -> OS-independent packet
+// drop detection (Windows has no SO_RX_QUEUE_OVFL). frame_cnt keeps the high
+// (ASM_FCW-DMA_SEQ_W) bits — turnover detection only needs inequality. Requires
+// DMA_SEQ_W < ASM_FCW (true for HSZ <= 38). Advertised in descriptor 0x194[27:20].
+localparam int DMA_SEQ_W = 16;
 localparam [1:0] S_HDR = 2'd0, S_DATA = 2'd1, S_PAD = 2'd2;
 
 logic [ASM_WCW-1:0] asm_wc;          // next word index within the packet
@@ -1018,6 +1024,7 @@ logic [HSZ-1:0]     asm_prev_idx;
 logic [3:0]         asm_nch_seg;     // NCH stamped in the active segment header
 logic               asm_flush_d, asm_frame_pend;
 logic [ASM_FCW-1:0] asm_frame_cnt;       // per-2D-frame counter (header field width)
+logic [DMA_SEQ_W-1:0] asm_pkt_seq;       // per-packet (datagram) sequence, header low bits
 logic               asm_busy;
 logic [1:0]         asm_state;
 logic [3:0]         asm_ch;
@@ -1052,6 +1059,7 @@ always @(posedge fft_input_clk) begin
         asm_nch_seg    <= '0;
         asm_frame_pend <= 1'b0;
         asm_frame_cnt  <= '0;
+        asm_pkt_seq    <= '0;
         asm_flush_d    <= 1'b0;
         asm_busy       <= 1'b0;
         asm_tlast      <= 1'b0;
@@ -1090,6 +1098,7 @@ always @(posedge fft_input_clk) begin
                 asm_tlast  <= asm_last_word;
                 if (asm_last_word) begin
                     asm_wc       <= '0;
+                    asm_pkt_seq  <= asm_pkt_seq + 1'b1;   // packet boundary
                     asm_need_hdr <= 1'b1;
                     asm_state    <= S_HDR;           // new packet -> header
                     asm_ch       <= '0;
@@ -1101,12 +1110,16 @@ always @(posedge fft_input_clk) begin
             end
             S_HDR: begin   // header field: v3 = NCH (one shared header),
                            //               v4 = channel tag (one header per channel)
+                // frame_cnt field = { frame_cnt[high ASM_FCW-DMA_SEQ_W bits],
+                //                     per-packet seq[DMA_SEQ_W bits] } (host splits it).
                 asm_tdata    <= {1'b1, (DMA_PCT ? asm_ch : pt_nch),
                                  DMA_FMT_VERSION[3:0],
-                                 pt_idx, asm_frame_cnt[ASM_FCW-1:0]};
+                                 pt_idx,
+                                 asm_frame_cnt[ASM_FCW-DMA_SEQ_W-1:0], asm_pkt_seq};
                 asm_tvalid   <= 1'b1;
                 asm_tlast    <= asm_last_word;
                 asm_wc       <= asm_last_word ? '0 : asm_wc + 1'b1;
+                if (asm_last_word) asm_pkt_seq <= asm_pkt_seq + 1'b1;   // packet boundary
                 asm_need_hdr <= asm_last_word;
                 asm_nch_seg  <= pt_nch;
                 asm_prev_idx <= pt_idx;
@@ -1137,7 +1150,10 @@ always @(posedge fft_input_clk) begin
                 asm_tvalid <= 1'b1;
                 asm_tlast  <= asm_last_word;
                 asm_wc     <= asm_last_word ? '0 : asm_wc + 1'b1;
-                if (asm_last_word) asm_need_hdr <= 1'b1;
+                if (asm_last_word) begin
+                    asm_need_hdr <= 1'b1;
+                    asm_pkt_seq  <= asm_pkt_seq + 1'b1;          // packet boundary
+                end
                 asm_prev_idx <= pt_idx;                          // shared position
                 if (asm_ch + 1 >= pt_nch) asm_busy <= 1'b0;      // index done
                 else begin
@@ -2009,8 +2025,10 @@ end else begin
      20'h00188 : begin sys_ack <= sys_en;          sys_rdata <= {{16-RSZ{1'b0}}, y_step, {16-RSZ{1'b0}}, x_step}; end
      20'h0018C : begin sys_ack <= sys_en;          sys_rdata <= scope_sig_dly                     ; end
      20'h00190 : begin sys_ack <= sys_en;          sys_rdata <= fft_overflow_cnt                    ; end
-     // DMA packet geometry (read-only): data words per packet + channel field width.
-     20'h00194 : begin sys_ack <= sys_en;          sys_rdata <= {12'h0, 4'd4, DMA_PKT_BLK}          ; end
+     // DMA packet geometry (read-only): data words per packet + channel field width
+     //   + per-packet seq width. 0x194 [15:0]=HIST_BLOCK_SIZE [19:16]=channel width
+     //   [27:20]=DMA_SEQ_W (header low bits used as a per-packet sequence; 0 = none).
+     20'h00194 : begin sys_ack <= sys_en;          sys_rdata <= {4'h0, 8'(DMA_SEQ_W), 4'd4, DMA_PKT_BLK}          ; end
      // 20'h00198 : begin sys_ack <= sys_en;          sys_rdata <= fft_we_cnt[1]                       ; end
 
      20'h1???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_a_rd}              ; end
