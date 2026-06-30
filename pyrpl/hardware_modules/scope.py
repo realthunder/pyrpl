@@ -527,6 +527,11 @@ class Scope(HardwareModule, AcquisitionModule):
                                   doc="DMA packet-layout version")
     dma_block_size = IntRegister(0x194, bits=16, bitmask=0x0000ffff,
                                  doc="DMA data words per packet (HIST_BLOCK_SIZE)")
+    # Per-packet sequence width: how many LOW bits of the header frame_cnt field the
+    # FPGA stamps as a monotonic per-packet counter. 0 on bitstreams without it (the
+    # [27:20] spare bits read 0), so the host auto-disables seq drop-detection.
+    dma_fmt_seq_bits = IntRegister(0x194, bits=8, bitmask=0x0ff00000,
+                                   doc="DMA per-packet sequence width (header low bits)")
 
     fft_debug2 = IntRegister(0x174)
     fft_debug3 = IntRegister(0x178)
@@ -693,6 +698,7 @@ class Scope(HardwareModule, AcquisitionModule):
             hsz=self.dma_fmt_hsz,
             hist_block_size=self.dma_block_size,
             max_interval=self.dma_max_interval,
+            seq_bits=self.dma_fmt_seq_bits,
         )
 
     def _ownership_changed(self, old, new):

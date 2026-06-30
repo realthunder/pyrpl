@@ -198,6 +198,11 @@ class DmaUdpClient:
         self._max_interval = max_interval
         self._max_parse_rate = max_parse_rate
         self._time = time_fn or time.monotonic
+        # Per-packet sequence (FPGA-stamped in the low bits of the header frame_cnt
+        # field). seq_bits=0 -> feature off (older bitstreams advertise 0). Set from
+        # the FPGA descriptor via configure(seq_bits=...).
+        self._seq_bits = 0
+        self._seq_mask = 0
         self.configure(fsz=fsz, frac=frac, hsz=hsz,
                        hist_block_size=hist_block_size)
 
@@ -246,6 +251,8 @@ class DmaUdpClient:
         self._bad_count = 0       # malformed datagrams discarded by the parser
         self._ovfl_drops = 0      # kernel SO_RX_QUEUE_OVFL = surplus the kernel shed
         self._genuine_drops = 0   # frame-demand shortfall while surplus was shed (real loss)
+        self._seq_last = None     # last per-packet seq seen (None = not yet / disabled)
+        self._seq_drops = 0       # datagrams lost per the FPGA seq gaps (transport loss; any OS)
         self._ovfl_enabled = False
         # Genuine-loss attribution window (recv thread only):
         self._loss_t0 = 0.0
@@ -261,11 +268,16 @@ class DmaUdpClient:
     # ------------------------------------------------------------------
 
     def configure(self, fsz=None, frac=None, hsz=None, hist_block_size=None,
-                  max_interval=None, max_parse_rate=None):
+                  max_interval=None, max_parse_rate=None, seq_bits=None):
         """Set the packet-layout / delivery parameters (typically from the scope).
 
         Recomputes the derived field masks and expected packet size. Call before
         start(); only the given parameters are changed, the rest are kept.
+
+        seq_bits is how many LOW bits of the header frame_cnt field the FPGA uses
+        as a per-packet sequence number (0 = none / older bitstream). When > 0 the
+        parser strips them off frame_cnt and gap-counts them as transport loss
+        (stats()['seq_drops']) — works on any OS, unlike the Linux-only shed counter.
         """
         if fsz is not None:
             self._fsz = fsz
@@ -279,6 +291,9 @@ class DmaUdpClient:
             self._max_interval = max_interval
         if max_parse_rate is not None:
             self._max_parse_rate = max_parse_rate
+        if seq_bits is not None:
+            self._seq_bits = int(seq_bits)
+            self._seq_mask = (1 << self._seq_bits) - 1
         # Peak field width IDX = fsz + frac; value is unsigned Q(fsz).frac.
         self._idx = self._fsz + self._frac
         self._mask = (1 << self._idx) - 1
@@ -328,6 +343,8 @@ class DmaUdpClient:
         self._bad_count = 0
         self._ovfl_drops = 0
         self._genuine_drops = 0
+        self._seq_last = None
+        self._seq_drops = 0
         self._stats_t0 = None
         self._stats_pkt0 = 0
         self._stats_pps = 0.0
@@ -459,7 +476,14 @@ class DmaUdpClient:
           drops     : cumulative GENUINE loss — frame-demand shortfall accrued while
                       the kernel was shedding surplus (cells left un-refreshed because
                       the host couldn't keep up with the desired fps). 0 when keeping
-                      up. Excludes the intentional surplus (see throttled).
+                      up. Excludes the intentional surplus (see throttled). Linux-only
+                      (needs the kernel shed counter).
+          seq_drops : cumulative TRANSPORT loss from the FPGA per-packet sequence gaps
+                      (socket-buffer overflow, NIC, vSwitch). Works on ANY OS, incl.
+                      Windows. 0 unless the bitstream stamps a seq (seq_bits > 0). May
+                      exceed `drops` when the board over-sends (a shed packet whose
+                      cells are re-streamed next sweep counts here but isn't functional
+                      loss).
           throttled : datagrams the kernel shed because the board over-sends past the
                       frame demand (SO_RX_QUEUE_OVFL); expected, NOT loss — the
                       history is resent so every cell still refreshes in time
@@ -487,6 +511,7 @@ class DmaUdpClient:
         return {
             'pkt_per_s': self._stats_pps,
             'drops': self._genuine_drops,
+            'seq_drops': self._seq_drops,
             'throttled': self._ovfl_drops,
             'bad': self._bad_count,
             'packets': pkt,
@@ -658,6 +683,21 @@ class DmaUdpClient:
         self._loss_parsed0 = self._parse_count
         self._loss_ovfl0 = self._ovfl_drops
 
+    def _track_seq(self, seq):
+        """Gap-count the per-packet FPGA sequence (wrap-safe within seq_bits). A
+        forward jump of d means d-1 datagrams were lost between this and the previous
+        packet; a backward jump (reorder, or a monitor_server/FPGA restart) just
+        resyncs without counting. Counts ALL transport loss (socket-buffer overflow,
+        NIC, vSwitch) on any OS — distinct from _genuine_drops (functional frame-demand
+        shortfall, Linux-only) and _ovfl_drops (kernel-shed surplus)."""
+        last = self._seq_last
+        self._seq_last = seq
+        if last is None:
+            return
+        d = (seq - last) & self._seq_mask
+        if 0 < d <= (self._seq_mask >> 1):
+            self._seq_drops += d - 1
+
     def _publish(self, ch):
         """Snapshot the live buffer into the published frame (caller holds lock).
 
@@ -694,6 +734,16 @@ class DmaUdpClient:
             self._bad_count += 1
             return
 
+        # Per-packet sequence: the FPGA stamps it in the low seq_bits of the header
+        # frame_cnt field (identical field in v3/v4), constant within a datagram. Read
+        # it from the first header word and gap-count -> transport drop detection that
+        # works on ANY OS (Windows has no SO_RX_QUEUE_OVFL). Skip the all-ones pad
+        # sentinel (not a real header). seq_bits == 0 -> feature off (no-op).
+        if self._seq_bits:
+            fh = int(words[hdr_pos[0]])
+            if fh != 0xFFFFFFFFFFFFFFFF:
+                self._track_seq(fh & self._seq_mask)
+
         # Format dispatch: header bits [58:55] carry the format version.
         if ((int(words[hdr_pos[0]]) >> 55) & 0xf) == 4:
             return self._process_packet_v4(words, is_header)
@@ -717,7 +767,7 @@ class DmaUdpClient:
                 # 0xF = all-ones padding sentinel (expected); other out-of-range
                 # values are unknown -> skip the segment, not a bad packet.
                 continue
-            frame_cnt = hw & fc_mask
+            frame_cnt = (hw & fc_mask) >> self._seq_bits   # strip the per-packet seq low bits
             start_pos = (hw >> int(idx_lsb)) & hist_mask
             seg_end = hdr_pos[si + 1] if si + 1 < hdr_pos.size else words.size
             seg = words[h + 1:seg_end]
@@ -772,7 +822,7 @@ class DmaUdpClient:
         mag = ((words >> np.uint64(62)) & np.uint64(1)).astype(np.int64)
         drc = ((words >> np.uint64(61)) & np.uint64(1)).astype(np.int64)
         hidx = ((words >> idx_lsb) & np.uint64(hist_mask)).astype(np.int64)
-        fcnt = (words & np.uint64(fc_mask))
+        fcnt = (words & np.uint64(fc_mask)) >> np.uint64(self._seq_bits)  # strip seq low bits
         up_all = (words & pmask).astype(np.int32)
         dn_all = ((words >> idx_sh) & pmask).astype(np.int32)
 
