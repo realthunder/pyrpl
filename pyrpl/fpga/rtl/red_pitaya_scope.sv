@@ -275,14 +275,18 @@ end
 localparam READ_DELAY = (3-1);
 localparam FFT_RDELAY = (7-1);
 // fifo_in depth. Reads are blocked during zero-padding; peak occupancy =
-// min(acq_samples, padding_duration_in_adc_cycles). With fft_clk=2x adc_clk,
-// padding clears at FSSR*2 ADC-sample-equivalents per ADC cycle, so padding
-// duration = x*N/(2*FSSR) ADC cycles. The two bounds cross at x=2*FSSR/(1+2*FSSR)
-// giving peak = N/(1+2*FSSR) = 2^FSZ/(1+2*FSSR). Since 2*FSSR < 1+2*FSSR < 4*FSSR,
-// floor(log2(1+2*FSSR)) = SSR_BITS+1, so QSZ_min = FSZ - SSR_BITS - 1 exactly.
-// WARNING: if fft_clk_sel=0 (fft_clk=adc_clk), peak grows to N/(1+FSSR) which
-// exceeds this depth; application must restrict padding to avoid FIFO overflow.
-localparam QSZ = FSZ - $clog2(FSSR) - 1;
+// min(acq_samples, padding_duration_in_adc_cycles). The two bounds cross at
+// peak = N/(1 + r*FSSR), where r = fft_clk/adc_clk: r=2 (fft_clk_sel=1, fft on
+// ser_clk) gives N/(1+2*FSSR); r=1 (fft_clk_sel=0, fft on adc_clk) gives the
+// LARGER N/(1+FSSR). fft_clk_sel is a runtime BUFGMUX choice, so the FIFO must
+// cover the r=1 worst case: with FSSR < 1+FSSR < 2*FSSR,
+// ceil(log2(N/(1+FSSR))) = FSZ - SSR_BITS, hence QSZ = FSZ - SSR_BITS (= N/FSSR
+// deep). NOTE: the old FSZ-SSR_BITS-1 sized only for r=2 and OVERFLOWED at
+// fft_clk_sel=0 when the acquisition started early (small wait1): the up-ramp
+// samples piled up during the (N-acq)/FSSR padding beats faster than the engine
+// drained them -> dropped beats -> the FFT engine under-fed and fft_done wedged
+// low -> FFT hang. Sizing for r=1 makes any wait1 (incl. 0) safe.
+localparam QSZ = FSZ - $clog2(FSSR);
 
 // Output peak-index width: integer bin + FRAC sub-bin fractional bits (Q(FSZ).FRAC).
 // Carries through the inter-channel peak-index regs and history readout (see fft_proc).
@@ -559,6 +563,10 @@ logic [ FSZ-1: 0]   fft_wait1_cnt_act, fft_wait2_cnt_act;
 logic [ FSZ-1: 0]   fft_acq1_cnt_act,  fft_acq2_cnt_act;
 logic [  8-1: 0]    fft_reconf_wait;
 localparam [7:0]    RECONF_CYCLES = 8'd64;  // > adc->clk_i handshake + RESET_DELAY + done resync
+// Per-half "acquisition window complete" -> fft_proc, so the feed engine can
+// post-pad with zeros (instead of deadlocking) if its input FIFO under-runs.
+// Set when S_FFT_UP / S_FFT_DOWN ends; cleared when the next frame starts.
+logic               fft_acq_up_done, fft_acq_down_done;
 
 localparam IDX_PIPELINE = 3-1;
 logic [ HSZ-1: 0]   fft_hist_index[0:IDX_PIPELINE];
@@ -834,6 +842,9 @@ fft_a (
    .fft_acq_up_in (fft_a_acq1_cnt),
    .fft_acq_down_in (fft_a_acq2_cnt),
 
+   .fft_acq_up_done_in (fft_acq_up_done),
+   .fft_acq_down_done_in (fft_acq_down_done),
+
    .sys_addr_in (sys_addr),
 
    .fft_rdata_up_o (fft_rdata_up_a_),
@@ -921,6 +932,9 @@ fft_proc #(.ASZ(ASZ),
 
    .fft_acq_up_in (fft_parallel ? fft_b_acq2_cnt : fft_b_acq1_cnt),
    .fft_acq_down_in (fft_b_acq2_cnt),
+
+   .fft_acq_up_done_in (fft_parallel ? fft_acq_down_done : fft_acq_up_done),
+   .fft_acq_down_done_in (fft_acq_down_done),
 
    .sys_addr_in (sys_addr),
 
@@ -1194,6 +1208,8 @@ if (fft_rstn_i == 0) begin
     fft_acq1_cnt_act  <= (2**(FSZ-1) - 200) & ~(FSSR-1);
     fft_acq2_cnt_act  <= (2**(FSZ-1) - 200) & ~(FSSR-1);
     fft_reconf_wait   <= 0;
+    fft_acq_up_done   <= 0;
+    fft_acq_down_done <= 0;
 end else begin
     if (sys_wen && (sys_addr[19:0]==20'h0) && sys_wdata[9]) begin
         fft_peak_ready[0] <= 0;
@@ -1226,6 +1242,10 @@ end else begin
         if (fft_trig_i && &fft_done && fft_reconf_wait == 0) begin
             fft_state_cnt <= 0;
             fft_state <= S_WAIT1;
+            // new frame: clear both half-done flags so the engine doesn't post-pad
+            // until each half's acquisition window has actually ended below.
+            fft_acq_up_done   <= 0;
+            fft_acq_down_done <= 0;
         end else
             fft_active_o <= 0;
     end
@@ -1239,6 +1259,7 @@ end else begin
         if (fft_state_cnt >= fft_acq1_cnt_act) begin
             fft_state_cnt <= 0;
             fft_state <= S_WAIT2;
+            fft_acq_up_done <= 1;   // up acquisition complete -> engine may post-pad up half
             // fft_active_o <= 0;
         end else if (fft_dvalid) begin
             fft_active_o <= 1;
@@ -1254,6 +1275,7 @@ end else begin
         if (fft_state_cnt >= fft_acq2_cnt_act) begin
             fft_state_cnt <= 0;
             fft_state <= S_IDLE;
+            fft_acq_down_done <= 1;   // down acquisition complete -> engine may post-pad down half
         end else if (fft_dvalid) begin
             fft_active_o <= 1;
             fft_state_cnt <= fft_state_cnt + 1;

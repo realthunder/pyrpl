@@ -29,6 +29,13 @@ module fft_proc #(
   input logic  [ FSZ-1:0] fft_acq_up_in,
   input logic  [ FSZ-1:0] fft_acq_down_in,
 
+  // Per-half "acquisition window complete" from the scope FSM (adc domain): high
+  // once S_FFT_UP / S_FFT_DOWN has ended, i.e. no more real samples will be
+  // written for that half. Lets the feed engine post-pad a frame with zeros
+  // instead of stalling forever when the input FIFO under-runs (overflow drops).
+  input logic             fft_acq_up_done_in,
+  input logic             fft_acq_down_done_in,
+
   input logic  [ 32-1: 0] sys_addr_in,
 
   output logic [DSZ-1: 0] fft_rdata_up_o,
@@ -105,9 +112,12 @@ localparam READ_B_DELAY = READ_DELAY - 3;
 logic           fft_in_halt, fft_out_halt, fft_status_halt;
 logic           fft_frame_start, fft_tlast_missing, fft_tlast_unexp;
 
-logic [ 16-1:0] overflow_cnt;
-logic [ 16-1:0] input_cnt;
-assign overflow_cnt_o = {input_cnt, overflow_cnt};
+// Free-running dropped-sample counter: increments once per ADC sample dropped by
+// a full input FIFO, and WRAPS (32-bit). The host samples it over time and takes
+// deltas to get an overflow RATE, exactly like point_cnt. 32 bits so it won't
+// wrap between host polls even at high drop rates.
+logic [ 32-1:0] overflow_cnt;
+assign overflow_cnt_o = overflow_cnt;
 
 logic [ 32-1: 0] point_cnt;
 logic [ 32-1: 0] scan_point_cnt;
@@ -296,6 +306,20 @@ xpm_cdc_single #(
     .dest_clk  (adc_clk_i),
     .dest_out  (fft_done_o)
 );
+
+// Per-half acquisition-done, synced adc -> clk_i (feed engine domain). These are
+// quasi-static within a frame (one transition per window), so a 2-FF sync is safe.
+logic [1:0] acq_done_clk;
+xpm_cdc_array_single #(
+    .DEST_SYNC_FF (SYNC_FF), .WIDTH (2)
+) acq_done_sync (
+    .src_clk   (adc_clk_i),
+    .src_in    ({fft_acq_down_done_in, fft_acq_up_done_in}),
+    .dest_clk  (clk_i),
+    .dest_out  (acq_done_clk)
+);
+// acquisition complete for the half the engine is currently feeding
+wire acq_done = up_in ? acq_done_clk[0] : acq_done_clk[1];
 
 logic rstn_i;
 
@@ -649,7 +673,7 @@ xpm_fifo_async #(
     .din             (data_i),
 
     .rd_clk          (clk_i),
-    .rd_en           (padding_done & fft_saxi_rdy & fin_rd),
+    .rd_en           (padding_done & fft_saxi_rdy & fin_rd & fin_dvalid),
     .dout            (fin_dout),
     .data_valid      (fin_dvalid),
 
@@ -681,8 +705,16 @@ xpm_fifo_async #(
 logic  fft_we_one;
 logic  fft_we_length_plus_one;
 assign fft_saxi_last = fft_we_one || fft_we_length_plus_one;
-assign fft_saxi_valid = (!padding_done || fin_dvalid) && fin_rd;
-assign fft_data_i = padding_done ? fin_dout: '0;
+// POST-PAD: after this half's acquisition is complete, if the FIFO has under-run
+// (real samples were dropped on overflow) feed ZERO beats instead of stalling on
+// fin_dvalid. fft_we_cnt still bounds the frame, so data+post-pad self-balance to
+// the transform length -> the frame always completes (no fft_done deadlock); a
+// dropped sample just becomes a zero (minor spectral degradation, not a hang).
+// During live acquisition (acq_done low) a transient empty still stalls/waits,
+// so real samples are never replaced by zeros prematurely.
+wire fft_postpad = padding_done && acq_done && !fin_dvalid;
+assign fft_saxi_valid = (!padding_done || fin_dvalid || fft_postpad) && fin_rd;
+assign fft_data_i = (padding_done && fin_dvalid) ? fin_dout : '0;
 
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
@@ -694,9 +726,13 @@ if (rstn_i == 1'b0) begin
     up_in <= 1;
     padding_cnt <= 0;
     padding_done <= 0;
+    overflow_cnt <= 0;
 
 end else begin
 
+    // Count every dropped ADC sample (fin_full = a write rejected by a full FIFO).
+    // With the post-pad fix the engine no longer deadlocks on under-run, so this
+    // free-runs across frames; let it wrap (host takes deltas for an overflow rate).
     if (fin_full) begin
         overflow_cnt <= overflow_cnt + 1;
     end
