@@ -55,6 +55,14 @@ _REG_MAGIC = b'RPDMAREG'    # NAT hole-punch registration datagram (content igno
 _PARSE_MARGIN = 1.25        # parse this much faster than the frame demand (headroom)
 _MIN_PARSE_YIELD = 0.0001   # 100 us: floor on the per-packet sleep so the GUI thread
                             # always gets a GIL slice even when the parse loop is behind
+# Requested socket receive buffer. The board emits a full scan-grid sweep in a
+# short flurry, and the loss we see is purely socket-buffer overflow
+# (UDP RcvbufErrors), not the parser falling behind on average — so a large
+# buffer to absorb those bursts is the cheapest mitigation. Especially on WSL2,
+# whose NAT vSwitch delivers UDP in coalesced clumps (burstier than bare metal).
+# The kernel clamps this to net.core.rmem_max and reports back 2x the granted
+# size; raise rmem_max (e.g. 64 MB) for this to take full effect.
+_SO_RCVBUF_REQUEST = 64 * 1024 * 1024
 
 # Linux ancillary message reporting cumulative datagrams dropped by the socket
 # receive buffer (set via SO_RX_QUEUE_OVFL). Not exported by Python's socket on
@@ -497,7 +505,11 @@ class DmaUdpClient:
         # than overflowing — keeps SO_RX_QUEUE_OVFL reporting genuine, sustained
         # loss instead of momentary jitter.
         try:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, _SO_RCVBUF_REQUEST)
+            granted = sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+            logger.info("DMA socket SO_RCVBUF: requested %d MB, granted %d MB "
+                        "(raise net.core.rmem_max if lower than requested)",
+                        _SO_RCVBUF_REQUEST >> 20, granted >> 20)
         except OSError:
             pass
         if self._unicast:
