@@ -219,13 +219,26 @@ assign ack = sys_ack_d || ack_cnt[5] || (rd_do && rd_errorw) || (wr_do && wr_err
 //------------------------------------------
 //  Simple slave interface
 
+// Enforce a 2-cycle PS WRITE (write-side analog of the sys_ack_d read fix above):
+// sys_wdata = wr_wdata carries `set_multicycle_path 2 -from wr_wdata_reg`, but a
+// peripheral latches sys_wdata the cycle sys_wen is high. Asserting sys_wen the
+// same edge wr_wdata is latched captures it after only 1 cycle -> when P&R uses the
+// 2-cycle slack on a wr_wdata->config-reg net the latch grabs UNSETTLED data ->
+// corrupted config writes (STA can't see it; the multicycle hides it). Delaying
+// sys_wen by one cycle (sys_wen_d -> sys_wen_o) makes the peripheral capture on the
+// 2nd, settled cycle. wr_wdata/sys_addr are held stable across both cycles (writes
+// are serialized, wr_do holds until ack), so this is safe; +1 cycle write latency.
+reg sys_wen_d ;
+
 always @(posedge axi_clk_i)
 if (axi_rstn_i == 1'b0) begin
    sys_wen_o  <= 1'b0 ;
+   sys_wen_d  <= 1'b0 ;
    sys_ren_o  <= 1'b0 ;
    sys_sel_o  <= {AXI_SW{1'b0}} ;
 end else begin
-   sys_wen_o  <= wr_do && axi_wvalid_i && !wr_errorw ;
+   sys_wen_d  <= wr_do && axi_wvalid_i && !wr_errorw ;  // 1st cycle: wr_wdata settling
+   sys_wen_o  <= sys_wen_d ;                            // 2nd cycle: peripheral captures
    sys_ren_o  <= axi_arvalid_i && axi_arready_o && !rd_errorw ;
    sys_sel_o  <= {AXI_SW{1'b1}} ;
 end
