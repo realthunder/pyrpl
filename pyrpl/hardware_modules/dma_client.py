@@ -40,6 +40,7 @@ update.
 """
 
 import socket
+import select
 import struct
 import threading
 import logging
@@ -63,6 +64,12 @@ _MIN_PARSE_YIELD = 0.0001   # 100 us: floor on the per-packet sleep so the GUI t
 # The kernel clamps this to net.core.rmem_max and reports back 2x the granted
 # size; raise rmem_max (e.g. 64 MB) for this to take full effect.
 _SO_RCVBUF_REQUEST = 64 * 1024 * 1024
+# Max datagrams drained per recv pass (recvmmsg-style batching). After a brief
+# stall (e.g. a main-thread render/register-read burst), datagrams pile up in the
+# socket buffer; draining many per pass with NO parse in between empties the
+# kernel buffer fast (recv is cheap, parse is the slow step), shrinking the
+# overflow window. Capped so the parser still yields the GIL ~every batch.
+_MAX_RECV_BATCH = 32
 
 # Linux ancillary message reporting cumulative datagrams dropped by the socket
 # receive buffer (set via SO_RX_QUEUE_OVFL). Not exported by Python's socket on
@@ -506,10 +513,21 @@ class DmaUdpClient:
         # loss instead of momentary jitter.
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, _SO_RCVBUF_REQUEST)
+            # Read back the effective size. Linux reports 2x the granted bytes,
+            # Windows the exact value — so a result below the request means the OS
+            # clamped us (Linux: net.core.rmem_max too low). At large scan grids a
+            # clamped buffer can't absorb the board's bursty sweep and the kernel
+            # sheds point-cloud packets, so warn with the remedy.
             granted = sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
-            logger.info("DMA socket SO_RCVBUF: requested %d MB, granted %d MB "
-                        "(raise net.core.rmem_max if lower than requested)",
-                        _SO_RCVBUF_REQUEST >> 20, granted >> 20)
+            if granted < _SO_RCVBUF_REQUEST:
+                logger.warning(
+                    "DMA socket SO_RCVBUF clamped to %d MB (requested %d MB); large "
+                    "scan grids may shed point-cloud packets. On Linux raise the cap: "
+                    "sysctl -w net.core.rmem_max=%d (persist in /etc/sysctl.d/).",
+                    granted >> 20, _SO_RCVBUF_REQUEST >> 20, _SO_RCVBUF_REQUEST)
+            else:
+                logger.info("DMA socket SO_RCVBUF: requested %d MB, granted %d MB",
+                            _SO_RCVBUF_REQUEST >> 20, granted >> 20)
         except OSError:
             pass
         if self._unicast:
@@ -553,49 +571,72 @@ class DmaUdpClient:
     def _recv_loop(self):
         use_ovfl = self._ovfl_enabled
         ancsize = socket.CMSG_SPACE(4) if use_ovfl else 0
+        sock = self._sock
+        # Non-blocking + select: lets one pass DRAIN all queued datagrams (see
+        # _MAX_RECV_BATCH) instead of one-recv-one-parse. select's 1 s timeout
+        # keeps _running checked ~1/s for a responsive stop().
+        sock.setblocking(False)
         self._loss_t0 = self._time()
         self._loss_parsed0 = self._parse_count
         self._loss_ovfl0 = self._ovfl_drops
         while self._running:
             self._maybe_register()
             try:
-                if use_ovfl:
-                    data, ancdata, _flags, _addr = self._sock.recvmsg(65536, ancsize)
-                    for lvl, typ, cdata in ancdata:
-                        if (lvl == socket.SOL_SOCKET and typ == _SO_RX_QUEUE_OVFL
-                                and len(cdata) >= 4):
-                            # cumulative datagrams the kernel shed (the over-send surplus)
-                            self._ovfl_drops = struct.unpack('I', cdata[:4])[0]
-                else:
-                    data = self._sock.recv(65536)
-            except socket.timeout:
-                continue
-            except OSError:
+                ready, _, _ = select.select([sock], [], [], 1.0)
+            except (OSError, ValueError):
                 break
-            self._pkt_count += 1
-            self._parse_count += 1
-            self._process_packet(data)
+            if not ready:
+                continue
+            # Drain pass: pull every queued datagram (up to the batch cap) with no
+            # parse in between, so the kernel receive buffer empties fast and the
+            # overflow window after a stall is minimal. recvmsg still carries the
+            # SO_RX_QUEUE_OVFL ancillary per datagram, so the shed counter stays live.
+            batch = []
+            closed = False
+            for _ in range(_MAX_RECV_BATCH):
+                try:
+                    if use_ovfl:
+                        data, ancdata, _flags, _addr = sock.recvmsg(65536, ancsize)
+                        for lvl, typ, cdata in ancdata:
+                            if (lvl == socket.SOL_SOCKET and typ == _SO_RX_QUEUE_OVFL
+                                    and len(cdata) >= 4):
+                                # cumulative datagrams the kernel shed (over-send surplus)
+                                self._ovfl_drops = struct.unpack('I', cdata[:4])[0]
+                    else:
+                        data = sock.recv(65536)
+                except BlockingIOError:
+                    break          # socket buffer drained
+                except OSError:
+                    closed = True   # socket closed by stop(), or a real error
+                    break
+                batch.append(data)
+            if closed:
+                break
+            if not batch:
+                continue
+            n = len(batch)
+            for data in batch:
+                self._pkt_count += 1
+                self._parse_count += 1
+                self._process_packet(data)
             self._account_loss()
-            # Deadline pacing: sleep only the time REMAINING to the next target parse
-            # instant, not a flat _parse_min_interval. A fixed post-parse sleep makes the
-            # achieved rate 1/(parse_time + interval), which falls below the demand on a
-            # large grid -> the kernel sheds packets the host needed (real loss). Advance
-            # the target by one interval and sleep only the remainder so the loop actually
-            # hits demand x _PARSE_MARGIN; always sleep >= _MIN_PARSE_YIELD so the GUI
-            # thread still gets GIL slices. Don't reset the target on a slight lag (that
-            # degenerates back to a fixed sleep) — only resync if more than an interval
-            # behind (e.g. a GUI hitch), to avoid a catch-up burst.
-            # (A dedicated recv thread was tried and is WORSE here: when the socket is
-            # backlogged its recv returns without blocking, so it hogs the GIL and starves
-            # the parser. Single-loop interleave + this pacing is the right CPython design.)
+            # Deadline pacing (now per BATCH): advance the target by n intervals and
+            # sleep only the remainder, so the long-run rate still tracks demand x
+            # _PARSE_MARGIN while the parser yields the GIL ~once per batch (not per
+            # packet) — fewer context switches, faster backlog drain. Always sleep
+            # >= _MIN_PARSE_YIELD so the GUI thread still gets a slice; only resync the
+            # target if more than a batch behind (a GUI hitch), to avoid a catch-up burst.
+            # (A dedicated recv thread was tried and is WORSE: a backlogged recv returns
+            # without blocking, so it hogs the GIL and starves the parser. Single-loop
+            # drain + this pacing is the right CPython design.)
             if self._parse_min_interval:
-                self._next_parse_t += self._parse_min_interval
+                self._next_parse_t += self._parse_min_interval * n
                 delay = self._next_parse_t - self._time()
                 if delay > _MIN_PARSE_YIELD:
                     time.sleep(delay)
                 else:
                     time.sleep(_MIN_PARSE_YIELD)
-                    if delay < -self._parse_min_interval:
+                    if delay < -self._parse_min_interval * n:
                         self._next_parse_t = self._time()
 
     def _account_loss(self):
