@@ -122,7 +122,7 @@ class DmaUdpClient:
                  fsz=13, frac=8, hist_block_size=183, hsz=24,
                  max_frame_size=128*1024, max_interval=0.0, time_fn=None,
                  pool_size=4, max_parse_rate=2000,
-                 recv_pool_size=256, recv_bufsize=65536):
+                 recv_pool_size=2048, recv_bufsize=2048):
         """
         Parameters
         ----------
@@ -183,10 +183,15 @@ class DmaUdpClient:
             receiver design under _recv_pump).  When the parser falls behind and the
             ring is exhausted, the receiver recycles the OLDEST unparsed buffer
             (drop-oldest, newest data wins; the drop is counted in
-            stats()['recv_drops'] and by the FPGA seq), so the socket keeps
-            draining.  Memory = recv_pool_size * recv_bufsize.
+            stats()['recv_drops']).  The ring's DEPTH is what absorbs the backlog
+            burst after a transient parser stall (e.g. a GUI GL render holding the
+            GIL) before drop-oldest sheds it — so a deep ring is the main lever for
+            reducing recv_drops.  At the default packet size ~2048 buffers is ~600 ms
+            of buffering.  Memory ~= recv_pool_size * max(recv_bufsize, pkt_bytes+64).
         recv_bufsize : int
-            Byte size of each ring buffer (>= the datagram size; default 65536).
+            Floor on each ring buffer's byte size.  Buffers are sized to
+            max(recv_bufsize, pkt_bytes+64), so this only matters if you want them
+            bigger than a datagram; default 2048 (a datagram is pkt_bytes, ~1472).
 
         The width parameters default to the reference build, but the scope
         overrides them at runtime via configure() from the FPGA descriptor.
@@ -619,10 +624,21 @@ class DmaUdpClient:
 
     # --- proactor receiver ---------------------------------------------------
     def _build_recv_pool(self):
-        """Allocate the ring of receive buffers and the free/filled queues."""
+        """Allocate the ring of receive buffers and the free/filled queues.
+
+        Each buffer only needs to hold one datagram, so size it to the actual
+        packet (with a little slack) rather than recv_bufsize's worst case — a
+        datagram is _pkt_bytes; recv_into into a too-small buffer would truncate.
+        Right-sizing lets the ring be DEEP for little memory, which is what absorbs
+        the post-GUI-stall backlog burst before drop-oldest sheds it (see
+        _acquire_buf / recv_drops)."""
+        # +64 slack so an unexpectedly-oversized datagram returns nbytes != pkt_bytes
+        # (the parser then rejects it) instead of being silently truncated to a
+        # valid length. recv_bufsize is only a floor now.
+        self._buf_bytes = max(self._recv_bufsize, self._pkt_bytes + 64)
         self._cond = threading.Condition()
         self._free = collections.deque(
-            bytearray(self._recv_bufsize) for _ in range(self._recv_pool_size))
+            bytearray(self._buf_bytes) for _ in range(self._recv_pool_size))
         self._filled = collections.deque()
 
     def _acquire_buf(self):
@@ -639,7 +655,7 @@ class DmaUdpClient:
                 return buf
         # Ring fully checked out (all buffers in-flight in recv/parse). Rare;
         # allocate a one-off so we never block the socket drain.
-        return bytearray(self._recv_bufsize)
+        return bytearray(self._buf_bytes)
 
     def _recv_pump(self):
         """Receiver thread: drain the socket into pooled buffers and hand each
