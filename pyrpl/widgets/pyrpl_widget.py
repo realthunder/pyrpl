@@ -291,6 +291,43 @@ class PyrplWidget(QtWidgets.QMainWindow):
             self.dock_widgets[name].show()
 
 
+    # --- keep the module docks' relative sizes (ratios) across resizes/sessions ---
+    # Each dock's (width, height) as a fraction of the window. Applying these to
+    # resizeDocks in BOTH orientations sets arbitrary nested horizontal+vertical dock
+    # grids: Qt respects the relative sizes within each split (see verify in commit).
+    _dock_ratios = None        # {dock name: [width_frac, height_frac]}
+
+    def _live_docks(self):
+        return [(n, d) for n, d in self.dock_widgets.items()
+                if d.isVisible() and not d.isFloating()]
+
+    def _capture_dock_ratios(self):
+        docks = self._live_docks()
+        w, h = self.width(), self.height()
+        if len(docks) < 2 or w <= 0 or h <= 0:
+            return
+        self._dock_ratios = {n: [d.width() / w, d.height() / h] for n, d in docks}
+
+    def _apply_dock_ratios(self):
+        if not self._dock_ratios:
+            return
+        docks = [(n, d) for n, d in self._live_docks() if n in self._dock_ratios]
+        if len(docks) < 2:
+            return
+        w, h = self.width(), self.height()
+        dl = [d for _, d in docks]
+        try:
+            self.resizeDocks(dl, [max(1, int(self._dock_ratios[n][0] * w)) for n, _ in docks],
+                             QtCore.Qt.Horizontal)
+            self.resizeDocks(dl, [max(1, int(self._dock_ratios[n][1] * h)) for n, _ in docks],
+                             QtCore.Qt.Vertical)
+        except Exception:
+            self.logger.debug("Could not apply dock ratios", exc_info=True)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_dock_ratios()   # window grew/shrank -> reassert the ratios
+
     def save_window_position(self):
         # Don't try to save position if window is closed (otherwise, random position is saved)
         if self.isVisible():
@@ -299,6 +336,13 @@ class PyrplWidget(QtWidgets.QMainWindow):
             if (not "dock_positions" in self.parent.c.pyrpl._keys()) or \
                (self.parent.c.pyrpl["dock_positions"]!=act_state):
                 self.parent.c.pyrpl["dock_positions"] = act_state
+            # capture + persist the module docks' relative sizes (width/height ratios)
+            self._capture_dock_ratios()
+            if self._dock_ratios:
+                rounded = {n: [round(r[0], 4), round(r[1], 4)]
+                           for n, r in self._dock_ratios.items()}
+                if self.parent.c.pyrpl._get_or_create("dock_ratios")._data != rounded:
+                    self.parent.c.pyrpl["dock_ratios"] = rounded
             act_window_pos = self.window_position
             saved_window_pos = self.parent.c.pyrpl._get_or_create("window_position")._data
             if saved_window_pos != act_window_pos:
@@ -314,6 +358,16 @@ class PyrplWidget(QtWidgets.QMainWindow):
             except:
                 self.logger.warning("Sorry, there was a problem with the "
                                     "restoration of Dock positions. ")
+        # restore the saved dock width ratios and re-apply once the window has settled
+        if "dock_ratios" in self.parent.c.pyrpl._keys():
+            try:
+                saved = self.parent.c.pyrpl["dock_ratios"]._data
+                if isinstance(saved, dict) and saved:
+                    self._dock_ratios = {str(k): [float(v[0]), float(v[1])]
+                                         for k, v in saved.items()}
+                    QtCore.QTimer.singleShot(300, self._apply_dock_ratios)
+            except Exception:
+                self.logger.debug("Could not restore dock ratios", exc_info=True)
         try:
             coords = self.parent.c.pyrpl["window_position"]._data
         except KeyError:
