@@ -504,6 +504,70 @@ def test_recv_roundtrip():
     return True
 
 
+def test_seq_tracked_in_receiver():
+    """Per-packet seq is gap-counted in the RECEIVER, on every delivered datagram.
+    So (a) a real gap in the sent seq stream is counted as seq_drops, and (b) ring
+    drop-oldest (recv_drops) does NOT inflate seq_drops — because the receiver
+    seq-checks each datagram BEFORE the ring can drop it. (In the old parser-side
+    placement, case (b) would report seq_drops ~= recv_drops.)"""
+    import socket
+    import time
+
+    fsz, frac, hsz, hbs = 13, 8, 24, 183
+    seq_bits = 8
+    seq_mask = (1 << seq_bits) - 1
+
+    def pkt(seq):
+        # Realistic phase-offset datagram: it does NOT start with the header. A few
+        # leading DATA words, then the all-ones PAD sentinel, then the real header
+        # (bit63=1, nch=1 in [62:59], version/hist_index=0, frame_cnt low bits = seq),
+        # then data. _seq_check must scan past the data + sentinel to find the seq.
+        hw = (1 << 63) | (1 << 59) | (seq & seq_mask)
+        sentinel = (1 << 64) - 1
+        dw = (1 << 62)
+        words = [dw, dw, dw, sentinel, hw] + [dw] * (hbs - 4)   # header at index 4
+        return np.array(words, dtype='<u8').tobytes()
+
+    def mk():
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(('127.0.0.1', 0))
+        return s
+
+    def run(seqs, pool, rate):
+        c = DmaUdpClient(unicast=True, fsz=fsz, frac=frac, hsz=hsz,
+                         hist_block_size=hbs, max_frame_size=256,
+                         recv_pool_size=pool, recv_bufsize=4096, max_parse_rate=rate)
+        c.configure(seq_bits=seq_bits)
+        c._create_socket = mk
+        c.start()
+        port = c._sock.getsockname()[1]
+        tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        for s in seqs:
+            tx.sendto(pkt(s), ('127.0.0.1', port))
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if c._seq_last == (seqs[-1] & seq_mask):
+                break
+            time.sleep(0.01)
+        st = c.stats()
+        c.stop()
+        return st
+
+    # (a) Real gap in the stream (3 missing): big ring, no cap -> seq_drops == 1,
+    # no ring drops.
+    st = run([0, 1, 2, 4, 5], pool=64, rate=0)
+    assert st['seq_drops'] == 1, st
+    assert st['recv_drops'] == 0, st
+
+    # (b) Contiguous seqs, tiny ring + slow parser -> recv_drops > 0 but the
+    # receiver still saw every seq in order, so seq_drops == 0.
+    st = run(list(range(40)), pool=4, rate=200)
+    assert st['seq_drops'] == 0, st
+    assert st['recv_drops'] > 0, st
+    return True
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:

@@ -601,10 +601,11 @@ class DmaUdpClient:
         target if more than a batch behind (a GUI hitch), to avoid a catch-up burst.
 
         This throttles only the parser worker; the receiver thread keeps draining
-        the socket independently. (A naive dedicated recv thread that ALSO parsed
-        was tried and is WORSE — a backlogged recv returns without blocking, hogging
-        the GIL. The proactor receiver does no numpy work, only recv_into + a deque
-        append, so it does not starve the parser.)"""
+        the socket independently. (A naive dedicated recv thread that ALSO did the
+        full parse was tried and is WORSE — a backlogged recv returns without
+        blocking, hogging the GIL. The proactor receiver does only recv_into, a
+        deque append, and a tiny header scan for the seq — a few microseconds — so
+        it does not starve the parser.)"""
         if not self._parse_min_interval:
             return
         self._next_parse_t += self._parse_min_interval * n
@@ -641,10 +642,11 @@ class DmaUdpClient:
         return bytearray(self._recv_bufsize)
 
     def _recv_pump(self):
-        """Receiver thread: do nothing but drain the socket into pooled buffers and
-        hand each filled buffer to the parser via _filled (the completion event).
-        No parsing here, so it spends almost all its time in the recv syscall with
-        the GIL released."""
+        """Receiver thread: drain the socket into pooled buffers and hand each
+        filled buffer to the parser via _filled (the completion event). The only
+        work beyond recv is a minimal header scan for the seq (_seq_check); the
+        full point-cloud parse stays on the parser thread, so this spends almost all
+        its time in the recv syscall with the GIL released."""
         sock = self._sock
         sock.setblocking(False)
         while self._running:
@@ -666,9 +668,39 @@ class DmaUdpClient:
                 except OSError:
                     self._recycle_free(buf)          # closed by stop(), or error
                     return
+                # Gap-count the FPGA per-packet sequence HERE, on every datagram the
+                # kernel delivered, BEFORE the ring can drop it (a minimal header
+                # scan — see _seq_check). Doing it in the parser instead would count
+                # ring drop-oldest as seq gaps, so every recv_drop would masquerade
+                # as a seq_drop; done here, seq_drops reflects ONLY true transport
+                # loss (kernel/NIC/vSwitch) and is independent of recv_drops.
+                self._seq_check(buf, nbytes)
                 with self._cond:
                     self._filled.append((buf, nbytes))
                     self._cond.notify()
+
+    def _seq_check(self, buf, nbytes):
+        """Extract the per-packet sequence(s) and gap-count them — in the receiver,
+        on every datagram the kernel delivers (before the ring can drop any), so
+        seq_drops = true transport loss, independent of recv_drops.
+
+        A datagram is NOT header-aligned: the DMA/UDP framing is phase-offset from
+        the FPGA's (HIST_BLOCK_SIZE+1)-word packets, so a datagram starts mid-packet
+        with DATA words and carries its real header(s) further in (usually just after
+        the all-ones PAD sentinel that ends the previous packet). So we cannot read
+        the seq from word[0]; we do a minimal parse — find the header words
+        (bit63=1), drop the pad sentinel, and gap-count every real header's seq (low
+        seq_bits). Re-anchor headers inside one FPGA packet share its seq (delta 0,
+        harmless); a datagram straddling a packet boundary carries two seqs, both
+        counted. seq_bits == 0 -> feature off (no-op)."""
+        if not self._seq_bits or nbytes < self._pkt_bytes:
+            return
+        words = np.frombuffer(buf, dtype='<u8', count=self._pkt_words)
+        hdrs = words[(words >> np.uint64(63)).astype(bool)]
+        if hdrs.size == 0:
+            return
+        for w in hdrs[hdrs != np.uint64(0xFFFFFFFFFFFFFFFF)]:   # drop pad sentinel
+            self._track_seq(int(w) & self._seq_mask)
 
     def _recycle_free(self, buf):
         """Return a buffer to the free ring."""
@@ -752,15 +784,10 @@ class DmaUdpClient:
             self._bad_count += 1
             return
 
-        # Per-packet sequence: the FPGA stamps it in the low seq_bits of the header
-        # frame_cnt field (identical field in v3/v4), constant within a datagram. Read
-        # it from the first header word and gap-count -> transport drop detection that
-        # works on ANY OS (Windows has no SO_RX_QUEUE_OVFL). Skip the all-ones pad
-        # sentinel (not a real header). seq_bits == 0 -> feature off (no-op).
-        if self._seq_bits:
-            fh = int(words[hdr_pos[0]])
-            if fh != 0xFFFFFFFFFFFFFFFF:
-                self._track_seq(fh & self._seq_mask)
+        # Per-packet sequence gap-counting is done in the RECEIVER thread
+        # (_seq_check), on every datagram the kernel delivers, so ring drop-oldest
+        # cannot manufacture phantom seq gaps here. The frame_cnt field below still
+        # strips the seq low bits (>> self._seq_bits) during parsing.
 
         # Format dispatch: header bits [58:55] carry the format version.
         if ((int(words[hdr_pos[0]]) >> 55) & 0xf) == 4:
