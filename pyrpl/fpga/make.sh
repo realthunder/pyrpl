@@ -179,6 +179,10 @@ fi
 #             FFT_CLK_SEL=1), placed with ExtraPostPlacementOpt (DETERMINISTIC=5).
 #             Closes timing reproducibly: pll_adc +0.083, pll_ser(FFT@200) +0.101,
 #             0 failing endpoints. Archive: out.d/2025.2-ssr2n13-fft200-closed-*.
+#   ssr2n13-125 — same datapath as fft200ssr2 (SSR=2 NFFT=13 8192-pt, IMPL=5) but the
+#             FFT shares adc_clk @125 MHz (FFT_CLK_SEL=0) + DSP_FB_PIPELINE — one fewer
+#             clock domain. Place AltSpreadLogic_high (DETERMINISTIC=3), phys_opt
+#             AggressiveExplore. Best: pll_adc +0.283 (ser non-binding, FFT on adc_clk).
 #   n9-125    — IMPL=4 SSR=4 NFFT=9 (512-pt), FFT on adc_clk @ 125 MHz, dsz24/frac8/
 #             scaled2/approx + DSP fb pipeline, place WLDrivenBlockPlacement
 #             (DETERMINISTIC=4). Best n9/125: pll_adc +0.272 (ser non-binding).
@@ -198,6 +202,23 @@ case "${PROFILE:-}" in
         export DETERMINISTIC=${DETERMINISTIC:-10}
         export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
         echo "==> PROFILE=fft200ssr2: SSR=2 NFFT=13 FFT@200MHz, place ExtraNetDelay_low (DETERMINISTIC=10), phys_opt AggressiveExplore"
+        ;;
+    ssr2n13-125)
+        # Single-clock 8192-pt image: same closing datapath as fft200ssr2 (IMPL=5 SSR=2
+        # NFFT=13, rep OFF) but the FFT shares adc_clk @125 MHz (FFT_CLK_SEL=0, no 200 MHz
+        # retune) — one fewer clock domain. DSP_FB_PIPELINE registers the DAC->ADC loopback
+        # that was the adc-clk wall, so 125 closes despite the FFT moving onto adc_clk.
+        # 11x3 sweep = 29/33 close; best AltSpreadLogic_high (DET=3) + AggressiveExplore:
+        # pll_adc +0.283, pll_ser +1.845 (ser non-binding — FFT on adc_clk). LUT 56% / DSP
+        # 65% / BRAM ~97%. Archive: out.d/sweep-impl5-ssr2n13-125-fbpipe-det3-AggressiveExplore.
+        export FFT_IMPL=${FFT_IMPL:-5}
+        export FFT_SSR=${FFT_SSR:-2}
+        export FFT_NFFT=${FFT_NFFT:-13}
+        export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
+        export DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-1}
+        export DETERMINISTIC=${DETERMINISTIC:-3}
+        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
+        echo "==> PROFILE=ssr2n13-125: SSR=2 NFFT=13 (8192-pt) FFT@125MHz on adc_clk, fbpipe, place AltSpreadLogic_high (DETERMINISTIC=3), phys_opt AggressiveExplore"
         ;;
     fft178ssr4n11)
         # Highest-throughput closing config: SSR=4 NFFT=11 (2048-pt) FFT @ 178.57 MHz.
@@ -250,7 +271,7 @@ case "${PROFILE:-}" in
         echo "==> PROFILE=n9-125: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe, place WLDrivenBlockPlacement (DETERMINISTIC=4), phys_opt AggressiveExplore"
         ;;
     *)
-        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 fft178ssr4n11 fft178ssr8n11 n9-125)" >&2; exit 1 ;;
+        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 ssr2n13-125 fft178ssr4n11 fft178ssr8n11 n9-125)" >&2; exit 1 ;;
 esac
 
 # ---- Active build defaults (override on the command line, e.g. FFT_IMPL=5 ./make.sh) ----
