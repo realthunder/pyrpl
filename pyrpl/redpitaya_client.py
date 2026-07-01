@@ -38,18 +38,23 @@ CLIENT_NUMBER = 0
 
 class MonitorClient(object):
     def __init__(self, hostname="192.168.1.0", port=2222, restartserver=None,
-                 reconnect_retries=-1, on_connection_lost=None):
+                 reconnect_retries=-1, on_connection_lost=None,
+                 on_reconnected=None, connect_timeout=2.0):
         """initiates a client connected to monitor_server
 
         hostname: server address, e.g. "localhost" or "192.168.1.0"
         port:    the port that the server is running on. 2222 by default
         restartserver: a function to call that restarts the server in case of problems
-        reconnect_retries: how many times restart() re-attempts a dropped
-            register link before giving up. -1 (default) = retry forever
-            (legacy behaviour). A positive N bounds the reconnection so a GUI
-            can be notified instead of the client retrying indefinitely.
+        reconnect_retries: how many times a dropped register link is re-attempted
+            before giving up. -1 (default) = retry forever (legacy behaviour).
+            A positive N bounds the reconnection so a GUI can be notified instead
+            of the client retrying indefinitely.
         on_connection_lost: optional callable(reason:str) invoked once when the
             reconnection budget is exhausted (used to emit a Qt signal).
+        on_reconnected: optional callable() invoked when a background (automatic)
+            socket reconnect succeeds, so a GUI can clear a "reconnecting" state.
+        connect_timeout: bounded timeout (s) for socket.connect, so connecting to
+            an unreachable board fails fast instead of blocking on the TCP SYN.
         """
         self.logger = logging.getLogger(name=__name__)
         # update global client counter and assign a number to this client
@@ -59,10 +64,21 @@ class MonitorClient(object):
         self.logger.debug("Client number %s started", self.client_number)
         self._reconnect_retries = reconnect_retries
         self._on_connection_lost = on_connection_lost
+        self._on_reconnected = on_reconnected
+        self._connect_timeout = connect_timeout
         self._connected = False
         # set once the reconnection budget is exhausted, so read/write calls
         # stop hammering a dead link and surface the failure instead.
         self._connection_lost = False
+        # Async reconnect state. A dropped read/write NEVER reconnects inline —
+        # that would block the calling (often GUI) thread on socket/SSH timeouts
+        # and freeze the app. Instead it fail-fasts and hands the reconnect to a
+        # single background daemon thread; _reconnecting gates all I/O to fail
+        # fast (return None) until that thread resolves. See _schedule_reconnect.
+        self._reconnecting = threading.Event()
+        self._reconnect_lock = threading.Lock()
+        self._reconnect_thread = None
+        self._last_reconnect_reason = "unknown error"
         # Serialize the single TCP register link: the request/response pair
         # (socket.send + socket.recv in _reads/_writes) MUST be atomic, because
         # the lidar now offloads scope-acquisition register I/O to a worker thread
@@ -76,6 +92,10 @@ class MonitorClient(object):
         self._read_counter = 0 # For debugging and unittests
         self._write_counter = 0 # For debugging and unittests
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # Bounded connect: without this, socket.connect to an unreachable board
+        # blocks on the TCP SYN timeout (tens of seconds). Reset to the normal
+        # 1 s I/O timeout after the connect loop below.
+        self.socket.settimeout(self._connect_timeout)
         # try to connect at least 5 times
         for i in range(5):
             if not self._port > 0:
@@ -121,10 +141,11 @@ class MonitorClient(object):
         
     # the public methods to use which will recover from connection problems
     def reads(self, addr, length):
-        # Once we've given up on the link, fail fast rather than re-running the
-        # whole reconnect cascade (and re-emitting connection_lost) on every
-        # poll. An explicit restart()/reconnect() clears the flag.
-        if self._connection_lost:
+        # Fail fast if the link is gone or a background reconnect is in flight,
+        # rather than blocking the caller (often the GUI thread) on a dead
+        # socket or re-running the reconnect cascade on every poll. An explicit
+        # restart()/reconnect() or a successful auto-reconnect clears the flags.
+        if self._connection_lost or self._reconnecting.is_set():
             return None
         self._read_counter+=1
         if hasattr(self, '_sound_debug') and self._sound_debug:
@@ -133,7 +154,7 @@ class MonitorClient(object):
             return self.try_n_times(self._reads, addr, length)
 
     def writes(self, addr, values):
-        if self._connection_lost:
+        if self._connection_lost or self._reconnecting.is_set():
             return None
         self._write_counter += 1
         if hasattr(self, '_sound_debug') and self._sound_debug:
@@ -187,49 +208,187 @@ class MonitorClient(object):
                 return
             self.logger.debug("Read %d bytes from socket...", n)
 
+    # A side-effect-free 1-word probe read used to confirm a reconnected socket
+    # is actually being serviced. 0x40000000 is the FPGA housekeeping base (ID
+    # register); reading it just returns bus data and mutates nothing.
+    _PROBE_ADDR = 0x40000000
+
+    def _probe_link(self):
+        """Round-trip a tiny read to confirm the server is really servicing this
+        socket. A fresh TCP connect can succeed while the board's single-client
+        monitor_server is still stuck on a previous (half-open) connection and
+        has not yet re-accepted us — in that case reads silently time out. Only
+        treat the link as up if the request/response framing round-trips."""
+        try:
+            return self._reads(self._PROBE_ADDR, 1) is not None
+        except (socket.timeout, socket.error, OSError):
+            return False
+
+    def _async_reconnect_mode(self):
+        """True when the caller opted into bounded/observed reconnection — i.e. a
+        GUI that wants to be notified rather than have I/O block. Bounded retries
+        or a connection_lost handler both imply "don't block me". The legacy
+        default (retry forever, nobody listening) keeps the old inline-blocking
+        behaviour, which is fine for headless scripts."""
+        return (self._reconnect_retries >= 0
+                or self._on_connection_lost is not None
+                or self._on_reconnected is not None)
+
     def try_n_times(self, function, addr, value, n=5):
         for i in range(n):
             try:
                 value = function(addr, value)
             except (socket.timeout, socket.error):
-                self.logger.error("Error occured in reading attempt %s. "
-                                  "Reconnecting at addr %s to %s value %s by "
-                                  "client %s"
-                                  % (i,
-                                     hex(addr),
-                                     function.__name__,
-                                     value,
+                self.logger.error("I/O error in %s attempt %s at addr %s "
+                                  "(client %s)."
+                                  % (function.__name__, i, hex(addr),
                                      self.client_number))
+                if self._async_reconnect_mode() and self._restartserver is not None:
+                    # GUI/observed mode: do NOT reconnect inline — that would
+                    # block this (often GUI) thread on socket/SSH timeouts and
+                    # freeze the app until the retry budget drains. Hand off to a
+                    # background thread and fail this call fast; subsequent I/O
+                    # fail-fasts via the _reconnecting guard until it resolves and
+                    # fires either on_reconnected or on_connection_lost.
+                    self._schedule_reconnect()
+                    return None
+                # Legacy headless mode: reconnect inline so the call stays
+                # transparent, as before (now bounded by SshShell's run timeout
+                # so it can't hang forever on a dead board).
                 if self._restartserver is not None:
                     if not self.restart():
-                        # reconnection budget exhausted; on_connection_lost has
-                        # already fired. Stop retrying and surface the failure.
                         return None
                 else:
                     return None
             else:
                 if value is not None:
                     return value
+                # value is None without an exception = a desync/empty read that
+                # emptybuffer() already handled; retry in-loop, no reconnect.
         return None
 
-    def restart(self, hostname=None, port=None):
-        """Reconnect the dropped register link, re-initialising this SAME object
-        in place so cached module references (module._client) stay valid.
+    def _schedule_reconnect(self):
+        """Start (once) a background daemon thread that reconnects the register
+        link, so the calling thread never blocks. Idempotent: concurrent failing
+        I/O calls from the GUI and the acquisition worker collapse into a single
+        reconnect. Returns True if a reconnect is in progress/started, False if
+        no reconnect is possible (no restartserver) or the link is already
+        declared lost."""
+        if self._restartserver is None:
+            return False  # standalone/dummy client: nothing to reconnect to
+        with self._reconnect_lock:
+            if self._connection_lost:
+                return False
+            if self._reconnecting.is_set():
+                return True  # a worker is already on it
+            self._reconnecting.set()
+            t = threading.Thread(target=self._reconnect_worker,
+                                 name="rp-reconnect", daemon=True)
+            self._reconnect_thread = t
+            t.start()
+        return True
 
-        Retries up to self._reconnect_retries times; -1 means retry forever
-        (legacy). Returns True once reconnected, or False after the budget is
-        exhausted — in which case on_connection_lost(reason) is invoked exactly
-        once so a GUI can prompt the user instead of the client spinning
-        forever. Pass `hostname`/`port` to reconnect to a different endpoint.
+    def _try_socket_reconnect(self):
+        """Re-establish ONLY the TCP socket to the already-running (detached)
+        monitor_server — no SSH. Returns True on success. Caller holds _io_lock."""
+        try:
+            self.close()
+        except socket.error:
+            pass
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(self._connect_timeout)
+            s.connect((self._hostname, self._port))
+            s.settimeout(1.0)
+            self.socket = s
+            # TCP connect can succeed against a server that hasn't re-accepted us
+            # yet; require a real round-trip before declaring the link up.
+            if not self._probe_link():
+                self._connected = False
+                self._last_reconnect_reason = (
+                    "connected but monitor_server did not respond "
+                    "(still serving a stale connection?)")
+                return False
+            self._connected = True
+            return True
+        except (socket.timeout, socket.error, OSError) as e:
+            self._connected = False
+            self._last_reconnect_reason = str(e) or e.__class__.__name__
+            return False
+
+    def _reconnect_worker(self):
+        """Background reconnect loop. Tries a bounded number of socket-only
+        reconnects (the monitor_server survives a client drop, so a transient
+        blip only needs the TCP re-established — no SSH). On success clears the
+        reconnecting state and fires on_reconnected; when the budget is
+        exhausted marks the link lost and fires on_connection_lost."""
+        limit = self._reconnect_retries
+        attempt = 0
+        try:
+            while limit < 0 or attempt < limit:
+                attempt += 1
+                with self._io_lock:
+                    ok = self._try_socket_reconnect()
+                if ok:
+                    self.logger.info("Register link reconnected (socket, "
+                                     "attempt %d).", attempt)
+                    self._reconnecting.clear()
+                    if self._on_reconnected is not None:
+                        try:
+                            self._on_reconnected()
+                        except BaseException:
+                            self.logger.exception("on_reconnected handler raised")
+                    return
+                self.logger.warning("Socket reconnect attempt %d/%s failed: %s",
+                                    attempt, 'inf' if limit < 0 else limit,
+                                    self._last_reconnect_reason)
+                sleep(min(0.5 * attempt, 3.0))
+            # budget exhausted -> give up and notify so a GUI can prompt the user
+            self._connection_lost = True
+            self.logger.error("Giving up on the register link after %d socket "
+                              "reconnect attempt(s): %s", attempt,
+                              self._last_reconnect_reason)
+            if self._on_connection_lost is not None:
+                try:
+                    self._on_connection_lost(self._last_reconnect_reason)
+                except BaseException:
+                    self.logger.exception("on_connection_lost handler raised")
+        finally:
+            # Always release the I/O gate: on success we already cleared it; on
+            # failure _connection_lost now fail-fasts I/O, so clearing here just
+            # avoids leaving the flag stuck if we exit via an unexpected path.
+            self._reconnecting.clear()
+
+    def restart(self, hostname=None, port=None):
+        """Full, synchronous reconnect of the register link, re-initialising this
+        SAME object in place so cached module references (module._client) stay
+        valid. This is the USER-DRIVEN path (the reconnect dialog's "Retry"),
+        which may re-provision the server over SSH via self._restartserver.
+
+        The automatic, on-error reconnect does NOT come through here — it uses the
+        background socket-only _reconnect_worker so it can never block the GUI
+        thread. Retries up to self._reconnect_retries times; -1 means retry
+        forever. Returns True once reconnected, or False after the budget is
+        exhausted (on_connection_lost fired once). Pass `hostname`/`port` to
+        reconnect to a different endpoint.
         """
         if hostname is not None:
             self._hostname = hostname
+        # a manual restart supersedes any in-flight background reconnect
+        self._reconnecting.clear()
         self.close()
         limit = self._reconnect_retries
         reason = "unknown error"
         attempt = 0
         while limit < 0 or attempt < limit:
             attempt += 1
+            # Cleanly drop the previous attempt's socket before opening a new
+            # one: close() sends 'c', which the (re-accepting) monitor_server
+            # takes as "release this client and accept the next", so failed
+            # attempts don't leave connections queued in the server's backlog.
+            # Without this the orphaned socket only closes on GC.
+            if attempt > 1:
+                self.close()
             try:
                 newport = port if port is not None else self._restartserver()
                 self.__init__(
@@ -237,18 +396,24 @@ class MonitorClient(object):
                     port=newport,
                     restartserver=self._restartserver,
                     reconnect_retries=self._reconnect_retries,
-                    on_connection_lost=self._on_connection_lost)
+                    on_connection_lost=self._on_connection_lost,
+                    on_reconnected=self._on_reconnected,
+                    connect_timeout=self._connect_timeout)
             except BaseException as e:
                 reason = str(e) or e.__class__.__name__
                 self.logger.error("Reconnect attempt %d/%s failed: %s",
                                   attempt, 'inf' if limit < 0 else limit, e)
             else:
-                if self._connected:
+                if self._connected and self._probe_link():
                     self.logger.info("Register link reconnected (attempt %d).",
                                      attempt)
                     return True
-                reason = "socket did not connect to %s:%s" % (self._hostname,
-                                                              newport)
+                if self._connected:
+                    reason = ("socket connected to %s:%s but monitor_server did "
+                              "not respond" % (self._hostname, newport))
+                else:
+                    reason = "socket did not connect to %s:%s" % (self._hostname,
+                                                                  newport)
             sleep(min(0.5 * attempt, 3.0))
         # budget exhausted -> give up and notify
         self._connection_lost = True

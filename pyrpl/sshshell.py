@@ -18,9 +18,15 @@
 
 
 import paramiko
-from time import sleep
+import socket
+from time import sleep, time
 from scp import SCPClient
 import logging
+
+# Generous upper bound (s) for a single ssh command in run(): long enough for a
+# legitimate on-board gcc compile / FPGA flash, short enough that a dead board
+# can't hang the caller forever. Callers pass an explicit timeout to override.
+_RUN_TIMEOUT = 60
 
 
 class SshShell(object):
@@ -95,13 +101,23 @@ class SshShell(object):
     def ask(self, question="", block=False):
         return self.askraw(question + '\n')
 
-    def run(self, cmd):
+    def run(self, cmd, timeout=None):
+        # A wall-clock deadline is essential: exec_command on a stale transport
+        # (e.g. the board was unplugged) otherwise busy-loops here forever waiting
+        # for an exit status that never comes, freezing whatever thread called it.
+        # The bound is generous (not self.timeout, the 3 s connect timeout): some
+        # commands run through here legitimately take seconds — the on-board gcc
+        # compile of monitor_server, FPGA/update commands — so we only guard
+        # against an unbounded hang, not against slow-but-progressing commands.
+        if timeout is None:
+            timeout = _RUN_TIMEOUT
         self._logger.debug(f'< {cmd}')
-        stdin_, stdout_, stderr_ = self.ssh.exec_command(cmd)
+        stdin_, stdout_, stderr_ = self.ssh.exec_command(cmd, timeout=timeout)
         channel = stdout_.channel
         channel.set_combine_stderr(True)
         exited = False
         lines = []
+        deadline = time() + timeout
         while True:
             exited = channel.exit_status_ready()
             if channel.recv_ready():
@@ -116,6 +132,15 @@ class SshShell(object):
                 ret = channel.recv_exit_status()
                 channel.close()
                 break
+            if time() > deadline:
+                self._logger.warning("ssh run() timed out after %ss: %s",
+                                     timeout, cmd)
+                try:
+                    channel.close()
+                except Exception:
+                    pass
+                raise socket.timeout("ssh command timed out: %s" % cmd)
+            sleep(0.01)  # yield instead of busy-spinning while waiting for exit
         return ret, '\n'.join(lines)
 
     def __del__(self):

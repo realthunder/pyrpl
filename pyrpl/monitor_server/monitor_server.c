@@ -50,9 +50,13 @@ Bytes 5-8 are the start address to be written to.
 
 If the command is read, the server will then send the requested 4*n bytes to the client. 
 If the command is write, the server will wait for 4*n bytes of data from the server and write them to the designated FPGA address space. 
-If the command is close, or if the connection is broken, the server program will terminate. 
+If the command is close, or if the connection is broken, the server drops the
+current client and loops back to accept() to wait for the next one (it does NOT
+terminate — TCP keepalive frees a half-open connection from an unplugged host
+so a GUI can reconnect without the server being restarted). The daemon is only
+stopped externally (killall), e.g. when installing a new build.
 
-After this, the server will wait for the next command. 
+After this, the server will wait for the next command.
 */
  
  /* for now the program is utterly unoptimized... */
@@ -73,6 +77,7 @@ After this, the server will wait for the next command.
 #include <stdint.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <time.h>
@@ -408,70 +413,88 @@ int main(int argc, char *argv[])
               sizeof(serv_addr)) < 0) 
               error("ERROR on binding");
      listen(sockfd,5);
-     clilen = sizeof(cli_addr);
-     newsockfd = accept(sockfd, 
-                 (struct sockaddr *) &cli_addr, 
-                 &clilen);
-     if (newsockfd < 0)
-          error("ERROR on accept");
-	 else {
-		 /* Fallback unicast target: whoever just connected for register access
-		  * (the host running the GUI), at the unicast listen port. Good enough
-		  * for a directly-reachable host; a NAT'd host (e.g. WSL) instead sends a
-		  * registration datagram that the DMA thread uses to learn its real
-		  * post-NAT address and port, overriding this. */
-		 g_uni_ip   = cli_addr.sin_addr.s_addr;
-		 g_uni_port = g_uni_listen_port;
-		 fprintf(stderr, "dma: unicast fallback target %s:%d (until host registers)\n",
-		         inet_ntoa(cli_addr.sin_addr), (int)g_uni_port);
-		 printf("Incoming client connection accepted!");
-	 }
-	
-	//open_map_base();
-	 //service loop
+     /* Outer accept loop: serve one client at a time but SURVIVE a client
+      * disconnect. A clean close ('c') or a broken/dead link now drops back to
+      * accept() for the next client instead of terminating the daemon, so a GUI
+      * can reconnect without the monitor_server being killed and relaunched.
+      * (Previously only the DMA multicast thread survived a disconnect; the
+      * register-link server did a single accept() and then exited on the first
+      * client drop, so an unclean disconnect left it blocked forever in recv()
+      * on the half-open socket with no way to service a reconnecting client.) */
      while (0==0) {
-		 //read next header from client
-		 bzero(buffer,8);
-		 n = recv(newsockfd,buffer,8,MSG_WAITALL);
-		 if (n < 0) error("ERROR reading from socket");
-		 if (n != 8) error("ERROR reading from socket - incorrect header length");
-		 //confirm control sequence
-	 ////n=send(newsockfd,buffer,8,0); 
-	 ////if (n != 8) error("ERROR control sequence mirror incorreclty transmitted");
-	     //interpret the header
-    	 address = ((unsigned long*)buffer)[1]; //address to be read/written
-		 data_length = buffer[2]+(buffer[3]<<8); //number of "unsigned long" to be read/written
-		 if (data_length > MAX_LENGTH)
-			 data_length = MAX_LENGTH;
-		 if (data_length == 0)
-			continue;
-		 //test for various cases Read, Write, Close
-		 else if (buffer[0] == 'r') { //read from FPGA
-			read_values(address, rw_buffer, data_length);
-			//send the data
-			n = send(newsockfd,(void*)data_buffer,data_length*sizeof(unsigned long)+8,0);
-			if (n < 0) error("ERROR writing to socket");
-			if (n != data_length*sizeof(unsigned long)+8) error("ERROR wrote incorrect number of bytes to socket");
-		 }
-		 else if  (buffer[0] == 'w') { //write to FPGA
-			//read new data from socket
-			n = recv(newsockfd,(void*)rw_buffer,data_length*sizeof(unsigned long),MSG_WAITALL);
-			if (n < 0) error("ERROR reading from socket");
-			if (n != data_length*sizeof(unsigned long)) error("ERROR read incorrect number of bytes to socket");
-			//write FPGA memory
-			write_values(address, rw_buffer, data_length);
-			n=send(newsockfd,buffer,8,0);
-			if (n != 8) error("ERROR control sequence mirror incorreclty transmitted");
-		 }
-		 else if (buffer[0] == 'c') break; //close program
-		 else error("ERROR unknown control character - server and client out of sync"); //if an unknown control sequence is received, terminate for security reasons
-	 }
-	 //close the socket
-     close(newsockfd); 
-	 close(sockfd);
-	 //clean up the memory mapping
-	 close_map_base();
-	 return 0; 
+         clilen = sizeof(cli_addr);
+         newsockfd = accept(sockfd,
+                     (struct sockaddr *) &cli_addr,
+                     &clilen);
+         if (newsockfd < 0) {
+              perror("ERROR on accept");
+              continue;   /* keep the daemon alive; try to accept again */
+         }
+         /* TCP keepalive: without it, an unplugged board leaves the recv() below
+          * blocked forever on the half-open connection, so the server never gets
+          * back to accept() and the reconnecting client is never serviced. Detect
+          * a dead peer in ~6s (3s idle + 3 x 1s probes). */
+         {
+              int ka = 1, idle = 3, intvl = 1, cnt = 3;
+              setsockopt(newsockfd, SOL_SOCKET,  SO_KEEPALIVE,  &ka,    sizeof(ka));
+              setsockopt(newsockfd, IPPROTO_TCP, TCP_KEEPIDLE,  &idle,  sizeof(idle));
+              setsockopt(newsockfd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
+              setsockopt(newsockfd, IPPROTO_TCP, TCP_KEEPCNT,   &cnt,   sizeof(cnt));
+         }
+         /* Fallback unicast target: whoever just connected for register access
+          * (the host running the GUI), at the unicast listen port. Good enough
+          * for a directly-reachable host; a NAT'd host (e.g. WSL) instead sends a
+          * registration datagram that the DMA thread uses to learn its real
+          * post-NAT address and port, overriding this. */
+         g_uni_ip   = cli_addr.sin_addr.s_addr;
+         g_uni_port = g_uni_listen_port;
+         fprintf(stderr, "dma: unicast fallback target %s:%d (until host registers)\n",
+                 inet_ntoa(cli_addr.sin_addr), (int)g_uni_port);
+         fprintf(stderr, "Incoming client connection accepted!\n");
+
+         /* service loop for the currently-connected client */
+         while (0==0) {
+             //read next header from client
+             bzero(buffer,8);
+             n = recv(newsockfd,buffer,8,MSG_WAITALL);
+             /* n != 8 => client gone or short read: drop it and re-accept
+              * (was: error()/exit, which killed the whole daemon). */
+             if (n != 8) break;
+             //interpret the header
+             address = ((unsigned long*)buffer)[1]; //address to be read/written
+             data_length = buffer[2]+(buffer[3]<<8); //number of "unsigned long" to be read/written
+             if (data_length > MAX_LENGTH)
+                 data_length = MAX_LENGTH;
+             if (data_length == 0)
+                 continue;
+             //test for various cases Read, Write, Close
+             else if (buffer[0] == 'r') { //read from FPGA
+                 read_values(address, rw_buffer, data_length);
+                 //send the data
+                 n = send(newsockfd,(void*)data_buffer,data_length*sizeof(unsigned long)+8,0);
+                 if (n != (int)(data_length*sizeof(unsigned long)+8)) break; //client gone
+             }
+             else if  (buffer[0] == 'w') { //write to FPGA
+                 //read new data from socket
+                 n = recv(newsockfd,(void*)rw_buffer,data_length*sizeof(unsigned long),MSG_WAITALL);
+                 if (n != (int)(data_length*sizeof(unsigned long))) break; //client gone
+                 //write FPGA memory
+                 write_values(address, rw_buffer, data_length);
+                 n=send(newsockfd,buffer,8,0);
+                 if (n != 8) break; //client gone
+             }
+             else if (buffer[0] == 'c') break; //client asked to close -> re-accept
+             else break; //out of sync: drop this client and re-accept
+         }
+         //this client is done; close its socket and wait for the next one
+         close(newsockfd);
+         newsockfd = -1;
+     }
+     //not reached in normal operation (the accept loop above never exits)
+     close(sockfd);
+     //clean up the memory mapping
+     close_map_base();
+     return 0;
 }
 
 

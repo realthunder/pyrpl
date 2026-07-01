@@ -769,9 +769,21 @@ class RedPitaya(object):
             self.parameters['hostname'], self.parameters['port'],
             restartserver=self.restartserver,
             reconnect_retries=self.parameters.get('reconnect_retries', -1),
-            on_connection_lost=self._on_connection_lost)
+            on_connection_lost=self._on_connection_lost,
+            on_reconnected=self._on_reconnected)
         self.makemodules()
         self.logger.debug("Client started successfully. ")
+
+    def _on_reconnected(self):
+        """Called by MonitorClient when a background (automatic) socket reconnect
+        succeeds — i.e. a transient link blip healed itself without user action.
+        Re-emit as a Qt signal so a GUI can clear any "reconnecting" indicator.
+        Safe to call from the reconnect worker thread (queued to GUI slots)."""
+        self.logger.info("Register link auto-reconnected.")
+        try:
+            self.signal_launcher.reconnected.emit()
+        except BaseException:
+            self.logger.exception("Failed to emit reconnected signal")
 
     def _on_connection_lost(self, reason):
         """Called by MonitorClient when the register link drops and the bounded
