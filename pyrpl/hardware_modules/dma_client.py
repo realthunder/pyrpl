@@ -44,6 +44,7 @@ import select
 import threading
 import logging
 import time
+import collections
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -63,11 +64,10 @@ _MIN_PARSE_YIELD = 0.0001   # 100 us: floor on the per-packet sleep so the GUI t
 # The kernel clamps this to net.core.rmem_max and reports back 2x the granted
 # size; raise rmem_max (e.g. 64 MB) for this to take full effect.
 _SO_RCVBUF_REQUEST = 64 * 1024 * 1024
-# Max datagrams drained per recv pass (recvmmsg-style batching). After a brief
-# stall (e.g. a main-thread render/register-read burst), datagrams pile up in the
-# socket buffer; draining many per pass with NO parse in between empties the
-# kernel buffer fast (recv is cheap, parse is the slow step), shrinking the
-# overflow window. Capped so the parser still yields the GIL ~every batch.
+# Max filled buffers the parser worker drains per pass before pacing. Batching
+# amortises the GIL yield over many packets (parse is the slow step, and the
+# receiver thread keeps draining the socket independently); capped so the parser
+# still yields the GIL to the GUI ~every batch.
 _MAX_RECV_BATCH = 32
 
 
@@ -121,7 +121,8 @@ class DmaUdpClient:
                  unicast=True, unicast_port=_DEFAULT_UNI_PORT, board_ip=None,
                  fsz=13, frac=8, hist_block_size=183, hsz=24,
                  max_frame_size=128*1024, max_interval=0.0, time_fn=None,
-                 pool_size=4, max_parse_rate=2000):
+                 pool_size=4, max_parse_rate=2000,
+                 recv_pool_size=256, recv_bufsize=65536):
         """
         Parameters
         ----------
@@ -177,6 +178,15 @@ class DmaUdpClient:
             a buffer; when the producer must overwrite a checked-out one it pulls a
             recycled buffer from this pool instead of allocating, so steady-state
             polling allocates nothing.
+        recv_pool_size : int
+            Number of pre-allocated receive buffers in the proactor ring (see the
+            receiver design under _recv_pump).  When the parser falls behind and the
+            ring is exhausted, the receiver recycles the OLDEST unparsed buffer
+            (drop-oldest, newest data wins; the drop is counted in
+            stats()['recv_drops'] and by the FPGA seq), so the socket keeps
+            draining.  Memory = recv_pool_size * recv_bufsize.
+        recv_bufsize : int
+            Byte size of each ring buffer (>= the datagram size; default 65536).
 
         The width parameters default to the reference build, but the scope
         overrides them at runtime via configure() from the FPGA descriptor.
@@ -235,9 +245,20 @@ class DmaUdpClient:
         self._lock = [threading.Lock(), threading.Lock()]
 
         self._sock = None
-        self._thread = None
         self._running = False
-        self._next_parse_t = 0.0   # deadline-pacing target for the recv loop
+        self._next_parse_t = 0.0   # deadline-pacing target for the parser worker
+
+        # Proactor receiver: a dedicated recv thread fills a ring of pre-allocated
+        # buffers and hands each to the parser thread via _filled (the completion
+        # event). See _recv_pump / _parse_worker.
+        self._recv_pool_size = int(recv_pool_size)
+        self._recv_bufsize = int(recv_bufsize)
+        self._thread = None        # receiver thread
+        self._parse_thread = None  # parser thread
+        self._cond = None          # guards _free / _filled
+        self._free = None          # deque of idle bytearray buffers
+        self._filled = None        # deque of (buf, nbytes) awaiting parse
+        self._recv_drops = 0       # datagrams dropped by ring exhaustion (drop-oldest)
 
         # Receiver-health counters (written by the recv thread, read by the GUI):
         self._pkt_count = 0       # datagrams received+parsed this session
@@ -330,15 +351,20 @@ class DmaUdpClient:
         self._bad_count = 0
         self._seq_last = None
         self._seq_drops = 0
+        self._recv_drops = 0
         self._stats_t0 = None
         self._stats_pkt0 = 0
         self._stats_pps = 0.0
         self._last_reg = 0.0   # register immediately on the first loop iteration
         self._running = True
         self._sock = self._create_socket()
+        self._build_recv_pool()
         self._thread = threading.Thread(
-            target=self._recv_loop, daemon=True, name='dma-udp-recv')
+            target=self._recv_pump, daemon=True, name='dma-udp-recv')
+        self._parse_thread = threading.Thread(
+            target=self._parse_worker, daemon=True, name='dma-udp-parse')
         self._thread.start()
+        self._parse_thread.start()
         if self._unicast:
             logger.info("DmaUdpClient started (unicast) on port %d", self._unicast_port)
         else:
@@ -354,9 +380,16 @@ class DmaUdpClient:
             except OSError:
                 pass
             self._sock = None
+        # Wake the parser worker if it is blocked waiting for a filled buffer.
+        if self._cond is not None:
+            with self._cond:
+                self._cond.notify_all()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
+        if self._parse_thread is not None:
+            self._parse_thread.join(timeout=2.0)
+            self._parse_thread = None
 
     def frame(self, channel, length=None):
         """Context manager yielding a zero-copy (peak_down, peak_up) snapshot.
@@ -461,6 +494,8 @@ class DmaUdpClient:
           seq_drops : cumulative datagram loss from the FPGA per-packet sequence gaps
                       (socket-buffer overflow, NIC, vSwitch). OS-independent (incl.
                       Windows). 0 unless the bitstream stamps a seq (seq_bits > 0).
+          recv_drops: datagrams the receiver dropped because the buffer ring was
+                      exhausted (parser behind); newest data is kept (drop-oldest).
           bad       : malformed datagrams discarded by the parser
           packets   : total datagrams received+parsed this session
           parsed    : datagrams parsed into the point cloud (== packets)
@@ -485,6 +520,7 @@ class DmaUdpClient:
         return {
             'pkt_per_s': self._stats_pps,
             'seq_drops': self._seq_drops,
+            'recv_drops': self._recv_drops,   # ring-exhaustion drops (drop-oldest)
             'bad': self._bad_count,
             'packets': pkt,
             'parsed': self._parse_count,
@@ -534,7 +570,7 @@ class DmaUdpClient:
             sock.bind(('', self._port))
             mreq = socket.inet_aton(self._mcast_ip) + socket.inet_aton('0.0.0.0')
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-        # _recv_loop puts the socket in non-blocking mode and waits via select();
+        # _recv_pump puts the socket in non-blocking mode and waits via select();
         # drop detection is the FPGA per-packet seq (OS-independent), so there is no
         # kernel-shed counter to enable here.
         return sock
@@ -556,12 +592,60 @@ class DmaUdpClient:
         except OSError:
             pass
 
-    def _recv_loop(self):
+    def _pace(self, n):
+        """Deadline pacing (per BATCH of n packets): advance the target by n
+        intervals and sleep only the remainder, so the long-run parse rate tracks
+        demand x _PARSE_MARGIN while the parser yields the GIL ~once per batch (not
+        per packet) — fewer context switches, faster backlog drain. Always sleep
+        >= _MIN_PARSE_YIELD so the GUI thread still gets a slice; only resync the
+        target if more than a batch behind (a GUI hitch), to avoid a catch-up burst.
+
+        This throttles only the parser worker; the receiver thread keeps draining
+        the socket independently. (A naive dedicated recv thread that ALSO parsed
+        was tried and is WORSE — a backlogged recv returns without blocking, hogging
+        the GIL. The proactor receiver does no numpy work, only recv_into + a deque
+        append, so it does not starve the parser.)"""
+        if not self._parse_min_interval:
+            return
+        self._next_parse_t += self._parse_min_interval * n
+        delay = self._next_parse_t - self._time()
+        if delay > _MIN_PARSE_YIELD:
+            time.sleep(delay)
+        else:
+            time.sleep(_MIN_PARSE_YIELD)
+            if delay < -self._parse_min_interval * n:
+                self._next_parse_t = self._time()
+
+    # --- proactor receiver ---------------------------------------------------
+    def _build_recv_pool(self):
+        """Allocate the ring of receive buffers and the free/filled queues."""
+        self._cond = threading.Condition()
+        self._free = collections.deque(
+            bytearray(self._recv_bufsize) for _ in range(self._recv_pool_size))
+        self._filled = collections.deque()
+
+    def _acquire_buf(self):
+        """Return an idle buffer to recv_into. Prefer the free ring; if it is empty
+        (parser is behind) recycle the OLDEST filled buffer — drop-oldest keeps the
+        socket draining, newest data wins, and the drop is counted. Caller must NOT
+        hold _cond (we take it here)."""
+        with self._cond:
+            if self._free:
+                return self._free.popleft()
+            if self._filled:
+                buf, _ = self._filled.popleft()
+                self._recv_drops += 1
+                return buf
+        # Ring fully checked out (all buffers in-flight in recv/parse). Rare;
+        # allocate a one-off so we never block the socket drain.
+        return bytearray(self._recv_bufsize)
+
+    def _recv_pump(self):
+        """Receiver thread: do nothing but drain the socket into pooled buffers and
+        hand each filled buffer to the parser via _filled (the completion event).
+        No parsing here, so it spends almost all its time in the recv syscall with
+        the GIL released."""
         sock = self._sock
-        # Non-blocking + select: lets one pass DRAIN all queued datagrams (see
-        # _MAX_RECV_BATCH) instead of one-recv-one-parse. select's 1 s timeout
-        # keeps _running checked ~1/s for a responsive stop(). Plain recv() (no
-        # recvmsg) -> works on every OS; drops are detected from the FPGA seq.
         sock.setblocking(False)
         while self._running:
             self._maybe_register()
@@ -571,46 +655,52 @@ class DmaUdpClient:
                 break
             if not ready:
                 continue
-            # Drain pass: pull every queued datagram (up to the batch cap) with no
-            # parse in between, so the receive buffer empties fast and the overflow
-            # window after a stall is minimal (recv is cheap, parse is the slow step).
-            batch = []
-            closed = False
-            for _ in range(_MAX_RECV_BATCH):
+            # Drain every queued datagram into the ring; re-select when empty.
+            while self._running:
+                buf = self._acquire_buf()
                 try:
-                    batch.append(sock.recv(65536))
+                    nbytes = sock.recv_into(buf)     # GIL released
                 except BlockingIOError:
-                    break          # socket buffer drained
-                except OSError:
-                    closed = True   # socket closed by stop(), or a real error
+                    self._recycle_free(buf)          # socket drained
                     break
-            if closed:
-                break
-            if not batch:
-                continue
+                except OSError:
+                    self._recycle_free(buf)          # closed by stop(), or error
+                    return
+                with self._cond:
+                    self._filled.append((buf, nbytes))
+                    self._cond.notify()
+
+    def _recycle_free(self, buf):
+        """Return a buffer to the free ring."""
+        with self._cond:
+            self._free.append(buf)
+
+    def _parse_worker(self):
+        """Parser thread: pop filled buffers (in batches, to amortise the GIL
+        yield), parse each into the point cloud, recycle the buffers, then pace so
+        the GUI keeps its slice, decoupled from the socket drain."""
+        while self._running:
+            batch = []
+            with self._cond:
+                while self._running and not self._filled:
+                    self._cond.wait(1.0)
+                if not self._running:
+                    break
+                for _ in range(_MAX_RECV_BATCH):
+                    if not self._filled:
+                        break
+                    batch.append(self._filled.popleft())
             n = len(batch)
-            for data in batch:
+            for buf, nbytes in batch:
                 self._pkt_count += 1
                 self._parse_count += 1
-                self._process_packet(data)
-            # Deadline pacing (per BATCH): advance the target by n intervals and sleep
-            # only the remainder, so the long-run rate still tracks demand x
-            # _PARSE_MARGIN while the parser yields the GIL ~once per batch (not per
-            # packet) — fewer context switches, faster backlog drain. Always sleep
-            # >= _MIN_PARSE_YIELD so the GUI thread still gets a slice; only resync the
-            # target if more than a batch behind (a GUI hitch), to avoid a catch-up burst.
-            # (A dedicated recv thread was tried and is WORSE: a backlogged recv returns
-            # without blocking, so it hogs the GIL and starves the parser. Single-loop
-            # drain + this pacing is the right CPython design.)
-            if self._parse_min_interval:
-                self._next_parse_t += self._parse_min_interval * n
-                delay = self._next_parse_t - self._time()
-                if delay > _MIN_PARSE_YIELD:
-                    time.sleep(delay)
-                else:
-                    time.sleep(_MIN_PARSE_YIELD)
-                    if delay < -self._parse_min_interval * n:
-                        self._next_parse_t = self._time()
+                # memoryview slice avoids copying; _process_packet fully consumes
+                # it (all numpy ops copy out) before we recycle the buffer below.
+                self._process_packet(memoryview(buf)[:nbytes])
+            with self._cond:
+                for buf, _ in batch:
+                    self._free.append(buf)
+            self._pace(n)
 
     def _track_seq(self, seq):
         """Gap-count the per-packet FPGA sequence (wrap-safe within seq_bits). A

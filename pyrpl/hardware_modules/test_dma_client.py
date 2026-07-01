@@ -441,6 +441,69 @@ def test_per_channel_tag_v4():
     return True
 
 
+def test_recv_roundtrip():
+    """Proactor receiver: push real UDP datagrams through the socket and confirm
+    the dedicated recv thread + parser worker reconstruct the same points as direct
+    parsing, and that every datagram is accounted for (parsed + recv_drops == sent)
+    even when the ring is deliberately undersized."""
+    import socket
+    import time
+
+    fsz, frac, hsz, hbs = 13, 8, 24, 183
+    idx = fsz + frac
+    m = (1 << idx) - 1
+    seq = [10, 11, 12, 11, 13]
+    points = [(h, 0, h & m, (h + 7) & m) for h in seq]   # (hist, frame, up, dn)
+    pkt = emit_packets(points, hsz=hsz, idx=idx, hist_block_size=hbs)[0]
+
+    def mk():
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(('127.0.0.1', 0))
+        return s
+
+    def run(nsend, pool, rate):
+        c = DmaUdpClient(unicast=True, fsz=fsz, frac=frac, hsz=hsz,
+                         hist_block_size=hbs, max_frame_size=256,
+                         recv_pool_size=pool, recv_bufsize=4096, max_parse_rate=rate)
+        c._create_socket = mk
+        c.start()
+        port = c._sock.getsockname()[1]
+        tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        for _ in range(nsend):
+            tx.sendto(pkt, ('127.0.0.1', port))
+        # Spin until the whole burst is accounted for (parsed + dropped), or time out.
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            st = c.stats()
+            if st['parsed'] + st['recv_drops'] >= nsend:
+                break
+            time.sleep(0.01)
+        st = c.stats()
+        with c.frame(0) as f:
+            frame = None if f is None else (f[1].copy(), f[0].copy())  # (up, dn)
+        c.stop()
+        return st, frame
+
+    # Big ring, no parse cap: every datagram parses, zero drops, points correct.
+    st, frame = run(20, 256, 0)
+    assert st['bad'] == 0, st
+    assert st['recv_drops'] == 0, st
+    assert st['parsed'] == 20, st
+    assert frame is not None
+    up, dn = frame
+    for (h, _, u, d) in points:
+        assert up[h] == u, (h, up[h], u)
+        assert dn[h] == d, (h, dn[h], d)
+
+    # Undersized ring + slow parser: drop-oldest sheds some, but nothing is lost
+    # unaccounted and no datagram is ever mis-parsed.
+    st, _ = run(40, 4, 300)
+    assert st['bad'] == 0, st
+    assert st['parsed'] + st['recv_drops'] == 40, st
+    return True
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:
