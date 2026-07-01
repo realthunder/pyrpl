@@ -122,12 +122,6 @@ assign overflow_cnt_o = overflow_cnt;
 
 logic [ 32-1: 0] point_cnt;
 logic [ 32-1: 0] scan_point_cnt;
-// Per-2D-scan-frame counter for the DMA packet header: increments once on each
-// rising edge of fft_index_flush_i (the scan-frame boundary), so every packet of
-// one 2D frame carries the same value and the client can detect frame turnover.
-// (point_cnt above is the per-up-frame count, ~per point — wrong for this.)
-logic [ 32-1: 0] dma_frame_cnt;
-logic            fft_index_flush_d;
 
 logic [ HSZ-1:0] fft_hist_index;
 logic [ HSZ-1:0] prev_hist_index;
@@ -794,19 +788,12 @@ always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
     fft_peak_ready <= 2'b11;
     peak_up <= 1;
-    dma_frame_cnt <= 0;
-    fft_index_flush_d <= 0;
 end else begin
 
     if (out_recv)
         out_send <= 0;
     else if (out_send_)
         out_send <= 1;
-
-    // Per-2D-frame counter: tick once on each rising edge of the scan-frame flush.
-    fft_index_flush_d <= fft_index_flush_i;
-    if (fft_index_flush_i && !fft_index_flush_d)
-        dma_frame_cnt <= dma_frame_cnt + 1;
 
     if (fft_index_flush_i)
         peak_up <= 1;
@@ -891,41 +878,16 @@ assign fft_peak_idx   = fft_peak_valid ? peak_out_data[DSZ + IDX : DSZ + 1] : 0;
 assign fft_peak       = peak_out_data[DSZ-1 : 0];
 assign peak_ready     = peak_out_valid;
 
-// --- DMA point cloud output (segmented, tag-bit framing) ---
-// A packet is exactly PKT_WORDS = HIST_BLOCK_SIZE+1 words — the fixed unit that
-// monitor_server reads as one datagram. Each word self-identifies via bit[63]
-// (is_header), so a packet holds one or MORE segments: a segment is a header
-// (absolute scan cell + 2D-frame counter) followed by data words whose scan cell
-// is reconstructed from a 1-bit per-point advance flag. A fresh header is emitted
-// inline ("re-anchor") whenever the scan index jumps (delta not 0/+1), a new 2D
-// frame begins (flush), or a packet boundary is crossed — so the fixed framing is
-// preserved with no per-frame padding, and one stream carries both a moving scan
-// (advance=1/point) and a stalled scan (advance=0, live updates at one cell).
+// --- DMA point-cloud output ---
+// fft_proc emits ONE registered point per detected scan position: the up/down peak
+// bins and the absolute scan cell (fft_hist_index). The DMA packet FRAMING — tag-bit
+// headers, the per-2D-frame counter, the clock crossing and monitor_server datagram
+// assembly — is NO LONGER done here; it moved to red_pitaya_scope.sv's ASM FSM,
+// which captures both fft_a/fft_b points and assembles the interleaved stream (see
+// that FSM for the header / frame_cnt format).
 //
-// Header word (64-bit), bit[63]=1:
-//   [63]              is_header = 1
-//   [62:59]           CHANNEL_ID      (0=fft_a, 1=fft_b)
-//   [58:55]           DMA_FMT_VERSION
-//   [54 : 55-HSZ]     hist_index      (absolute scan cell of the segment's 1st point)
-//   [54-HSZ : 0]      dma_frame_cnt   (per-2D-frame counter, low DMA_HDR_FC_W bits)
-//
-// Data word (64-bit), bit[63]=0:
-//   [63]              is_header = 0
-//   [62]              advance         (1 = scan cell advanced +1 before this point)
-//   [2*IDX-1 : IDX]   peak_bin_down   (k_interp, Q(FSZ).FRAC)
-//   [IDX-1 : 0]       peak_bin_up     (k_interp, Q(FSZ).FRAC)
-//   IDX = FSZ+FRAC; host bin = field / 2^FRAC. Requires 2*IDX <= 61, HSZ <= 54.
-//
-// Client: walk the PKT_WORDS words; at a header set pos=hist_index (the segment's
-// first point sits at pos); each data word does pos += advance, then emits the
-// point at pos. Mid-packet headers re-anchor pos/frame.
-//
-// Emit condition: sequential (up_toggle=1) → after down chirp (both peaks fresh);
+// Emit condition: sequential (up_toggle=1) → after the down chirp (both peaks fresh);
 //                 parallel  (up_toggle=0) → every frame.
-// fft_index_flush_i no longer closes/truncates the packet (that desynced the
-// fixed framing); it just forces the next point to start a new segment carrying
-// the incremented dma_frame_cnt.
-
 wire dma_emit       = peak_ready_trig && (peak_up || !up_toggle);
 // One registered point per detected scan position. Both fft_proc instances
 // share the scan pipeline, so fft_a/fft_b assert dma_point_valid_o on the same

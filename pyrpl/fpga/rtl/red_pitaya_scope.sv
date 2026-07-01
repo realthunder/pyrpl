@@ -646,6 +646,12 @@ logic [ 32-1: 0]    fft_we_cnt[1:0];
 logic [ 32-1: 0]    fft_skip_cnt;
 // logic               fft_index_flush = adc_rstn_i == 1'b0 || sync_rst_i;
 logic               fft_index_flush = sync_rst_i;
+// One-cycle pulse each time the raster scan wraps back to origin (0,0) = a
+// completed 2D frame. This is the real per-frame boundary; fft_index_flush is only
+// the ASG sync reset. Drives the DMA header frame_cnt (asm_frame_cnt) so the host
+// sees frame turnover. Generated in the adc_clk index pipeline below and consumed
+// in the fft_input_clk ASM FSM (same/related clock, CLK_SEL=0), like fft_index_flush.
+logic               fft_frame_start;
 
 logic               fft_peak_ready_a;
 logic               fft_peak_ready_b;
@@ -703,10 +709,12 @@ if (fft_index_flush) begin
    fft_index_valid <= {IDX_PIPELINE+2{1'b0}};
    x_step <= 0;
    y_step <= 0;
+   fft_frame_start <= 1'b0;
    `ifdef DEBUG_FFT_INDEX
       y_step_0 <= 0;
    `endif
 end else begin
+    fft_frame_start <= 1'b0;   // default: pulse only on the origin wrap below
     fft_index_valid = {fft_index_valid[IDX_PIPELINE+1: 0], fft_trig_i && &fft_done};
 
    `ifdef DEBUG_FFT_INDEX
@@ -720,6 +728,11 @@ end else begin
         if (y_step_i == 0 && x_step_i == 0) begin
             fft_indices_pos <= 0;
             fft_hist_step <= 0;
+            // New 2D frame: pulse only on a real WRAP into origin (previous cell
+            // x_step/y_step non-origin), not while dwelling at origin (advance=0
+            // stalled scan re-hits (0,0) each point), which would over-count frames.
+            if (x_step != 0 || y_step != 0)
+                fft_frame_start <= 1'b1;
         end else if (fft_hist_step < x_step_i + 1)
             fft_hist_step <= x_step_i + 1; 
 
@@ -1040,7 +1053,10 @@ logic               asm_tvalid, asm_tlast;
 wire [HSZ-1:0] asm_delta = dma_point_idx_a - asm_prev_idx;
 wire asm_inc = (asm_delta == 1);              // scan stepped +1
 wire asm_dec = (asm_delta == {HSZ{1'b1}});    // scan stepped -1 (two's-complement all-ones)
-wire asm_flush_rise = fft_index_flush && !asm_flush_d;
+// Frame boundary for the DMA header frame_cnt: the origin-wrap pulse (a real
+// per-2D-frame event), NOT fft_index_flush (which is only the ASG sync reset and
+// so never ticked during continuous scanning — frame_cnt was stuck).
+wire asm_flush_rise = fft_frame_start && !asm_flush_d;
 wire asm_last_word  = (asm_wc == ASM_PKT-1);
 // A header is needed unless the scan held (delta 0) or stepped by ±1 (which the
 // signed advance bits encode). The signed step lets BOTH scan directions ride a
@@ -1064,7 +1080,7 @@ always @(posedge fft_input_clk) begin
         asm_busy       <= 1'b0;
         asm_tlast      <= 1'b0;
     end else begin
-        asm_flush_d <= fft_index_flush;
+        asm_flush_d <= fft_frame_start;
         if (asm_flush_rise) begin
             asm_frame_cnt  <= asm_frame_cnt + 1'b1;
             asm_frame_pend <= 1'b1;
