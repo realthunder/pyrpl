@@ -35,6 +35,20 @@ import numpy as np
 from paramiko import SSHException
 from scp import SCPClient, SCPException
 from collections import OrderedDict
+from qtpy import QtCore
+
+
+class RedPitayaSignalLauncher(QtCore.QObject):
+    """Carries board-level Qt signals. RedPitaya itself is a plain object (not a
+    QObject), so cross-thread board events are routed through this QObject, which
+    is created on the GUI thread. Slots connected with the default AutoConnection
+    therefore run on the GUI thread even when the signal is emitted from a
+    register-I/O worker thread."""
+    # emitted once when the register link drops and reconnection gives up.
+    # argument: a human-readable reason string.
+    connection_lost = QtCore.Signal(str)
+    # emitted after a successful (GUI-driven) reconnection.
+    reconnected = QtCore.Signal()
 
 # input is the wrong function in python 2
 try:
@@ -72,6 +86,14 @@ defaultparameters = dict(
                           # not instantiated, so the client never touches their
                           # (unmapped) register space. Accepts a list or a
                           # comma/space-separated string (for env/config use).
+    reconnect_retries=-1,  # runtime register-link reconnection budget. When the
+                           # live TCP register link drops (board reboot / cable
+                           # pull / network blip) the client tries to reconnect.
+                           # -1 (default) = retry forever (legacy behaviour). A
+                           # positive N gives up after N failed reconnects, emits
+                           # signal_launcher.connection_lost(reason) and aborts,
+                           # so a GUI can prompt the user instead of the client
+                           # spinning indefinitely.
     )
 
 
@@ -201,6 +223,9 @@ class RedPitaya(object):
         self.client = None  # client class
         self._slaves = []  # slave interfaces to same redpitaya
         self.modules = OrderedDict()  # all submodules
+        # QObject carrying board-level Qt signals (connection_lost / reconnected).
+        # Created here on the GUI thread so cross-thread emission works.
+        self.signal_launcher = RedPitayaSignalLauncher()
 
         # provide option to simulate a RedPitaya
         if self.parameters['hostname'] in ['_FAKE_REDPITAYA_', '_FAKE_']:
@@ -741,9 +766,51 @@ class RedPitaya(object):
 
     def startclient(self):
         self.client = redpitaya_client.MonitorClient(
-            self.parameters['hostname'], self.parameters['port'], restartserver=self.restartserver)
+            self.parameters['hostname'], self.parameters['port'],
+            restartserver=self.restartserver,
+            reconnect_retries=self.parameters.get('reconnect_retries', -1),
+            on_connection_lost=self._on_connection_lost)
         self.makemodules()
         self.logger.debug("Client started successfully. ")
+
+    def _on_connection_lost(self, reason):
+        """Called by MonitorClient when the register link drops and the bounded
+        reconnection gives up. Re-emit as a Qt signal so a GUI (e.g. the lidar
+        widget) can prompt the user. Safe to call from a worker thread — the
+        signal is delivered to GUI-thread slots via a queued connection."""
+        self.logger.error("Register link lost; reconnection gave up: %s", reason)
+        try:
+            self.signal_launcher.connection_lost.emit(str(reason))
+        except BaseException:
+            self.logger.exception("Failed to emit connection_lost signal")
+
+    def reconnect(self, hostname=None):
+        """Re-establish a dropped connection, optionally switching to a new
+        `hostname`. Meant to be driven by a GUI after a connection_lost signal.
+
+        Rebuilds the ssh link, ensures the monitor_server is up, then reconnects
+        the register link *in place* (the existing MonitorClient object is
+        re-initialised, so cached module references stay valid). Raises on
+        failure (ExpectedPyrplError / socket errors); returns True on success."""
+        if hostname:
+            self.parameters['hostname'] = hostname
+        # fresh ssh channel (raises ExpectedPyrplError after a few tries)
+        self.start_ssh()
+        # make sure an up-to-date monitor_server is running on the board
+        port = self.startserver()
+        if self.client is None:
+            self.startclient()
+        else:
+            # reconnect the SAME client object (keeps module._client refs valid)
+            if not self.client.restart(hostname=self.parameters['hostname'],
+                                       port=port):
+                raise ExpectedPyrplError(
+                    "Could not reconnect the register link to %s"
+                    % self.parameters['hostname'])
+        self.logger.info("Reconnected to Red Pitaya at %s.",
+                         self.parameters['hostname'])
+        self.signal_launcher.reconnected.emit()
+        return True
 
     def startdummyclient(self):
         self.client = redpitaya_client.DummyClient()

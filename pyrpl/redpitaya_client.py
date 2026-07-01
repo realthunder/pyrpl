@@ -21,6 +21,7 @@ import numpy as np
 import socket
 import threading
 import logging
+from time import sleep
 try:
     raise  # disable sound output for now
     from pysine import sine  # for debugging read/write calls
@@ -36,12 +37,19 @@ CLIENT_NUMBER = 0
 
 
 class MonitorClient(object):
-    def __init__(self, hostname="192.168.1.0", port=2222, restartserver=None):
+    def __init__(self, hostname="192.168.1.0", port=2222, restartserver=None,
+                 reconnect_retries=-1, on_connection_lost=None):
         """initiates a client connected to monitor_server
 
         hostname: server address, e.g. "localhost" or "192.168.1.0"
         port:    the port that the server is running on. 2222 by default
         restartserver: a function to call that restarts the server in case of problems
+        reconnect_retries: how many times restart() re-attempts a dropped
+            register link before giving up. -1 (default) = retry forever
+            (legacy behaviour). A positive N bounds the reconnection so a GUI
+            can be notified instead of the client retrying indefinitely.
+        on_connection_lost: optional callable(reason:str) invoked once when the
+            reconnection budget is exhausted (used to emit a Qt signal).
         """
         self.logger = logging.getLogger(name=__name__)
         # update global client counter and assign a number to this client
@@ -49,6 +57,12 @@ class MonitorClient(object):
         CLIENT_NUMBER += 1
         self.client_number = CLIENT_NUMBER
         self.logger.debug("Client number %s started", self.client_number)
+        self._reconnect_retries = reconnect_retries
+        self._on_connection_lost = on_connection_lost
+        self._connected = False
+        # set once the reconnection budget is exhausted, so read/write calls
+        # stop hammering a dead link and surface the failure instead.
+        self._connection_lost = False
         # Serialize the single TCP register link: the request/response pair
         # (socket.send + socket.recv in _reads/_writes) MUST be atomic, because
         # the lidar now offloads scope-acquisition register I/O to a worker thread
@@ -80,9 +94,17 @@ class MonitorClient(object):
             except socket.error:  # mostly because port is still closed
                 self.logger.warning("Socket error during connection "
                                     "attempt %s.", i)
-                # could try a different port here by putting port=-1
-                self._port = self._restartserver()
+                # could try a different port here by putting port=-1. Restarting
+                # the server goes over ssh and may itself fail while the board is
+                # unreachable; swallow that here so a single failed attempt does
+                # not abort the whole connect loop (restart() bounds the retries).
+                try:
+                    self._port = self._restartserver()
+                except BaseException as e:
+                    self.logger.warning("Server restart during connect failed: "
+                                        "%s", e)
             else:
+                self._connected = True
                 break
         self.socket.settimeout(1.0)  # 1 second timeout for socket operations
 
@@ -99,6 +121,11 @@ class MonitorClient(object):
         
     # the public methods to use which will recover from connection problems
     def reads(self, addr, length):
+        # Once we've given up on the link, fail fast rather than re-running the
+        # whole reconnect cascade (and re-emitting connection_lost) on every
+        # poll. An explicit restart()/reconnect() clears the flag.
+        if self._connection_lost:
+            return None
         self._read_counter+=1
         if hasattr(self, '_sound_debug') and self._sound_debug:
             sine(440, 0.05)
@@ -106,6 +133,8 @@ class MonitorClient(object):
             return self.try_n_times(self._reads, addr, length)
 
     def writes(self, addr, values):
+        if self._connection_lost:
+            return None
         self._write_counter += 1
         if hasattr(self, '_sound_debug') and self._sound_debug:
             sine(880, 0.05)
@@ -172,18 +201,65 @@ class MonitorClient(object):
                                      value,
                                      self.client_number))
                 if self._restartserver is not None:
-                    self.restart()
+                    if not self.restart():
+                        # reconnection budget exhausted; on_connection_lost has
+                        # already fired. Stop retrying and surface the failure.
+                        return None
+                else:
+                    return None
             else:
                 if value is not None:
                     return value
+        return None
 
-    def restart(self):
+    def restart(self, hostname=None, port=None):
+        """Reconnect the dropped register link, re-initialising this SAME object
+        in place so cached module references (module._client) stay valid.
+
+        Retries up to self._reconnect_retries times; -1 means retry forever
+        (legacy). Returns True once reconnected, or False after the budget is
+        exhausted — in which case on_connection_lost(reason) is invoked exactly
+        once so a GUI can prompt the user instead of the client spinning
+        forever. Pass `hostname`/`port` to reconnect to a different endpoint.
+        """
+        if hostname is not None:
+            self._hostname = hostname
         self.close()
-        port = self._restartserver()
-        self.__init__(
-            hostname=self._hostname,
-            port=port,
-            restartserver=self._restartserver)
+        limit = self._reconnect_retries
+        reason = "unknown error"
+        attempt = 0
+        while limit < 0 or attempt < limit:
+            attempt += 1
+            try:
+                newport = port if port is not None else self._restartserver()
+                self.__init__(
+                    hostname=self._hostname,
+                    port=newport,
+                    restartserver=self._restartserver,
+                    reconnect_retries=self._reconnect_retries,
+                    on_connection_lost=self._on_connection_lost)
+            except BaseException as e:
+                reason = str(e) or e.__class__.__name__
+                self.logger.error("Reconnect attempt %d/%s failed: %s",
+                                  attempt, 'inf' if limit < 0 else limit, e)
+            else:
+                if self._connected:
+                    self.logger.info("Register link reconnected (attempt %d).",
+                                     attempt)
+                    return True
+                reason = "socket did not connect to %s:%s" % (self._hostname,
+                                                              newport)
+            sleep(min(0.5 * attempt, 3.0))
+        # budget exhausted -> give up and notify
+        self._connection_lost = True
+        self.logger.error("Giving up on the register link after %d reconnect "
+                          "attempt(s): %s", attempt, reason)
+        if self._on_connection_lost is not None:
+            try:
+                self._on_connection_lost(reason)
+            except BaseException:
+                self.logger.exception("on_connection_lost handler raised")
+        return False
 
 
 class DummyClient(object):  # pragma: no cover
