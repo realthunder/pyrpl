@@ -141,6 +141,7 @@ end else begin
      20'h00008 : begin sys_ack <= sys_en;         sys_rdata <= {{32-12{1'b0}}, adc_c_r}          ; end
      20'h0000C : begin sys_ack <= sys_en;         sys_rdata <= {{32-12{1'b0}}, adc_d_r}          ; end
      20'h00010 : begin sys_ack <= sys_en;         sys_rdata <= {{32-12{1'b0}}, adc_v_r}          ; end
+     20'h00014 : begin sys_ack <= sys_en;         sys_rdata <= {{32-12{1'b0}}, adc_temp_r}       ; end // XADC die-temp code
 
      20'h00020 : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_a_o}          ; end
      20'h00024 : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_b_o}          ; end
