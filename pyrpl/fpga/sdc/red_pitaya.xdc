@@ -356,6 +356,20 @@ set scope_cfg [get_cells {
 set_multicycle_path 2 -setup -from $scope_cfg
 set_multicycle_path 1 -hold  -from $scope_cfg
 
+# DAC output-register SYNCHRONOUS RESET (dac_rst -> oddr_dac_dat/oddr_dac_sel .R).
+# dac_rst = ~frstn[0] | ~pll_locked (red_pitaya_top.v): a constant 0 during all
+# normal operation, asserting only at power-on/fabric-reset or PLL loss-of-lock.
+# The only edge whose capture cycle could matter is reset RELEASE at startup, when
+# the DAC/galvo output is meaningless and unused — a sub-cycle skew across the 14
+# bits there is an invisible power-on transient. So this reset never needs
+# single-cycle timing; relax setup to 2 (hold 1), same idiom as the config regs
+# above. Scoped to the .R pins of the data/sel ODDRs ONLY — NOT oddr_dac_rst, whose
+# .D1/.D2 carry dac_rst as DATA to the external DAC and must stay fully timed.
+set dac_rst_src  [get_cells -hierarchical -filter {NAME =~ *dac_rst_reg}]
+set dac_oddr_rst [get_cells -hierarchical -filter {NAME =~ *oddr_dac_dat* || NAME =~ *oddr_dac_sel*}]
+set_multicycle_path 2 -setup -from $dac_rst_src -to $dac_oddr_rst
+set_multicycle_path 1 -hold  -from $dac_rst_src -to $dac_oddr_rst
+
 # ADC data hold: adc_dat_*_i input_delay is referenced to adc_clk, but the
 # IOB register is clocked by pll_adc_clk (large internal skew vs adc_clk).
 # Hold analysis across these two clocks is not meaningful — suppress it.

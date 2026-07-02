@@ -310,6 +310,23 @@ xpm_cdc_single #(
     .dest_out  (fft_done_o)
 );
 
+// Flush (ASG sync-reset) crossed adc_clk -> clk_i so the peak chain can be reset
+// COHERENTLY with the scan-index FIFO / peak_up toggle (both already flush-reset).
+// Without this the CFAR detector's DATAFLOW ping-pong holds 1-2 in-flight frames
+// across the flush; their stale peaks then pop the just-reset index FIFO and toggle,
+// knocking the peak<->scan-cell association out of phase -> latched per-cell
+// starvation (frozen points) until the next re-sync. fft_index_flush is a wide
+// (multi-cycle) level, so a 2-FF level sync is appropriate.
+logic fft_index_flush_clk;
+xpm_cdc_single #(
+    .DEST_SYNC_FF (SYNC_FF)
+) flush_sync (
+    .src_clk   (adc_clk_i),
+    .src_in    (fft_index_flush_i),
+    .dest_clk  (clk_i),
+    .dest_out  (fft_index_flush_clk)
+);
+
 // Per-half acquisition-done, synced adc -> clk_i (feed engine domain). These are
 // quasi-static within a frame (one transition per window), so a 2-FF sync is safe.
 logic [1:0] acq_done_clk;
@@ -648,7 +665,16 @@ always @(posedge clk_i) begin
     padding_down <= padding_down_;
     up_toggle <= up_toggle_;
 
-    if (!rstn || conf_req) begin
+    // A scan re-sync flush (fft_index_flush) resets the WHOLE clk_i FFT+peak
+    // pipeline (feed engine, FFT, peak input FIFO, CFAR detector, peak-pairing and
+    // DMA-emit logic) together with the scan-index FIFO + peak_up toggle (reset
+    // elsewhere on flush). This is the fix for the latched cell-starvation / frozen
+    // points: previously the flush emptied the scan-index FIFO but left frames in
+    // flight in the feed/FFT/CFAR-dataflow pipeline; their peaks then popped the
+    // reset FIFO out of phase. Resetting everything makes the pipeline restart empty
+    // and in-phase. Reuses the conf_req reset path, so the FFT re-inits cleanly.
+    // Flush is a rare (ASG re-sync) event, so the few frames of dead time are fine.
+    if (!rstn || conf_req || fft_index_flush_clk) begin
         fft_rstn <= 0;
     end else
         fft_rstn <= {fft_rstn[RESET_DELAY-1:0], 1'b1};
