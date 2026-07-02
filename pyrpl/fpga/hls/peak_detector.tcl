@@ -1,7 +1,19 @@
 set path_out .hls
 
-set src_file "../hls/peak_detector.cpp"
-set tb_file  "../hls/peak_detector_tb.cpp"
+# PEAK_ALGO selects the detector implementation (same top function / IP name):
+#   global (default) - single global mean/stdev threshold (peak_detector.cpp)
+#   cfar             - moving-window CA-CFAR / local z-score (peak_detector_cfar.cpp).
+#                      Adds runtime guard_cells/train_cells ports; NATURAL order only
+#                      (requires FFT_IMPL=4). See peak_detector_cfar.cpp header.
+set peak_algo [expr {[info exists env(PEAK_ALGO)] ? $env(PEAK_ALGO) : "global"}]
+
+if {$peak_algo == "cfar"} {
+    set src_file "../hls/peak_detector_cfar.cpp"
+    set tb_file  "../hls/peak_detector_cfar_tb.cpp"
+} else {
+    set src_file "../hls/peak_detector.cpp"
+    set tb_file  "../hls/peak_detector_tb.cpp"
+}
 set proj_name peak_detector
 set top_func  peak_detector
 
@@ -16,6 +28,14 @@ set fft_impl       [expr {[info exists env(FFT_IMPL)]       ? $env(FFT_IMPL)    
 set peak_frac      [expr {[info exists env(PEAK_FRAC)]      ? $env(PEAK_FRAC)      : 8}]
 
 set cflags "-DFSSR=$fft_ssr -DDSZ=$fft_width -DFSZ=$fft_nfft -DFRAC_BITS=$peak_frac"
+
+# CA-CFAR build: enable the extended (guard/train) signature and let the guard/
+# train maxima be overridden from the environment (bound buffers/trip counts).
+if {$peak_algo == "cfar"} {
+    append cflags " -DPEAK_CFAR=1"
+    if {[info exists env(CFAR_GUARD_MAX)]} { append cflags " -DCFAR_GUARD_MAX=$env(CFAR_GUARD_MAX)" }
+    if {[info exists env(CFAR_TRAIN_MAX)]} { append cflags " -DCFAR_TRAIN_MAX=$env(CFAR_TRAIN_MAX)" }
+}
 
 # FFT_IMPL==4 is the native-SSR xfft, whose output is NATURAL order (PG109: SSR>1
 # fixed-point is natural-only). Other engines default to DIF/bit_reversed_order, where

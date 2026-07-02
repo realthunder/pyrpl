@@ -68,6 +68,21 @@ typedef ap_uint<2*(SSZ + SQ_BITS)>          wide_t;     // ap_uint<62>
 typedef ap_uint<2*(SSZ + SQ_BITS) + 16>     thresh_t;   // ap_uint<78>
 typedef ap_int<SSZ + SQ_BITS + 1>           sdiff_t;    // ap_int<32>
 
+// --- CA-CFAR (windowed / local-z-score) detector, PEAK_CFAR build ----------
+// A moving-window detector: instead of one global mean/stdev over the whole
+// frame, the peak is tested against the noise estimated in TRAIN reference
+// cells on each side, with GUARD cells skipped so the peak's own spectral skirt
+// doesn't pollute the noise estimate. GUARD/TRAIN are runtime AXI-Lite
+// registers (guard_cells/train_cells); threshold_k_sq is reused as the local
+// k^2. CFAR_*_MAX bound the buffers / loop trip counts at compile time; the
+// runtime registers must be <= these maxima.
+#ifndef CFAR_GUARD_MAX
+#define CFAR_GUARD_MAX 8
+#endif
+#ifndef CFAR_TRAIN_MAX
+#define CFAR_TRAIN_MAX 32
+#endif
+
 #define IN_WIDTH  (FSSR * DSZ)
 #define OUT_WIDTH 64
 
@@ -93,9 +108,14 @@ typedef ap_axiu<OUT_WIDTH, 0, 0, 0> axis_out_pkt;
 void peak_detector(
     hls::stream<axis_in_pkt>  &s_axis,
     hls::stream<axis_out_pkt> &m_axis,
-    ap_uint<16> threshold_k_sq,   // k^2 threshold multiplier
+    ap_uint<16> threshold_k_sq,   // k^2 threshold multiplier (global k^2, or CFAR local k^2)
     count_t     start_index,       // first valid FFT bin (inclusive)
     count_t     end_index,         // last valid FFT bin (inclusive)
     data_t      data_min,          // amplitude floor (sample must be strictly greater)
     ap_uint<4>  nfft               // log2(N_fft), e.g. 10 for 1024-point FFT
+#ifdef PEAK_CFAR
+    ,
+    count_t     guard_cells,       // CFAR: guard cells each side of the CUT (<= CFAR_GUARD_MAX)
+    count_t     train_cells        // CFAR: training/reference cells each side (<= CFAR_TRAIN_MAX)
+#endif
 );

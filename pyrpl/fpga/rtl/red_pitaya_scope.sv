@@ -599,6 +599,10 @@ logic [ 32-1: 0]    fft_overflow_cnt;
 logic [ 16-1: 0]    fft_threshold_k, fft_a_threshold_k, fft_b_threshold_k;
 logic [ FSZ-1:0]    fft_peak_start, fft_a_peak_start, fft_b_peak_start;
 logic [ DSZ-1: 0]   fft_peak_minimum, fft_a_peak_minimum, fft_b_peak_minimum;
+// CA-CFAR moving-window params (used only by the PEAK_CFAR peak detector build;
+// harmlessly unconnected otherwise). guard/train cells each side of the peak.
+logic [ FSZ-1:0]    fft_cfar_guard, fft_a_cfar_guard, fft_b_cfar_guard;
+logic [ FSZ-1:0]    fft_cfar_train, fft_a_cfar_train, fft_b_cfar_train;
 
 logic [ 6-1 :  0]   fft_status[0:1];
 logic [ 2-1 :  0]   fft_done;
@@ -841,6 +845,10 @@ always @(posedge adc_clk_i) begin
     fft_b_peak_minimum <= fft_peak_minimum;
     fft_a_threshold_k <= fft_threshold_k;
     fft_b_threshold_k <= fft_threshold_k;
+    fft_a_cfar_guard <= fft_cfar_guard;
+    fft_b_cfar_guard <= fft_cfar_guard;
+    fft_a_cfar_train <= fft_cfar_train;
+    fft_b_cfar_train <= fft_cfar_train;
 end
 
 fft_proc #(.ASZ(ASZ),
@@ -873,6 +881,8 @@ fft_a (
    .fft_threshold_k_in (fft_a_threshold_k),
    .fft_peak_start_in (fft_a_peak_start),
    .fft_peak_minimum_in (fft_a_peak_minimum),
+   .fft_cfar_guard_in (fft_a_cfar_guard),
+   .fft_cfar_train_in (fft_a_cfar_train),
 
    .fft_acq_up_in (fft_a_acq1_cnt),
    .fft_acq_down_in (fft_a_acq2_cnt),
@@ -965,6 +975,8 @@ fft_proc #(.ASZ(ASZ),
    .fft_threshold_k_in (fft_b_threshold_k),
    .fft_peak_start_in (fft_b_peak_start),
    .fft_peak_minimum_in (fft_b_peak_minimum),
+   .fft_cfar_guard_in (fft_b_cfar_guard),
+   .fft_cfar_train_in (fft_b_cfar_train),
 
    .fft_acq_up_in (fft_parallel ? fft_b_acq2_cnt : fft_b_acq1_cnt),
    .fft_acq_down_in (fft_b_acq2_cnt),
@@ -1214,6 +1226,8 @@ if (adc_rstn_i == 1'b0) begin
     fft_threshold_k <= 4;
     fft_peak_start <= 0;
     fft_peak_minimum <= 1;
+    fft_cfar_guard <= 2;    // CA-CFAR: guard cells each side of the peak
+    fft_cfar_train <= 16;   // CA-CFAR: training/reference cells each side
     fft_wait1_cnt <= 100;
     fft_wait2_cnt <= 200;
     fft_acq1_cnt <= (2**(FSZ-1) - 200) & ~(FSSR-1);
@@ -1234,6 +1248,10 @@ end else if (sys_wen) begin
     if (sys_addr[19:0]==20'h38) fft_peak_start <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h3C) fft_threshold_k <= sys_wdata[16-1:0];
     if (sys_addr[19:0]==20'h40) fft_peak_minimum <= sys_wdata[DSZ-1:0];
+    // CA-CFAR moving-window params. 0x44/0x48/0x4C are peak-result READBACK regs;
+    // 0x50/0x54 are the genuinely-free slots (see readback comment below).
+    if (sys_addr[19:0]==20'h50) fft_cfar_guard <= sys_wdata[FSZ-1:0];
+    if (sys_addr[19:0]==20'h54) fft_cfar_train <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h58) fft_wait1_cnt <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h5C) fft_wait2_cnt <= sys_wdata[FSZ-1:0];
     // Force acq counts to whole SSR beats: fin packs FSSR samples/beat and the FFT
@@ -1969,6 +1987,9 @@ end else begin
      20'h00044 : begin sys_ack <= sys_en;          sys_rdata <= {{16-FSZ{1'b0}}, (fft_parallel ? fft_peak_index_up_b[IDX-1:FRAC] : fft_peak_index_down_a[IDX-1:FRAC]), {16-FSZ{1'b0}}, fft_peak_index_up_a[IDX-1:FRAC]}; end
      20'h00048 : begin sys_ack <= sys_en;          sys_rdata <= fft_peak_up_a                       ; end
      20'h0004C : begin sys_ack <= sys_en;          sys_rdata <= fft_parallel?fft_peak_up_b:fft_peak_down_a ; end
+     // CA-CFAR moving-window params (write+read; only meaningful for PEAK_CFAR builds).
+     20'h00050 : begin sys_ack <= sys_en;          sys_rdata <= {{32-FSZ{1'b0}}, fft_cfar_guard}    ; end
+     20'h00054 : begin sys_ack <= sys_en;          sys_rdata <= {{32-FSZ{1'b0}}, fft_cfar_train}    ; end
      20'h00058 : begin sys_ack <= sys_en;          sys_rdata <= fft_wait1_cnt                       ; end
      20'h0005C : begin sys_ack <= sys_en;          sys_rdata <= fft_wait2_cnt                       ; end
      20'h00060 : begin sys_ack <= sys_en;          sys_rdata <= fft_acq1_cnt                        ; end

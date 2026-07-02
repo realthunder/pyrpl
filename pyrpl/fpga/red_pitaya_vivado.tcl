@@ -119,6 +119,13 @@ if {[info exists env(FFT_WIDTH)]} {
 # integer bin). Must match the -DFRAC_BITS passed to the peak_detector HLS build.
 set fft_frac [expr {[info exists env(PEAK_FRAC)] ? $env(PEAK_FRAC) : 8}]
 
+# PEAK_ALGO selects the peak detector: "global" (default) or "cfar" (moving-window
+# CA-CFAR). The cfar IP exposes two extra control pins (guard_cells/train_cells);
+# peak_detector_bd.tcl creates+connects the matching BD ports only for cfar, and
+# the PEAK_CFAR verilog define gates their connection in fft_proc.sv. Must match
+# the PEAK_ALGO passed to the peak_detector HLS build (make.sh).
+set peak_algo [expr {[info exists env(PEAK_ALGO)] ? $env(PEAK_ALGO) : "global"}]
+
 if {[llength $argv] > 1 && [lindex $argv 0] == "alinx"} {
     set clk_diff 0
     set adc_sz 12
@@ -267,6 +274,7 @@ if {$fft_clk_200} { lappend verilog_defines -verilog_define FFT_CLK_200 }
 if {$fft_clk_178} { lappend verilog_defines -verilog_define FFT_CLK_178 }
 if {$dsp_fb_pipeline} { lappend verilog_defines -verilog_define DSP_FB_PIPELINE }
 if {$dma_per_chan_tag} { lappend verilog_defines -verilog_define DMA_PER_CHAN_TAG }
+if {$peak_algo == "cfar"} { lappend verilog_defines -verilog_define PEAK_CFAR }
 synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivalent_registers \
     {*}$verilog_defines \
     -generic ADC_SZ=$adc_sz \

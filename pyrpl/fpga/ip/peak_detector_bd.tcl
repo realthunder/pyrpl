@@ -47,4 +47,13 @@ connect_bd_net [get_bd_ports end_index]      [get_bd_pins peak_detector_0/end_in
 connect_bd_net [get_bd_ports data_min]       [get_bd_pins peak_detector_0/data_min]
 connect_bd_net [get_bd_ports nfft]           [get_bd_pins peak_detector_0/nfft]
 
+# CA-CFAR build only: the cfar IP has two extra control pins for the moving-window
+# noise estimate (guard/training cells each side of the CUT). count_t == ap_uint<14>.
+if {[info exists peak_algo] && $peak_algo == "cfar"} {
+    create_bd_port -dir I -from 13 -to 0 guard_cells
+    create_bd_port -dir I -from 13 -to 0 train_cells
+    connect_bd_net [get_bd_ports guard_cells] [get_bd_pins peak_detector_0/guard_cells]
+    connect_bd_net [get_bd_ports train_cells] [get_bd_pins peak_detector_0/train_cells]
+}
+
 save_bd_design
