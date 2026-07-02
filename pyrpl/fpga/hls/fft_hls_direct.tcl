@@ -47,6 +47,15 @@ set unscaled_flag  [expr {$fft_unscaled ? "-DFFT_UNSCALED" : ""}]
 # accurate. Only used when FFT_USE_APPROX=0.
 set fft_cordic_iter [getparam fft_cordic_iter 10]
 
+# PEAK_FRAC: sub-bin interpolation fractional bits (matches the peak_detector build).
+# When != 0 the peak detector interpolates using the two neighbouring bins, which are
+# only adjacent in NATURAL bin order — so build the hls::fft in natural_order instead of
+# the default bit_reversed_order. Keep this default (8) in lockstep with peak_detector.tcl
+# and red_pitaya_vivado.tcl so all three agree on the ordering. See fft_hls_direct.cpp
+# (ordering_opt) and fft_proc.sv (readback-address gate).
+set peak_frac      [getparam peak_frac 8]
+set natural_flag   [expr {$peak_frac != 0 ? "-DFFT_NATURAL_ORDER" : ""}]
+
 # ---- Generate twiddle LUT if not present (shared with FFT_IMPL=3) ----------
 set hls_dir [file normalize [file dirname [info script]]]
 set lut_hdr [file join $hls_dir fft_ip_ssr_twiddle.hpp]
@@ -98,6 +107,7 @@ add_files ../hls/fft_hls_direct.cpp \
              $runtime_flag \
              $approx_flag \
              $unscaled_flag \
+             $natural_flag \
              -DCORDIC_ITER=$fft_cordic_iter"
 
 set_top fft_hls_direct

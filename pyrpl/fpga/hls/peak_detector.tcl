@@ -18,9 +18,14 @@ set peak_frac      [expr {[info exists env(PEAK_FRAC)]      ? $env(PEAK_FRAC)   
 set cflags "-DFSSR=$fft_ssr -DDSZ=$fft_width -DFSZ=$fft_nfft -DFRAC_BITS=$peak_frac"
 
 # FFT_IMPL==4 is the native-SSR xfft, whose output is NATURAL order (PG109: SSR>1
-# fixed-point is natural-only). All other engines emit DIF/bit_reversed_order, where
-# the peak detector must bit-reverse the streaming position to recover the bin.
-if {$fft_impl == 4} {
+# fixed-point is natural-only). Other engines default to DIF/bit_reversed_order, where
+# the peak detector bit-reverses the streaming position to recover the bin.
+# When interpolation is on (peak_frac != 0) the FFT is instead built in natural order
+# (fft_hls_direct sets ordering_opt=natural_order) because sub-bin interp reads the two
+# neighbouring bins, which are only adjacent in natural order. So natural order is
+# required whenever IMPL==4 OR frac != 0 — keep this in lockstep with the ordering_opt
+# gate in fft_hls_direct.tcl and the readback-address gate in fft_proc.sv.
+if {$fft_impl == 4 || $peak_frac != 0} {
     append cflags " -DFFT_NATURAL_ORDER=1"
 }
 

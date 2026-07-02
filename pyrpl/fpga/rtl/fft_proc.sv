@@ -382,15 +382,19 @@ if (FSSR == 1) begin
     assign fft_rdata_down_o     = fft_rdata_down[0];
     assign buf_a_raddr_reversed = buf_a_raddr_bitrev >> fft_shift;
     assign buf_b_raddr_reversed = buf_b_raddr_bitrev >> fft_shift;
-end else if (FFT_IMPL == 4) begin
-    // Native-SSR xfft: NATURAL output order (PG109: SSR>1 fixed-point is natural-only).
+end else if (FFT_IMPL == 4 || ((FFT_IMPL == 3 || FFT_IMPL == 5) && FRAC != 0)) begin
+    // NATURAL output order. Two cases share the same natural readback:
+    //   - IMPL==4 (native-SSR xfft): SSR>1 fixed-point is natural-only (PG109).
+    //   - IMPL==3/5 with interpolation on (FRAC != 0): the DIF hls::fft is built in
+    //     natural_order (fft_hls_direct ordering_opt) so interp sees adjacent bins.
     // lane = k mod FSSR; address = k>>SSR_BITS with NO bit-reversal.
     assign fft_rdata_up_o       = fft_rdata_up  [buf_a_raddr[SSR_BITS-1:0]];
     assign fft_rdata_down_o     = fft_rdata_down[buf_b_raddr[SSR_BITS-1:0]];
     assign buf_a_raddr_reversed = buf_a_raddr[FSZ-1:SSR_BITS];
     assign buf_b_raddr_reversed = buf_b_raddr[FSZ-1:SSR_BITS];
 end else if (FFT_IMPL == 3 || FFT_IMPL == 5) begin
-    // DIF: channel = k mod FSSR — low SSR_BITS of the bin index, no reversal needed.
+    // DIF bit_reversed_order (FRAC == 0, no interpolation): channel = k mod FSSR —
+    // low SSR_BITS of the bin index, no reversal needed; address is bit-reversed.
     assign fft_rdata_up_o       = fft_rdata_up  [buf_a_raddr[SSR_BITS-1:0]];
     assign fft_rdata_down_o     = fft_rdata_down[buf_b_raddr[SSR_BITS-1:0]];
     assign buf_a_raddr_reversed = buf_a_raddr_bitrev[FSZ-SSR_BITS-1:0];

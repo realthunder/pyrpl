@@ -169,9 +169,19 @@ static const sched_lut_t SCALE_SCHED_LUT;
 #endif
 
 struct fft_params_t : hls::ip_fft::params_t {
+#ifdef FFT_NATURAL_ORDER
+    // natural_order: the LogiCORE sub-FFTs add an internal reorder buffer so bins
+    // stream out in spectral order. Required when the peak detector interpolates
+    // (peak_frac != 0) — sub-bin interp reads adjacent bins, only adjacent in natural
+    // order. output_ssr2/4 then emit beat b = {X[FSSR·b .. FSSR·b+FSSR-1]} (natural),
+    // and fft_proc.sv uses non-bit-reversed readback addressing to match. Costs one
+    // reorder buffer per sub-FFT (extra BRAM) vs bit_reversed_order.
+    static const unsigned ordering_opt       = hls::ip_fft::natural_order;
+#else
     // bit_reversed_order costs no internal reorder buffer in LogiCORE.
     // The output permutation is handled by BRAM addressing in fft_proc.sv.
     static const unsigned ordering_opt       = hls::ip_fft::bit_reversed_order;
+#endif
     static const unsigned max_nfft           = SUB_NFFT;
     static const unsigned input_width        = INTERNAL_W;
 #ifdef FFT_UNSCALED
