@@ -497,9 +497,11 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_peak_down_b = IntRegister(0x84, doc="FFT channel B down peak value")
 
-    fft_sum = IntRegister(0x50, doc="Sum of all valid data fot FFT peak detection")
+    fft_cfar_guard = IntRegister(0x50, doc="CA-CFAR: guard cells each side of the "
+                                 "peak (excluded from the local noise estimate)")
 
-    fft_count = IntRegister(0x54, doc="Data count for FFT peak detection")
+    fft_cfar_train = IntRegister(0x54, doc="CA-CFAR: training/reference cells each "
+                                 "side used to estimate the local noise floor")
 
     fft_wait1_cnt = IntRegister(0x58, doc="FFT first stage wait time counter")
 

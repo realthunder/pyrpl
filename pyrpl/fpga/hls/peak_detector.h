@@ -77,10 +77,10 @@ typedef ap_int<SSZ + SQ_BITS + 1>           sdiff_t;    // ap_int<32>
 // k^2. CFAR_*_MAX bound the buffers / loop trip counts at compile time; the
 // runtime registers must be <= these maxima.
 #ifndef CFAR_GUARD_MAX
-#define CFAR_GUARD_MAX 8
+#define CFAR_GUARD_MAX 16
 #endif
 #ifndef CFAR_TRAIN_MAX
-#define CFAR_TRAIN_MAX 32
+#define CFAR_TRAIN_MAX 64
 #endif
 
 #define IN_WIDTH  (FSSR * DSZ)

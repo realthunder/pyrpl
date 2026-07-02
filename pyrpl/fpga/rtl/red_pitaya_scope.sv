@@ -1226,8 +1226,8 @@ if (adc_rstn_i == 1'b0) begin
     fft_threshold_k <= 4;
     fft_peak_start <= 0;
     fft_peak_minimum <= 1;
-    fft_cfar_guard <= 2;    // CA-CFAR: guard cells each side of the peak
-    fft_cfar_train <= 16;   // CA-CFAR: training/reference cells each side
+    fft_cfar_guard <= 8;    // CA-CFAR: guard cells each side of the peak (~main-lobe half-width)
+    fft_cfar_train <= 32;   // CA-CFAR: training/reference cells each side (on the noise floor)
     fft_wait1_cnt <= 100;
     fft_wait2_cnt <= 200;
     fft_acq1_cnt <= (2**(FSZ-1) - 200) & ~(FSSR-1);
