@@ -188,6 +188,10 @@ fi
 #             AltSpreadLogic_medium (DETERMINISTIC=7), phys_opt AggressiveExplore. Best:
 #             pll_adc +0.170 (ser non-binding). N11@125 placement is netlist-sensitive —
 #             re-sweep DETERMINISTIC after RTL edits.
+#   fft125ssr4n13-single — IMPL=5 SSR=4 NFFT=13 (8192-pt) SINGLE-CHANNEL, FFT on adc_clk
+#             @125 MHz. Finest resolution; single-channel because natural_order reorder
+#             buffers make dual-channel N13 1 BRAM tile over. natural order auto-on via
+#             frac8. Fits BRAM ~85% / LUT 53% / DSP 63%; closes pll_adc +0.148 (MT).
 #   n9-125    — IMPL=4 SSR=4 NFFT=9 (512-pt), FFT on adc_clk @ 125 MHz, dsz24/frac8/
 #             scaled2/approx + DSP fb pipeline, place WLDrivenBlockPlacement
 #             (DETERMINISTIC=4). Best n9/125: pll_adc +0.272 (ser non-binding).
@@ -263,6 +267,29 @@ case "${PROFILE:-}" in
         export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
         echo "==> PROFILE=fft125ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe, place AltSpreadLogic_medium (DETERMINISTIC=7), phys_opt AggressiveExplore"
         ;;
+    fft125ssr4n13-single)
+        # Finest-resolution single-clock image: IMPL=5 (direct hls::fft, DSP-based) SSR=4
+        # NFFT=13 (8192-pt), SINGLE-CHANNEL (fft_b dropped) so the natural_order reorder
+        # buffers fit — dual-channel N13 is 1 BRAM tile over. FFT on adc_clk @125 MHz.
+        # Natural order is auto-enabled by PEAK_FRAC!=0 (interp needs adjacent bins; see
+        # the fft natural-order commit). dsz24/frac8/scaled2/approx + DSP fb pipeline.
+        # Fits at BRAM ~85% (83xRAMB36 + 73xRAMB18), LUT 53%, DSP 63%; closes on a plain
+        # multithreaded build at pll_adc +0.148 (ser non-binding, FFT on adc_clk).
+        # DETERMINISTIC left at default (0 = fast MT, NOT reproducible) — no sweep run yet;
+        # sweep DETERMINISTIC=1..11 for a pinned/reproducible point if needed.
+        export FFT_IMPL=${FFT_IMPL:-5}
+        export FFT_SSR=${FFT_SSR:-4}
+        export FFT_NFFT=${FFT_NFFT:-13}
+        export FFT_SINGLE=${FFT_SINGLE:-1}
+        export FFT_WIDTH=${FFT_WIDTH:-24}
+        export PEAK_FRAC=${PEAK_FRAC:-8}
+        export FFT_SCALED=${FFT_SCALED:-2}
+        export FFT_USE_APPROX=${FFT_USE_APPROX:-1}
+        export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
+        export DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-1}
+        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
+        echo "==> PROFILE=fft125ssr4n13-single: IMPL=5 SSR=4 NFFT=13 (8192-pt) SINGLE-CHANNEL FFT@125MHz on adc_clk, natural order (frac8), dsz24 scaled2 approx fbpipe, phys_opt AggressiveExplore (DET default = MT, not reproducible — sweep for a pinned point)"
+        ;;
     fft178ssr8n11)
         # Experimental SSR=8 single-FFT build: only fft_a is synthesised (FFT_SINGLE=1,
         # fft_b omitted) to halve FFT resource use so SSR=8 has a chance to fit. NFFT=11
@@ -299,7 +326,7 @@ case "${PROFILE:-}" in
         echo "==> PROFILE=n9-125: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe, place WLDrivenBlockPlacement (DETERMINISTIC=4), phys_opt AggressiveExplore"
         ;;
     *)
-        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 ssr2n13-125 fft178ssr4n11 fft125ssr4n11 fft178ssr8n11 n9-125)" >&2; exit 1 ;;
+        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 ssr2n13-125 fft178ssr4n11 fft125ssr4n11 fft125ssr4n13-single fft178ssr8n11 n9-125)" >&2; exit 1 ;;
 esac
 
 # ---- Active build defaults (override on the command line, e.g. FFT_IMPL=5 ./make.sh) ----
