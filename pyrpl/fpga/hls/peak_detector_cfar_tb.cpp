@@ -64,8 +64,8 @@ static ref_result ref_cfar(const std::vector<int> &s, int N, int k_sq,
     ref_result r{pbin, pval, false};
     if (pbin < 0) return r;
 
-    // CFAR window
-    unsigned long long n = 0, Sigma = 0;
+    // CFAR window (track per-side counts for the two-sided edge guard)
+    unsigned long long n = 0, n_left = 0, n_right = 0, Sigma = 0;
     unsigned __int128   Q = 0;
     for (int t = 1; t <= T; t++)
         for (int side = -1; side <= 1; side += 2) {
@@ -74,9 +74,12 @@ static ref_result ref_cfar(const std::vector<int> &s, int N, int k_sq,
                 Sigma += (unsigned long long)s[b];
                 Q     += (unsigned __int128)s[b] * s[b];
                 n     += 1;
+                if (side < 0) n_left += 1; else n_right += 1;
             }
         }
     if (n == 0) return r;                       // no local noise estimate
+    int min_side = T >> 2; if (min_side < 1) min_side = 1;
+    bool two_sided = (n_left >= (unsigned)min_side) && (n_right >= (unsigned)min_side);
     long long Pn   = (long long)pval * (long long)n;
     long long diff = Pn - (long long)Sigma;
     unsigned __int128 diff_sq = (unsigned __int128)((__int128)diff * diff);
@@ -84,7 +87,7 @@ static ref_result ref_cfar(const std::vector<int> &s, int N, int k_sq,
     unsigned __int128 S_sq = (unsigned __int128)Sigma * Sigma;
     unsigned __int128 V    = (nQ >= S_sq) ? (nQ - S_sq) : 0;
     unsigned __int128 thr  = (unsigned __int128)k_sq * V;
-    r.valid = (diff > 0) && (diff_sq > thr);
+    r.valid = (diff > 0) && two_sided && (diff_sq > thr);
     return r;
 }
 
@@ -189,6 +192,30 @@ int main() {
         frame_result r = run_frame(s, LOG2, /*k_sq*/9, LO, HI, /*data_min*/5, LOG2, G, T);
         ref_result ref = ref_cfar(s, N, 9, LO, HI, 5, G, T);
         errors += check("[4] guard-excludes-skirt", r, ref, /*expect*/true);
+    }
+
+    // ---- [5] CLUTTER-EDGE false alarm rejected by the two-sided guard --------
+    // A steep skirt sitting AT the cutoff: the argmax lands on the first in-band
+    // bin (start_index) whose low-freq reference cells are all below the band and
+    // dropped -> a one-sided estimate towers under the skirt shoulder. The
+    // two-sided guard (needs >= T/4 cells each side) must REJECT it. Use a raised
+    // cutoff (CLO) so the argmax is exactly at the edge.
+    {
+        const int CLO = 200;                     // high-pass cutoff bin
+        std::vector<int> s(N, 50);
+        // descending skirt spilling past the cutoff: highest at CLO, decaying up
+        for (int k = 0; k < 30; k++) {
+            int b = CLO + k; if (b < N) s[b] = 5000 - 150*k;   // 5000 at edge -> ~500
+        }
+        // a small, GENUINE peak well inside the band (two-sided window available)
+        s[CLO + 120] = 1500;
+        for (int t=1;t<=T;t++){int v=(t&1)?70:40;for(int sd=-1;sd<=1;sd+=2){int b=CLO+120+sd*(G+t); if(b>=0&&b<N)s[b]=v;}}
+        frame_result r = run_frame(s, LOG2, /*k_sq*/9, /*start*/CLO, HI, /*data_min*/5, LOG2, G, T);
+        ref_result ref = ref_cfar(s, N, 9, CLO, HI, 5, G, T);
+        // DUT argmax is the skirt edge at CLO; the guard must reject it -> not valid.
+        errors += check("[5] clutter-edge rejected", r, ref, /*expect*/false);
+        std::cout << "    (argmax bin " << r.bin << " == cutoff " << CLO
+                  << "? " << (r.bin==CLO) << ", rejected by two-sided guard)\n";
     }
 
     std::cout << (errors == 0 ? "PASS\n" : "FAIL\n");
