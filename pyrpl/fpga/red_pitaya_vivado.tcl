@@ -97,6 +97,13 @@ set fft_clk_178    [expr {[info exists env(FFT_CLK_178)]    ? $env(FFT_CLK_178) 
 # multicycled).  Adds 1 cycle of loopback latency, taken only in digital_loop mode
 # (opt-in functional change); drives a Verilog define.  Default 0.
 set dsp_fb_pipeline [expr {[info exists env(DSP_FB_PIPELINE)] ? $env(DSP_FB_PIPELINE) : 0}]
+
+# SCOPE_FB_PIPELINE: register the i_dsp module-sum -> scope ADC-input path
+# (scope{1,2}_o -> to_scope_{a,b} -> i_scope/adc_{a,b}_dat) in red_pitaya_top. Breaks
+# the congestion-bound sum2_reg -> adc_b_dat_reg pll_adc_clk route seen at high SSR /
+# large NFFT. Symmetric on both channels (uniform +1 adc_clk latency on the scope/FFT
+# view; CH1/CH2 stay aligned). Separate from DSP_FB_PIPELINE (loopback arm). Default 0.
+set scope_fb_pipeline [expr {[info exists env(SCOPE_FB_PIPELINE)] ? $env(SCOPE_FB_PIPELINE) : 0}]
 # DMA_PER_CHAN_TAG: select the DMA point-cloud packet format in red_pitaya_scope.sv.
 #   0 (default) = v3 combined  — one shared header per scan index, NCH-interleaved
 #                 data, shared position. Lowest wire overhead (~2.4%).
@@ -273,6 +280,7 @@ set verilog_defines [expr {$fft_runtime_nfft ? "-verilog_define FFT_RUNTIME_NFFT
 if {$fft_clk_200} { lappend verilog_defines -verilog_define FFT_CLK_200 }
 if {$fft_clk_178} { lappend verilog_defines -verilog_define FFT_CLK_178 }
 if {$dsp_fb_pipeline} { lappend verilog_defines -verilog_define DSP_FB_PIPELINE }
+if {$scope_fb_pipeline} { lappend verilog_defines -verilog_define SCOPE_FB_PIPELINE }
 if {$dma_per_chan_tag} { lappend verilog_defines -verilog_define DMA_PER_CHAN_TAG }
 if {$peak_algo == "cfar"} { lappend verilog_defines -verilog_define PEAK_CFAR }
 synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivalent_registers \

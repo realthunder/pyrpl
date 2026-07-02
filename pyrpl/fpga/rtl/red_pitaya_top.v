@@ -537,6 +537,27 @@ wire    [14-1: 0] to_scope_a;
 wire    [14-1: 0] to_scope_b;
 wire dsp_trigger;
 
+// ---- Scope-input feedback pipeline (build-gated, default OFF) --------------
+// The i_dsp module sum (scope{1,2}_o -> to_scope_{a,b}) routes into the scope's
+// ADC-input capture (i_scope/adc_{a,b}_dat). At high SSR / large NFFT that route is
+// congestion-bound and becomes the worst pll_adc_clk path (sum2_reg -> adc_b_dat_reg,
+// ~73% route). Register it here to split the route. Symmetric on BOTH channels so
+// CH1/CH2 stay sample-aligned (scope + FFT see a uniform +1 adc_clk latency). This is
+// a SEPARATE knob from DSP_FB_PIPELINE (which registers the dac->adc loopback arm) —
+// this one is the module-sum->scope path. Default OFF (no latency change).
+`ifdef SCOPE_FB_PIPELINE
+reg  [14-1: 0] to_scope_a_p, to_scope_b_p;
+always @(posedge adc_clk) begin
+  to_scope_a_p <= to_scope_a;
+  to_scope_b_p <= to_scope_b;
+end
+wire [14-1: 0] scope_a_in = to_scope_a_p;
+wire [14-1: 0] scope_b_in = to_scope_b_p;
+`else
+wire [14-1: 0] scope_a_in = to_scope_a;
+wire [14-1: 0] scope_b_in = to_scope_b;
+`endif
+
 wire [ 63:0] scope_dma_a_tdata,  scope_dma_b_tdata;
 wire         scope_dma_a_tvalid, scope_dma_b_tvalid;
 wire         scope_dma_a_tready, scope_dma_b_tready;
@@ -587,8 +608,8 @@ dma_s2mm #(
 red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .FSSR(FFT_SSR), .DSZ(FFT_WIDTH), .FRAC(FFT_FRAC), .FFT_IMPL(FFT_IMPL),
                    .FFT_SINGLE(FFT_SINGLE), .HIST_BLOCK_SIZE(HIST_BLOCK_SIZE), .HSZ(HSZ)) i_scope (
   // ADC
-  .adc_a_i         (  to_scope_a[14-1:14-ADC_SZ] ),  // CH 1
-  .adc_b_i         (  to_scope_b[14-1:14-ADC_SZ] ),  // CH 2
+  .adc_a_i         (  scope_a_in[14-1:14-ADC_SZ] ),  // CH 1 (optionally pipelined, see SCOPE_FB_PIPELINE)
+  .adc_b_i         (  scope_b_in[14-1:14-ADC_SZ] ),  // CH 2 (optionally pipelined, see SCOPE_FB_PIPELINE)
   .adc_clk_i       (  adc_clk                    ),  // clock
   .adc_rstn_i      (  adc_rstn                   ),  // reset - active low
   .trig_ext_i      (  exp_p_in[0]                ),  // external trigger

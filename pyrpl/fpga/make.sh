@@ -374,7 +374,7 @@ else
 fi
 if [[ $_ssr -ge 8 ]]; then _single_def=1; else _single_def=0; fi
 echo "==> Build config: IMPL=${FFT_IMPL} SSR=${_ssr} NFFT=${FFT_NFFT:-12} SCALED=${FFT_SCALED:-2} WIDTH=${FFT_WIDTH:-auto} SINGLE=${FFT_SINGLE:-$_single_def} HSZ=${HSZ:-24}"
-echo "                  FFT_CLK=${_fftclk} | DET=${DETERMINISTIC} PHYS_OPT=${PHYS_OPT:-AggressiveExplore} DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-0}"
+echo "                  FFT_CLK=${_fftclk} | DET=${DETERMINISTIC} PHYS_OPT=${PHYS_OPT:-AggressiveExplore} DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-0} SCOPE_FB_PIPELINE=${SCOPE_FB_PIPELINE:-0}"
 unset _ssr _fftclk _single_def
 
 mkdir -p "$ROOT/.hls"
@@ -536,7 +536,7 @@ manifest="$WORKROOT/out/BUILD_INFO.txt"
     echo "# and derived module parameters are appended below by red_pitaya_vivado.tcl):"
     for v in FPGA_PART ADC_SZ CLK_MULT CLK_ADC_DIV FFT_IMPL FFT_SSR FFT_NFFT \
              FFT_WIDTH PEAK_FRAC PEAK_ALGO CFAR_GUARD_MAX CFAR_TRAIN_MAX FFT_SCALED FFT_INTERNAL_W FFT_CLK_PERIOD FFT_CLK_SEL FFT_CLK_200 FFT_CLK_178 \
-             FFT_MULT_LUT FFT_USE_APPROX FFT_UNSCALED FFT_CORDIC_ITER HIST_BLOCK_SIZE HSZ PHYS_OPT OPT_DIRECTIVE FFT_SINGLE; do
+             FFT_MULT_LUT FFT_USE_APPROX FFT_UNSCALED FFT_CORDIC_ITER HIST_BLOCK_SIZE HSZ PHYS_OPT OPT_DIRECTIVE FFT_SINGLE DSP_FB_PIPELINE SCOPE_FB_PIPELINE; do
         printf '%-14s= %s\n' "$v" "${!v:-}"
     done
 } > "$manifest"
