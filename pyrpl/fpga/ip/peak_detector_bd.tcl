@@ -54,6 +54,15 @@ if {[info exists peak_algo] && $peak_algo == "cfar"} {
     create_bd_port -dir I -from 13 -to 0 train_cells
     connect_bd_net [get_bd_ports guard_cells] [get_bd_pins peak_detector_0/guard_cells]
     connect_bd_net [get_bd_ports train_cells] [get_bd_pins peak_detector_0/train_cells]
+
+    # The cfar detector uses DATAFLOW + ap_ctrl_chain (to overlap the CFAR pass with
+    # the next frame's streaming). Unlike ap_ctrl_hs, ap_ctrl_chain does NOT
+    # auto-restart on ap_start alone — it parks after each frame until ap_continue
+    # is asserted. The scope RTL keys off the m_axis output valid, not ap_done, so
+    # tie ap_continue=1 (reusing the const-1) to make the block FREE-RUN with
+    # overlap. Without this the detector stalls after the first frame(s):
+    # peak_out_valid stops pulsing and fft_point_cnt freezes (fft_sync masks it).
+    connect_bd_net [get_bd_pins const_start/dout] [get_bd_pins peak_detector_0/ap_continue]
 }
 
 save_bd_design
