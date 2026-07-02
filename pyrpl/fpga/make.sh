@@ -183,6 +183,11 @@ fi
 #             FFT shares adc_clk @125 MHz (FFT_CLK_SEL=0) + DSP_FB_PIPELINE — one fewer
 #             clock domain. Place AltSpreadLogic_high (DETERMINISTIC=3), phys_opt
 #             AggressiveExplore. Best: pll_adc +0.283 (ser non-binding, FFT on adc_clk).
+#   fft125ssr4n11 — IMPL=4 SSR=4 NFFT=11 (2048-pt), FFT on adc_clk @125 MHz — single-clock
+#             version of fft178ssr4n11. dsz24/frac8/scaled2/approx + DSP fb pipeline, place
+#             AltSpreadLogic_medium (DETERMINISTIC=7), phys_opt AggressiveExplore. Best:
+#             pll_adc +0.170 (ser non-binding). N11@125 placement is netlist-sensitive —
+#             re-sweep DETERMINISTIC after RTL edits.
 #   n9-125    — IMPL=4 SSR=4 NFFT=9 (512-pt), FFT on adc_clk @ 125 MHz, dsz24/frac8/
 #             scaled2/approx + DSP fb pipeline, place WLDrivenBlockPlacement
 #             (DETERMINISTIC=4). Best n9/125: pll_adc +0.272 (ser non-binding).
@@ -235,6 +240,29 @@ case "${PROFILE:-}" in
         export PHYS_OPT=${PHYS_OPT:-Explore}
         echo "==> PROFILE=fft178ssr4n11: SSR=4 NFFT=11 FFT@178.57MHz, place EarlyBlockPlacement (DETERMINISTIC=6), phys_opt Explore"
         ;;
+    fft125ssr4n11)
+        # Single-clock 2048-pt image: IMPL=4 (native xfft, natural order) SSR=4 NFFT=11,
+        # FFT on adc_clk @125 MHz (FFT_CLK_SEL=0) — one fewer clock domain than
+        # fft178ssr4n11. dsz24 + sub-bin interp (frac8) + scaled2 + approx mag + DSP fb
+        # pipeline, rep OFF. Best point from the 11-place sweep on commit 6ecbc883:
+        # AltSpreadLogic_medium (DET=7) + AggressiveExplore -> pll_adc +0.170, pll_ser
+        # +1.845 (ser non-binding — FFT on adc_clk). LUT 86% / DSP 87% / BRAM 51%.
+        # Archive: out.d/sweep-impl4-ssr4n11-125-dsz24-fbpipe-interp-det7-AggressiveExplore.
+        # NOTE: N11@125 placement is netlist-sensitive — the winning DETERMINISTIC shifted
+        # (det11->det7) across a single RTL change, so RE-SWEEP DETERMINISTIC after RTL edits.
+        export FFT_IMPL=${FFT_IMPL:-4}
+        export FFT_SSR=${FFT_SSR:-4}
+        export FFT_NFFT=${FFT_NFFT:-11}
+        export FFT_WIDTH=${FFT_WIDTH:-24}
+        export PEAK_FRAC=${PEAK_FRAC:-8}
+        export FFT_SCALED=${FFT_SCALED:-2}
+        export FFT_USE_APPROX=${FFT_USE_APPROX:-1}
+        export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
+        export DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-1}
+        export DETERMINISTIC=${DETERMINISTIC:-7}
+        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
+        echo "==> PROFILE=fft125ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe, place AltSpreadLogic_medium (DETERMINISTIC=7), phys_opt AggressiveExplore"
+        ;;
     fft178ssr8n11)
         # Experimental SSR=8 single-FFT build: only fft_a is synthesised (FFT_SINGLE=1,
         # fft_b omitted) to halve FFT resource use so SSR=8 has a chance to fit. NFFT=11
@@ -271,7 +299,7 @@ case "${PROFILE:-}" in
         echo "==> PROFILE=n9-125: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe, place WLDrivenBlockPlacement (DETERMINISTIC=4), phys_opt AggressiveExplore"
         ;;
     *)
-        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 ssr2n13-125 fft178ssr4n11 fft178ssr8n11 n9-125)" >&2; exit 1 ;;
+        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 ssr2n13-125 fft178ssr4n11 fft125ssr4n11 fft178ssr8n11 n9-125)" >&2; exit 1 ;;
 esac
 
 # ---- Active build defaults (override on the command line, e.g. FFT_IMPL=5 ./make.sh) ----
