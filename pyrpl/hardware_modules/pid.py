@@ -235,6 +235,7 @@ class Pid(FilterModule):
                          "pause_gains",
                          "paused",
                          "differential_mode_enabled",
+                         "window_gate",
                          ]
     _gui_attributes = _setup_attributes + ["ival"]
 
@@ -298,6 +299,20 @@ class Pid(FilterModule):
                                                  "Only pid0 and pid1 can be paired in "
                                                  "differential mode. "
                                              )
+
+    window_gate = SelectRegister(0x130,
+                                 options=sorted_dict(
+                                       off=0,
+                                       up=1,
+                                       down=2,
+                                       both=3),
+                                 bitmask=0b11,
+                                 doc="Gate the PID by the hardware FFT "
+                                     "acquisition windows (scope fft "
+                                     "wait/acq counters): outside the "
+                                     "selected window(s) the gains chosen "
+                                     "by pause_gains are paused (integrator "
+                                     "held). 'off' = plain sync behaviour.")
 
     paused = PauseRegister(0xC,
                            invert=True,

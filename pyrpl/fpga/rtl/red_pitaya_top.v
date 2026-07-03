@@ -481,6 +481,7 @@ wire  [  8-1: 0] exp_p_out, exp_n_out;
 wire  [  8-1: 0] exp_p_dir, exp_n_dir;
 
 wire scope_fft_o;
+wire [2-1:0] fft_window;   // scope fft acq windows {down, up} -> dsp pid gating
 wire scope_sig_o;
 wire x_step_0;
 wire y_step_0;
@@ -619,6 +620,7 @@ red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .FSSR(FFT_SSR), .DSZ(FFT_WIDTH)
 
   .fft_clk_i       (  fft_clk                    ),
   .fft_active_o    (  scope_fft_o                ),  // scope acquisition done signal
+  .fft_window_o    (  fft_window                 ),  // acq windows {down, up} for PID gating
   .scope_sig_o     (  scope_sig_o                ),
   .x_step_0        (  x_step_0                   ),
   .y_step_0        (  y_step_0                   ),
@@ -711,6 +713,7 @@ red_pitaya_dsp i_dsp (
    // signals
   .clk_i           (  adc_clk                    ),  // clock
   .rstn_i          (  adc_rstn                   ),  // reset - active low
+  .fft_window_i    (  fft_window                 ),  // scope fft acq windows for PID gating
   .dat_a_i         (  adc_a                      ),  // in 1
   .dat_b_i         (  adc_b                      ),  // in 2
   .dat_a_o         (  dac_a                      ),  // out 1

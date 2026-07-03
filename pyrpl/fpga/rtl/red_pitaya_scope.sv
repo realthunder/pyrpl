@@ -92,6 +92,7 @@ module red_pitaya_scope #(
 
    input                 fft_clk_i       ,  // FFT clock
    output logic          fft_active_o    ,  // fft captureing
+   output       [ 2-1:0] fft_window_o    ,  // fft acq windows {down, up} (adc clk)
    output                scope_sig_o     ,  // scan signaling
    output                x_step_0        ,  // x step
    output logic          y_step_0        ,  // y step
@@ -681,6 +682,8 @@ logic fft_trig_i = fft_trig_sync ? (adc_trig && !adc_dly_do && pretrig_ok) : fft
 logic fft_dvalid = (!fft_trig_sync || adc_we) && adc_dv; 
 logic fft_up = fft_state == S_FFT_UP;
 logic fft_down = fft_state == S_FFT_DOWN;
+// export the acq windows for PID gating (EO-PLL locks only inside them)
+assign fft_window_o = {fft_down, fft_up};
 
 localparam IDXSZ = 8;
 localparam IHSZ = 10;

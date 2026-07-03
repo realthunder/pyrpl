@@ -82,6 +82,7 @@ module red_pitaya_pid_block #(
    input                 clk_i           ,  // clock
    input                 rstn_i          ,  // reset - active low
    input                 sync_i          ,  // synchronization input, active high
+   input      [  2-1: 0] window_i        ,  // FFT acq-window gate {down, up}, active high
    input signed     [ 14-1: 0] dat_i           ,  // input data
    output signed    [ 14-1: 0] dat_o           ,  // output data
    input signed     [ 14-1: 0] diff_dat_i      ,  // input data for differential mode
@@ -101,12 +102,19 @@ reg signed [ 16-1: 0] set_ival;   // integral value to set
 reg            ival_write;
 reg [  3-1: 0] pause_pid_on_sync;  // register to specify which gains (P, I, and/or D) are paused during active sync signal
 reg enable_differential_mode;  // register to specify which gains (P, I, and/or D) are paused during active sync signal
+// Optional gating by the hardware FFT acquisition windows (scope fft FSM):
+// window_gate_mode selects which window(s) enable the PID; outside them the
+// gains selected by pause_pid_on_sync are paused (P/D zeroed, integrator
+// held), exactly as if sync were deasserted. 00 = off (default, plain sync).
+reg  [ 2-1: 0] window_gate_mode;
+wire window_ok = (window_gate_mode == 2'b00) | (|(window_i & window_gate_mode));
+wire sync_eff  = sync_i & window_ok;
 wire pause_i_on_sync;
-assign pause_i = pause_pid_on_sync[0] & !sync_i;
+assign pause_i = pause_pid_on_sync[0] & !sync_eff;
 wire pause_p_on_sync;
-assign pause_p = pause_pid_on_sync[1] & !sync_i;
+assign pause_p = pause_pid_on_sync[1] & !sync_eff;
 wire pause_d_on_sync;
-assign pause_d = pause_pid_on_sync[2] & !sync_i;
+assign pause_d = pause_pid_on_sync[2] & !sync_eff;
 reg [ GAINBITS-1: 0] set_kp;   // Kp
 reg [ GAINBITS-1: 0] set_ki;   // Ki
 reg [ GAINBITS-1: 0] set_kd;   // Kd
@@ -122,6 +130,7 @@ always @(posedge clk_i) begin
       set_ival <= 14'd0;
       pause_pid_on_sync <= {3{1'b1}};  // by default, all gains are paused on sync signal
       enable_differential_mode <= 1'b0; // by default no differential mode
+      window_gate_mode <= 2'b00;        // by default no FFT-window gating
       set_kp <= {GAINBITS{1'b0}};
       set_ki <= {GAINBITS{1'b0}};
       set_kd <= {GAINBITS{1'b0}};
@@ -141,6 +150,7 @@ always @(posedge clk_i) begin
          if (addr==16'h124)   out_min  <= wdata;
          if (addr==16'h128)   out_max  <= wdata;
          if (addr==16'h12C)   {enable_differential_mode,pause_pid_on_sync} <= wdata[4-1:0];
+         if (addr==16'h130)   window_gate_mode <= wdata[2-1:0];
       end
       if (addr==16'h100 && wen)
          ival_write <= 1'b1;
@@ -157,6 +167,7 @@ always @(posedge clk_i) begin
 	     16'h124 : begin ack <= wen|ren; rdata <= {{32-14{1'b0}},out_min}; end
 	     16'h128 : begin ack <= wen|ren; rdata <= {{32-14{1'b0}},out_max}; end
 	     16'h12C : begin ack <= wen|ren; rdata <= {{32-4{1'b0}},enable_differential_mode,pause_pid_on_sync}; end
+	     16'h130 : begin ack <= wen|ren; rdata <= {{32-2{1'b0}},window_gate_mode}; end
 	     16'h200 : begin ack <= wen|ren; rdata <= PSR; end
 	     16'h204 : begin ack <= wen|ren; rdata <= ISR; end
 	     16'h208 : begin ack <= wen|ren; rdata <= DSR; end

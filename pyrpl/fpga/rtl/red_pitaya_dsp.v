@@ -83,6 +83,9 @@ module red_pitaya_dsp #(
    input      [ 12-1: 0] xadc3_i,
    input      [ 12-1: 0] xadc4_i,
 
+   // scope fft acq windows {down, up} for PID gating
+   input      [  2-1: 0] fft_window_i ,
+
    // scanner outputs
    output     [ 14-1: 0] scan_x_o     ,  // scanner x value
    output     [ 14-1: 0] scan_y_o     ,  // scanner y value
@@ -396,6 +399,7 @@ generate for (j = PID0; j <= PID_LAST; j = j+1) begin
      .clk_i        (  clk_i          ),  // clock
      .rstn_i       (  rstn_i         ),  // reset - active low
      .sync_i       (  sync[j]        ),  // syncronization of different dsp modules
+     .window_i     (  fft_window_i   ),  // fft acq windows for optional gating
      .dat_i        (  input_signal [j] ),  // input data
      .dat_o        (  output_direct[j]),  // output data
 	 .diff_dat_i   (  diff_input_signal[j] ),  // input data for differential mode
