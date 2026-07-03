@@ -71,6 +71,60 @@ class LogHandler(QtCore.QObject, logging.Handler):
             self.handleError(record)
 
 
+class FloatingTitleBar(QtWidgets.QWidget):
+    """
+    Title bar shown while the dock widget is floating. Provides an explicit
+    "Dock" button because drag-docking is impossible on some platforms
+    (e.g. Wayland under WSL).
+    """
+    def __init__(self, dock_widget):
+        super(FloatingTitleBar, self).__init__(dock_widget)
+        self.dock_widget = dock_widget
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(6, 2, 2, 2)
+        layout.setSpacing(2)
+        self.title_label = QtWidgets.QLabel(dock_widget.windowTitle())
+        layout.addWidget(self.title_label)
+        layout.addStretch()
+        # same icons as the native QDockWidget title bar buttons
+        style = self.style()
+        self.dock_button = QtWidgets.QToolButton()
+        self.dock_button.setAutoRaise(True)
+        self.dock_button.setIcon(
+            style.standardIcon(QtWidgets.QStyle.SP_TitleBarNormalButton))
+        self.dock_button.setToolTip("Dock this window back into the main window")
+        self.dock_button.clicked.connect(lambda: dock_widget.setFloating(False))
+        layout.addWidget(self.dock_button)
+        self.close_button = QtWidgets.QToolButton()
+        self.close_button.setAutoRaise(True)
+        self.close_button.setIcon(
+            style.standardIcon(QtWidgets.QStyle.SP_TitleBarCloseButton))
+        self.close_button.setToolTip("Close")
+        self.close_button.clicked.connect(dock_widget.close)
+        layout.addWidget(self.close_button)
+
+    def mousePressEvent(self, event):
+        # allow moving the floating window by dragging the title bar
+        # (startSystemMove is the only way that works on Wayland)
+        if event.button() == QtCore.Qt.LeftButton:
+            window = self.dock_widget.windowHandle()
+            if window is not None and hasattr(window, 'startSystemMove'):
+                window.startSystemMove()
+                event.accept()
+                return
+        super(FloatingTitleBar, self).mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            if self.dock_widget.isMaximized():
+                self.dock_widget.showNormal()
+            else:
+                self.dock_widget.showMaximized()
+            event.accept()
+            return
+        super(FloatingTitleBar, self).mouseDoubleClickEvent(event)
+
+
 class MyDockWidget(QtWidgets.QDockWidget):
     """
     A DockWidget where the inner widget is only created when needed (To reduce load times).
@@ -90,6 +144,24 @@ class MyDockWidget(QtWidgets.QDockWidget):
             QtWidgets.QDockWidget.DockWidgetClosable)
         self.create_widget_func = create_widget_func
         self.widget = None
+        self.topLevelChanged.connect(self._update_title_bar)
+
+    def _update_title_bar(self, floating=None):
+        # a "Dock" button is needed while floating since drag-docking does
+        # not work on Wayland (WSL)
+        old = self.titleBarWidget()
+        if self.isFloating():
+            # the VerticalTitleBar feature would place the custom title bar on
+            # the left side even while floating -- drop it, always show on top
+            self.setFeatures(self.features() &
+                             ~QtWidgets.QDockWidget.DockWidgetVerticalTitleBar)
+            self.setTitleBarWidget(FloatingTitleBar(self))
+        else:
+            self.setFeatures(self.features() |
+                             QtWidgets.QDockWidget.DockWidgetVerticalTitleBar)
+            self.setTitleBarWidget(None)
+        if old is not None:
+            old.deleteLater()
 
     def showEvent(self, event):
         if self.widget is None:
@@ -101,6 +173,9 @@ class MyDockWidget(QtWidgets.QDockWidget):
                 self.setWidget(self.scrollarea)
             else:
                 self.setWidget(self.widget)
+        # sync title bar in case the floating state was restored before show
+        if self.isFloating() != (self.titleBarWidget() is not None):
+            self._update_title_bar()
         super(MyDockWidget, self).showEvent(event)
 
     def event(self, event):
