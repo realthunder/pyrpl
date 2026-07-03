@@ -681,6 +681,50 @@ class Scope(HardwareModule, AcquisitionModule):
     def dma_max_parse_rate(self, value):
         self._dma_udp_client.configure(max_parse_rate=value)
 
+    @property
+    def dma_zigzag_shift(self):
+        """Bidirectional-scan weave correction, uniform term (scan cells): the
+        DMA parser shifts each point's write target by the direction-signed
+        correction corr(i) = shift + edge*exp(-i/tau), i = cells since the
+        point's own line start (needs dma_zigzag_stride). Applies live; plain
+        proxies to the UDP client (not persisted registers)."""
+        return self._dma_udp_client._zigzag_shift
+
+    @dma_zigzag_shift.setter
+    def dma_zigzag_shift(self, value):
+        self._dma_udp_client.configure(zigzag_shift=value)
+
+    @property
+    def dma_zigzag_edge(self):
+        """Turnaround-transient amplitude of the weave correction (cells); the
+        mirror is still settling right after each line reversal, displacing the
+        first few cells. See dma_zigzag_shift."""
+        return self._dma_udp_client._zigzag_edge
+
+    @dma_zigzag_edge.setter
+    def dma_zigzag_edge(self, value):
+        self._dma_udp_client.configure(zigzag_edge=value)
+
+    @property
+    def dma_zigzag_tau(self):
+        """Settle length of the turnaround transient (cells). See
+        dma_zigzag_shift."""
+        return self._dma_udp_client._zigzag_tau
+
+    @dma_zigzag_tau.setter
+    def dma_zigzag_tau(self, value):
+        self._dma_udp_client.configure(zigzag_tau=value)
+
+    @property
+    def dma_zigzag_stride(self):
+        """Scan row stride (x_count) for the per-x weave-correction LUT; 0
+        disables the edge term (uniform shift only)."""
+        return self._dma_udp_client._zigzag_stride
+
+    @dma_zigzag_stride.setter
+    def dma_zigzag_stride(self, value):
+        self._dma_udp_client.configure(zigzag_stride=value)
+
     def _dma_configure_from_fpga(self):
         """Reconfigure the UDP unpacker from the FPGA packet-format descriptor.
 

@@ -212,6 +212,31 @@ class DmaUdpClient:
         # the FPGA descriptor via configure(seq_bits=...).
         self._seq_bits = 0
         self._seq_mask = 0
+        # Bidirectional-scan (zigzag) weave correction. Measured on hardware:
+        # the trigger chain settles the galvo before each acquisition, so the
+        # MID-LINE forward/reverse offset is ~0 — but right after each line
+        # turnaround the mirror is still settling and the first cells land
+        # displaced (~1-2 cells, opposite signs at the two ends, decaying in a
+        # few cells). Model, per point, i = cells since that point's own line
+        # start (x forward, stride-1-x reverse):
+        #     corr(i) = zigzag_shift + zigzag_edge * exp(-i / zigzag_tau)
+        # applied as dir * corr to the WRITE TARGET only (the running position
+        # reconstruction is untouched). zigzag_shift is the uniform term
+        # (usually 0 here), zigzag_edge the turnaround transient amplitude,
+        # zigzag_tau the settle length in cells. Compiled into per-direction
+        # integer LUTs over x = pos % zigzag_stride (the scan row stride =
+        # x_count, pushed by the host); stride 0 disables the edge term.
+        # Live-tunable via configure(). _zz_dir carries the last seen scan
+        # direction across segments/packets (dwell points step 0).
+        # NOTE: must be initialized BEFORE the configure() call below — the LUT
+        # rebuild in configure() reads these.
+        self._zigzag_shift = 0
+        self._zigzag_edge = 0.0
+        self._zigzag_tau = 4.0
+        self._zigzag_stride = 0
+        self._zz_lut_f = None   # int corr per x, forward
+        self._zz_lut_r = None   # int corr per x, reverse (mirrored, negated)
+        self._zz_dir = 1
         self.configure(fsz=fsz, frac=frac, hsz=hsz,
                        hist_block_size=hist_block_size)
 
@@ -281,7 +306,9 @@ class DmaUdpClient:
     # ------------------------------------------------------------------
 
     def configure(self, fsz=None, frac=None, hsz=None, hist_block_size=None,
-                  max_interval=None, max_parse_rate=None, seq_bits=None):
+                  max_interval=None, max_parse_rate=None, seq_bits=None,
+                  zigzag_shift=None, zigzag_edge=None, zigzag_tau=None,
+                  zigzag_stride=None):
         """Set the packet-layout / delivery parameters (typically from the scope).
 
         Recomputes the derived field masks and expected packet size. Call before
@@ -304,6 +331,26 @@ class DmaUdpClient:
             self._max_interval = max_interval
         if max_parse_rate is not None:
             self._max_parse_rate = max_parse_rate
+        if zigzag_shift is not None:
+            self._zigzag_shift = int(zigzag_shift)
+        if zigzag_edge is not None:
+            self._zigzag_edge = float(zigzag_edge)
+        if zigzag_tau is not None:
+            self._zigzag_tau = max(0.5, float(zigzag_tau))
+        if zigzag_stride is not None:
+            self._zigzag_stride = int(zigzag_stride)
+        # Rebuild the per-direction correction LUTs (see __init__ comment):
+        # forward: corr(x) = shift + edge*exp(-x/tau); reverse mirrored in x
+        # and negated (correction rides the scan direction).
+        if self._zigzag_stride > 1:
+            x = np.arange(self._zigzag_stride, dtype=np.float64)
+            cf = self._zigzag_shift + self._zigzag_edge * np.exp(-x / self._zigzag_tau)
+            cr = self._zigzag_shift + self._zigzag_edge * np.exp(-x[::-1] / self._zigzag_tau)
+            self._zz_lut_f = np.rint(cf).astype(np.int64)
+            self._zz_lut_r = -np.rint(cr).astype(np.int64)
+        else:
+            self._zz_lut_f = None
+            self._zz_lut_r = None
         if seq_bits is not None:
             self._seq_bits = int(seq_bits)
             self._seq_mask = (1 << self._seq_bits) - 1
@@ -852,6 +899,31 @@ class DmaUdpClient:
             step = mag * (1 - 2 * drc)          # +1 fwd, -1 back, 0 hold
             step[0] = 0
             pos = start_pos + np.cumsum(step)
+            if self._zigzag_shift or self._zigzag_edge:
+                # Per-point scan direction from the nonzero step signs: dwell
+                # points (step 0) take the running direction — LEADING dwell
+                # points take the segment's UPCOMING direction (backfill from
+                # the first nonzero step; a turnaround segment dwells at the
+                # new line's first cell before its first step). Then shift the
+                # write target by the direction-signed correction: per-x LUT
+                # (edge-transient model) when the row stride is known, else
+                # the uniform dir*shift.
+                nzm = step != 0
+                nzi = np.nonzero(nzm)[0]
+                if nzi.size:
+                    last = np.where(nzm, np.arange(ngrp), -1)
+                    np.maximum.accumulate(last, out=last)
+                    dirs = np.where(last >= 0, step[np.maximum(last, 0)],
+                                    step[nzi[0]])   # backfill leading dwell
+                    self._zz_dir = int(step[nzi[-1]])
+                else:
+                    dirs = np.full(ngrp, self._zz_dir, dtype=np.int64)
+                if self._zz_lut_f is not None:
+                    x = pos % self._zigzag_stride
+                    pos = pos + np.where(dirs > 0, self._zz_lut_f[x],
+                                         self._zz_lut_r[x])
+                else:
+                    pos = pos + dirs * self._zigzag_shift
             keep = (pos >= 0) & (pos < self._max_frame_size)
             p = pos[keep].astype(np.int64)
 
@@ -903,6 +975,25 @@ class DmaUdpClient:
             seg_fc = fcnt[sel][sh]
             seg_start_cs = cs[sh]
             pos = anchors[seg_id] + (cs - seg_start_cs[seg_id])
+            if self._zigzag_shift or self._zigzag_edge:
+                # Weave correction (see v3 path): direction-signed per-x LUT
+                # (edge-transient model) or uniform shift fallback.
+                nzm = step != 0
+                nzi = np.nonzero(nzm)[0]
+                if nzi.size:
+                    last = np.where(nzm, np.arange(step.size), -1)
+                    np.maximum.accumulate(last, out=last)
+                    dirs = np.where(last >= 0, step[np.maximum(last, 0)],
+                                    step[nzi[0]])
+                    self._zz_dir = int(step[nzi[-1]])
+                else:
+                    dirs = np.full(step.size, self._zz_dir, dtype=np.int64)
+                if self._zz_lut_f is not None:
+                    xq = pos % self._zigzag_stride
+                    pos = pos + np.where(dirs > 0, self._zz_lut_f[xq],
+                                         self._zz_lut_r[xq])
+                else:
+                    pos = pos + dirs * self._zigzag_shift
             data_rows = ~sh
             # Emit per segment so 2D-frame turnover (frame_cnt change) publishes coherently.
             for s in range(anchors.size):
