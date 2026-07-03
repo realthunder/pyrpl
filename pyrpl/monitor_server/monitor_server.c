@@ -226,6 +226,65 @@ static void *dma_poll_thread(void *arg)
     fprintf(stderr, "dma: multicasting on %s:%d (unicast workaround on port %d)\n",
             mcast_group, port, (int)g_uni_port);
 
+    /* --- Align rd_ptr to the FPGA's packet framing --------------------------
+     * The FPGA writes fixed pkt_words-long packets back to back into the ring,
+     * and the FIRST word of every packet has bit63 set (a real header or the
+     * all-ones pad sentinel; data words have bit63=0). The ring size is not a
+     * multiple of pkt_words, so packet starts drift around the ring, but reader
+     * and writer advance in lock step in stream space -> the reader's phase
+     * error is CONSTANT: whatever offset rd_ptr starts at relative to a packet
+     * boundary, it keeps forever. Starting blind (rd_ptr=0 while the FPGA has
+     * been streaming, e.g. after a monitor_server restart) makes every datagram
+     * begin mid-packet; the host parser must then discard all data words before
+     * the first header (~half of every packet at a typical phase), and since
+     * the phase is constant the SAME scan cells are lost every sweep — frozen
+     * point-cloud cells. Detect the true phase by content: the only offset p
+     * where ALL stride-pkt_words words have bit63 set is the packet start. */
+    {
+        const int ALIGN_K = 16;          /* packets sampled per phase scan */
+        int scans, aligned = 0;
+        rd_ptr = dma_reg[0] & (DMA_BUF_WORDS - 1);   /* start from fresh data */
+        for (scans = 0; scans < 500 && !aligned; scans++) {
+            uint32_t wr    = dma_reg[0] & (DMA_BUF_WORDS - 1);
+            uint32_t avail = (wr - rd_ptr + DMA_BUF_WORDS) & (DMA_BUF_WORDS - 1);
+            if (avail < (uint32_t)(ALIGN_K + 1) * pkt_words) {
+                nanosleep(&poll_sleep, NULL);
+                scans--;                 /* waiting for data is not a scan */
+                continue;
+            }
+            uint32_t p, best_p = 0;
+            int best_score = -1, perfect = 0;
+            uint32_t perfect_p = 0;
+            for (p = 0; p < pkt_words; p++) {
+                int k, score = 0;
+                for (k = 0; k < ALIGN_K; k++) {
+                    uint32_t idx = (rd_ptr + p + (uint32_t)k * pkt_words)
+                                   & (DMA_BUF_WORDS - 1);
+                    score += (int)(dma_buf[idx] >> 63);
+                }
+                if (score > best_score) { best_score = score; best_p = p; }
+                if (score == ALIGN_K)   { perfect++; perfect_p = p; }
+            }
+            if (perfect == 1) {
+                rd_ptr = (rd_ptr + perfect_p) & (DMA_BUF_WORDS - 1);
+                fprintf(stderr, "dma: aligned to packet framing (phase %u)\n",
+                        perfect_p);
+                aligned = 1;
+            } else {
+                /* 0 perfect: glitch/stale data; >1 perfect: idle stream full of
+                 * pad words (every word bit63=1) is phase-ambiguous. Consume one
+                 * packet and rescan — real data disambiguates immediately. */
+                rd_ptr = (rd_ptr + pkt_words) & (DMA_BUF_WORDS - 1);
+                if (scans == 499) {
+                    rd_ptr = (rd_ptr + best_p) & (DMA_BUF_WORDS - 1);
+                    fprintf(stderr, "dma: packet-framing phase ambiguous after "
+                            "%d scans; using best guess %u (score %d/%d)\n",
+                            scans + 1, best_p, best_score, ALIGN_K);
+                }
+            }
+        }
+    }
+
     while (1) {
         /* Pick up host registration datagrams (NAT hole-punch). Any datagram on
          * this port re-points the unicast stream at its post-NAT source — for a
