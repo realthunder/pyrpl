@@ -1,11 +1,13 @@
 set path_out .hls
 
 # PEAK_ALGO selects the detector implementation (same top function / IP name):
-#   global (default) - single global mean/stdev threshold (peak_detector.cpp)
-#   cfar             - moving-window CA-CFAR / local z-score (peak_detector_cfar.cpp).
-#                      Adds runtime guard_cells/train_cells ports; NATURAL order only
-#                      (requires FFT_IMPL=4). See peak_detector_cfar.cpp header.
-set peak_algo [expr {[info exists env(PEAK_ALGO)] ? $env(PEAK_ALGO) : "global"}]
+#   cfar (default) - moving-window CA-CFAR / local z-score (peak_detector_cfar.cpp).
+#                    Adds runtime guard_cells/train_cells ports; NATURAL order only.
+#                    Natural order holds under the default config (PEAK_FRAC=8 forces
+#                    ordering_opt=natural_order below); it needs FFT_IMPL=4 or any
+#                    PEAK_FRAC!=0. Set PEAK_ALGO=global for the legacy detector.
+#   global         - single global mean/stdev threshold (peak_detector.cpp).
+set peak_algo [expr {[info exists env(PEAK_ALGO)] ? $env(PEAK_ALGO) : "cfar"}]
 
 if {$peak_algo == "cfar"} {
     set src_file "../hls/peak_detector_cfar.cpp"

@@ -126,12 +126,13 @@ if {[info exists env(FFT_WIDTH)]} {
 # integer bin). Must match the -DFRAC_BITS passed to the peak_detector HLS build.
 set fft_frac [expr {[info exists env(PEAK_FRAC)] ? $env(PEAK_FRAC) : 8}]
 
-# PEAK_ALGO selects the peak detector: "global" (default) or "cfar" (moving-window
-# CA-CFAR). The cfar IP exposes two extra control pins (guard_cells/train_cells);
-# peak_detector_bd.tcl creates+connects the matching BD ports only for cfar, and
-# the PEAK_CFAR verilog define gates their connection in fft_proc.sv. Must match
-# the PEAK_ALGO passed to the peak_detector HLS build (make.sh).
-set peak_algo [expr {[info exists env(PEAK_ALGO)] ? $env(PEAK_ALGO) : "global"}]
+# PEAK_ALGO selects the peak detector: "cfar" (default, moving-window CA-CFAR) or
+# "global" (legacy single mean/stdev threshold). The cfar IP exposes two extra
+# control pins (guard_cells/train_cells); peak_detector_bd.tcl creates+connects the
+# matching BD ports only for cfar, and the PEAK_CFAR verilog define gates their
+# connection in fft_proc.sv. Must match the PEAK_ALGO passed to the peak_detector
+# HLS build (make.sh).
+set peak_algo [expr {[info exists env(PEAK_ALGO)] ? $env(PEAK_ALGO) : "cfar"}]
 
 if {[llength $argv] > 1 && [lindex $argv 0] == "alinx"} {
     set clk_diff 0
