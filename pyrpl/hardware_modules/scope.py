@@ -654,7 +654,9 @@ class Scope(HardwareModule, AcquisitionModule):
     # DMA packet-layout versions this host can decode. The parser auto-detects the
     # version per packet (header [58:55]); both formats ship from the same RTL via
     # the DMA_PER_CHAN_TAG build option (3 = combined, 4 = per-channel tag).
-    _DMA_FMT_VERSIONS_SUPPORTED = (3, 4)
+    # v3/v4 = combined / per-channel-tag index-only; v5/v6 = the same with an
+    # extra per-point value word (raw peak amplitudes -> reflectivity).
+    _DMA_FMT_VERSIONS_SUPPORTED = (3, 4, 5, 6)
 
     def __init__(self, parent, name=None):
         super().__init__(parent, name=name)
@@ -725,6 +727,64 @@ class Scope(HardwareModule, AcquisitionModule):
     def dma_zigzag_stride(self, value):
         self._dma_udp_client.configure(zigzag_stride=value)
 
+    @property
+    def dma_refl_alpha(self):
+        """Range exponent of the echo POWER loss used for the DMA reflectivity
+        (intensity bitstreams v5/v6): rho ∝ A^2 * (bin-bin0)^alpha. 2 (default)
+        = far-field diffuse target; tune empirically inside the beam focus.
+        Applies live; plain proxy to the UDP client (not a persisted register)."""
+        return self._dma_udp_client._refl_alpha
+
+    @dma_refl_alpha.setter
+    def dma_refl_alpha(self, value):
+        self._dma_udp_client.configure(refl_alpha=value)
+
+    @property
+    def dma_refl_bin0(self):
+        """Range-zero bin offset (fractional bins) of the DMA reflectivity:
+        the beat bin of zero optical range (internal fiber/electrical delay).
+        Points at/behind it get reflectivity 0. See dma_refl_alpha."""
+        return self._dma_udp_client._refl_bin0
+
+    @dma_refl_bin0.setter
+    def dma_refl_bin0(self, value):
+        self._dma_udp_client.configure(refl_bin0=value)
+
+    @property
+    def dma_refl_cal(self):
+        """Optional per-integer-bin dB correction LUT for the DMA reflectivity
+        (front-end response vs beat frequency, e.g. TIA rolloff). Assign an
+        array indexed by FFT bin (measure with a flat target swept through
+        range); assign [] to clear. See dma_refl_alpha."""
+        return self._dma_udp_client._refl_cal
+
+    @dma_refl_cal.setter
+    def dma_refl_cal(self, value):
+        self._dma_udp_client.configure(refl_cal=[] if value is None else value)
+
+    @property
+    def dma_refl_avg(self):
+        """Reflectivity speckle-averaging count: bounded running mean over up
+        to this many samples per scan cell (coherent returns fade several dB
+        shot-to-shot; averaging narrows that ~sqrt(N)). 0 = no averaging.
+        See dma_refl_avg_tol; applies live (proxy to the UDP client)."""
+        return self._dma_udp_client._refl_avg
+
+    @dma_refl_avg.setter
+    def dma_refl_avg(self, value):
+        self._dma_udp_client.configure(refl_avg=value)
+
+    @property
+    def dma_refl_avg_tol(self):
+        """Max peak-index move (bins) for a new sample to join a cell's
+        reflectivity average; a larger move means a different surface entered
+        the cell, so the accumulation restarts. See dma_refl_avg."""
+        return self._dma_udp_client._refl_avg_tol
+
+    @dma_refl_avg_tol.setter
+    def dma_refl_avg_tol(self, value):
+        self._dma_udp_client.configure(refl_avg_tol=value)
+
     def _dma_configure_from_fpga(self):
         """Reconfigure the UDP unpacker from the FPGA packet-format descriptor.
 
@@ -745,6 +805,10 @@ class Scope(HardwareModule, AcquisitionModule):
             hist_block_size=self.dma_block_size,
             max_interval=self.dma_max_interval,
             seq_bits=self.dma_fmt_seq_bits,
+            # v5/v6 append a value word (raw peak amplitudes, DSZ bits each,
+            # reg 0x34) per point; the client derives reflectivity from it.
+            dsz=self.fft_data_width,
+            intensity=version in (5, 6),
         )
 
     def _ownership_changed(self, old, new):
@@ -796,8 +860,9 @@ class Scope(HardwareModule, AcquisitionModule):
             frame = self._dma_udp_client.get_frame(channel, length)
             if frame is None:
                 return None
-            peak_down, peak_up = frame
-            return peak_down, peak_up
+            # Intensity bitstreams (v5/v6) append (refl_down, refl_up); this
+            # legacy accessor returns only the peak indices.
+            return frame[0], frame[1]
         d = np.array(self._reads(addr, length), dtype=np.uint32)
         d1 = np.array(d & 0xffff, dtype=np.int32)
         d2 = np.array(d >> 16, dtype=np.int32)

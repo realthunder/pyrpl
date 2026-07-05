@@ -441,6 +441,234 @@ def test_per_channel_tag_v4():
     return True
 
 
+# --------------------------------------------------------------------------
+# Intensity formats (v5 combined / v6 tagged): each index word is followed by a
+# VALUE word carrying the raw up/down peak amplitudes; the client derives a
+# distance-compensated reflectivity in centi-dB:
+#   rho_cdB = 100*(20*log10(A) + 10*alpha*log10(bin - bin0) [+ cal(bin)])
+# The implementation is a fast approximation (per-integer-bin LUT + float32
+# bit-trick log2, ~±0.3 dB), so round-trip tests compare against the EXACT
+# model with a tolerance; test_refl_model covers the knobs.
+# --------------------------------------------------------------------------
+_REFL_TOL = 40   # centi-dB tolerance vs the exact model (approx err ~±30)
+
+
+def _make_val(vu, vd, dsz, tag=None):
+    m = (1 << dsz) - 1
+    w = ((vd & m) << dsz) | (vu & m)
+    if tag is not None:                       # v6 keeps the channel tag
+        w |= (tag & 0xF) << 57
+    return w
+
+
+def _refl(amp, idx_val, frac, alpha=2.0, bin0=0.0):
+    """Exact-model expected reflectivity (centi-dB), with the implementation's
+    quarter-bin quantization of the range term."""
+    import math
+    sub = min(2, frac)
+    sh = frac - sub
+    k = ((idx_val + (1 << (sh - 1))) >> sh) if sh else idx_val
+    d = k / float(1 << sub) - bin0
+    if amp <= 0 or d <= 0:
+        return 0
+    return max(int(round(100.0 * (20.0 * math.log10(amp)
+                                  + 10.0 * alpha * math.log10(d)))), 1)
+
+
+def test_combined_intensity_v5():
+    """v5 round-trip: NCH=2 combined groups of (idx, value) word pairs per
+    channel; peaks land as in v3 and reflectivity = amp * bin per channel."""
+    fsz, frac, hsz, blk, dsz = 9, 8, 14, 183, 24
+    idx = fsz + frac
+    c = DmaUdpClient(fsz=fsz, frac=frac, hsz=hsz, dsz=dsz, intensity=True,
+                     hist_block_size=blk, max_frame_size=256, max_interval=0.0)
+    words = [_make_header(2, 5, 5, 0, hsz)]            # NCH=2, version 5, start idx 5
+    vals = []
+    for i in range(4):                                 # positions 5..8
+        adv = 0 if i == 0 else 1
+        up0, dn0, up1, dn1 = 1000 + i, 2000 + i, 3000 + i, 4000 + i
+        vu0, vd0, vu1, vd1 = 50 + i, 60 + i, 70 + i, 80 + i
+        words.append(_make_data(adv, up0, dn0, idx))               # ch0 idx
+        words.append(_make_val(vu0, vd0, dsz))                     # ch0 value
+        words.append(_make_data(0, up1, dn1, idx))                 # ch1 idx
+        words.append(_make_val(vu1, vd1, dsz))                     # ch1 value
+        vals.append((up0, dn0, up1, dn1, vu0, vd0, vu1, vd1))
+    while len(words) < blk + 1:
+        words.append(0xFFFFFFFFFFFFFFFF)               # sentinel pad
+    c._process_packet(np.array(words[:blk + 1], dtype='<u8').tobytes())
+    d0, u0, r0d, r0u = c.get_frame(0)
+    d1, u1, r1d, r1u = c.get_frame(1)
+    for i, (up0, dn0, up1, dn1, vu0, vd0, vu1, vd1) in enumerate(vals):
+        p = 5 + i
+        assert u0[p] == up0 and d0[p] == dn0, ('ch0 idx', i)
+        assert u1[p] == up1 and d1[p] == dn1, ('ch1 idx', i)
+        assert abs(r0u[p] - _refl(vu0, up0, frac)) <= _REFL_TOL, ('ch0 refl up', i, r0u[p])
+        assert abs(r0d[p] - _refl(vd0, dn0, frac)) <= _REFL_TOL, ('ch0 refl dn', i, r0d[p])
+        assert abs(r1u[p] - _refl(vu1, up1, frac)) <= _REFL_TOL, ('ch1 refl up', i, r1u[p])
+        assert abs(r1d[p] - _refl(vd1, dn1, frac)) <= _REFL_TOL, ('ch1 refl dn', i, r1d[p])
+    assert c._bad_count == 0
+    return True
+
+
+def test_tagged_intensity_v6():
+    """v6 round-trip: per-channel tagged stream with (idx, value) pairs after
+    each header; holds/steps/jumps like v4 plus per-point reflectivity."""
+    fsz, frac, hsz, hbs, dsz = 13, 8, 14, 20, 24
+    idx = fsz + frac
+    m = (1 << idx) - 1
+    seq = [100, 101, 102, 101, 103, 103, 200, 201, 150, 149]   # holds/+1/-1/jumps
+    points = [(h, 0, [((h & m, h & m), (h + 3, h + 7)),
+                      (((h + 5000) & m, (h + 5000) & m), (h + 11, h + 13))])
+              for h in seq]   # per ch: ((up, dn), (val_up, val_dn))
+
+    # Emit v6, mirroring the assembler: reserve 3 words/ch, header per channel
+    # on jump/frame/boundary, then idx word + value word per channel.
+    PKT = hbs + 1
+    words = []
+    st = {'wc': 0, 'need_hdr': True, 'prev': 0, 'frame': None}
+
+    def push(w):
+        words.append(w); st['wc'] += 1
+        if st['wc'] == PKT:
+            st['wc'] = 0; st['need_hdr'] = True
+
+    back_delta = (1 << hsz) - 1
+    for (h, f, chvals) in points:
+        if st['wc'] + 3 * 2 > PKT:             # reserve worst case -> no straddle
+            while st['wc'] != 0:
+                push(0xFFFFFFFFFFFFFFFF)
+        delta = (h - st['prev']) % (1 << hsz)
+        hdr_need = (st['need_hdr'] or st['frame'] is None or f != st['frame']
+                    or delta not in (0, 1, back_delta))
+        if hdr_need or delta == 0:
+            adv, direction = 0, 0
+        elif delta == 1:
+            adv, direction = 1, 0
+        else:
+            adv, direction = 1, 1
+        for c in range(2):
+            if hdr_need:
+                push(_make_header(c, 6, h, f, hsz))    # version 6
+            (up, dn), (vu, vd) = chvals[c]
+            push(_make_data_v4(adv, direction, c, up, dn, idx))
+            push(_make_val(vu, vd, dsz, tag=c))
+        st['need_hdr'] = False
+        st['frame'] = f
+        st['prev'] = h
+    while st['wc'] != 0:
+        push(0xFFFFFFFFFFFFFFFF)
+    buf = np.array(words, dtype='<u8').tobytes()
+    pkts = [buf[i:i + PKT * 8] for i in range(0, len(buf), PKT * 8)]
+
+    client = DmaUdpClient(fsz=fsz, frac=frac, hsz=hsz, dsz=dsz, intensity=True,
+                          hist_block_size=hbs, max_frame_size=256, max_interval=0.0)
+    for pkt in pkts:
+        assert len(pkt) == client._pkt_bytes, (len(pkt), client._pkt_bytes)
+        client._process_packet(pkt)
+
+    for c in range(2):
+        peak_down, peak_up, refl_down, refl_up = client.get_frame(c)
+        cells = {h: chv[c] for (h, _, chv) in points}     # last-write-wins
+        for cell, ((up, dn), (vu, vd)) in cells.items():
+            assert peak_up[cell] == up, (c, 'up', cell)
+            assert peak_down[cell] == dn, (c, 'dn', cell)
+            assert abs(refl_up[cell] - _refl(vu, up, frac)) <= _REFL_TOL, (c, 'refl up', cell)
+            assert abs(refl_down[cell] - _refl(vd, dn, frac)) <= _REFL_TOL, (c, 'refl dn', cell)
+    assert client._bad_count == 0
+    return True
+
+
+def test_refl_model():
+    """Reflectivity model knobs: accuracy vs the exact formula, invalid
+    sentinel (amp=0 / bin behind range zero), alpha, bin0 and cal LUT."""
+    import math
+    fsz, frac, dsz = 9, 8, 24
+    c = DmaUdpClient(fsz=fsz, frac=frac, hsz=14, dsz=dsz, intensity=True,
+                     hist_block_size=183, max_frame_size=64)
+
+    def refl(amp, bin_f, **cfg):
+        if cfg:
+            c.configure(**cfg)
+        vw = np.array([_make_val(amp, amp, dsz)], dtype=np.uint64)
+        up = np.array([int(bin_f * (1 << frac))], dtype=np.int32)
+        ru, rd = c._reflectivity(vw, up, up)
+        assert ru[0] == rd[0]
+        return int(ru[0])
+
+    # absolute accuracy vs the exact model (defaults alpha=2, bin0=0)
+    for amp, b in [(50, 3.0), (1234, 100.0), (3, 400.0), ((1 << dsz) - 1, 511.0)]:
+        exact = 100.0 * (20.0 * math.log10(amp) + 20.0 * math.log10(b))
+        assert abs(refl(amp, b) - exact) <= _REFL_TOL, (amp, b)
+    # invalid returns -> 0 sentinel
+    assert refl(0, 10.0) == 0
+    assert refl(100, 2.0, refl_bin0=4.0) == 0    # at/behind the range zero
+    assert refl(100, 6.0) > 0
+    # doubling the range adds 10*alpha*log10(2) = 6.02 dB at alpha=2 (the
+    # amplitude term cancels, so this is exact up to LUT rounding)
+    c.configure(refl_bin0=0.0)
+    assert abs((refl(100, 16.0) - refl(100, 8.0)) - 602) <= 2
+    # alpha=0 removes the range dependence entirely
+    assert refl(100, 8.0, refl_alpha=0.0) == refl(100, 16.0)
+    # per-bin cal LUT shifts by exactly its dB entry; empty clears it
+    base = refl(100, 8.0, refl_alpha=2.0)
+    assert refl(100, 8.0, refl_cal=np.full(1 << fsz, 3.0)) == base + 300
+    assert refl(100, 8.0, refl_cal=[]) == base
+    return True
+
+
+def test_refl_averaging():
+    """Bounded running mean of reflectivity per cell: joins while the peak
+    index holds within refl_avg_tol bins, restarts on a jump or a no-return,
+    caps the divisor at refl_avg."""
+    frac = 8
+    c = DmaUdpClient(fsz=9, frac=frac, hsz=14, dsz=24, intensity=True,
+                     hist_block_size=183, max_frame_size=64)
+    c.configure(refl_avg=4, refl_avg_tol=1.0)
+
+    def write(cell, idx_bin, refl):
+        p = np.array([cell], np.int64)
+        iv = np.array([int(idx_bin * (1 << frac))], np.int32)
+        rv = np.array([refl], np.int32)
+        c._write_channel(0, 0, p, iv, iv, rv, rv)
+        return int(c._live[0][cell, 2])
+
+    # steady index -> running mean: 1000; (2000+1000)/2=1500; 1500+(3000-1500)//3=2000
+    assert write(5, 10.0, 1000) == 1000
+    assert write(5, 10.0, 2000) == 1500
+    assert write(5, 10.0, 3000) == 2000
+    # divisor caps at refl_avg=4 from here on
+    assert write(5, 10.0, 4000) == 2500
+    assert write(5, 10.0, 4500) == 3000
+    # small move (<= tol=1.0 bin) keeps averaging
+    assert write(5, 10.9, 3000) == 3000
+    # big jump -> restart from the new sample
+    assert write(5, 20.0, 800) == 800
+    assert write(5, 20.0, 1000) == 900
+    # no-return resets the accumulation
+    assert write(5, 20.0, 0) == 0
+    assert write(5, 20.0, 700) == 700
+    assert write(5, 20.0, 900) == 800
+    # refl_avg=0 disables averaging entirely
+    c.configure(refl_avg=0)
+    assert write(5, 20.0, 5000) == 5000
+    assert write(5, 20.0, 100) == 100
+    return True
+
+
+def test_intensity_reconfigure():
+    """configure(intensity=...) rebuilds the live buffers with/without the
+    reflectivity columns, and the frame tuple length follows."""
+    c = DmaUdpClient(fsz=9, frac=8, hsz=14, hist_block_size=183,
+                     max_frame_size=64, max_interval=0.0)
+    assert c._live[0].shape == (64, 2)
+    c.configure(intensity=True, dsz=24)
+    assert c._live[0].shape == (64, 4)
+    assert c._max_frame_size == 64
+    c.configure(intensity=False)
+    assert c._live[0].shape == (64, 2)
+    return True
+
+
 def test_recv_roundtrip():
     """Proactor receiver: push real UDP datagrams through the socket and confirm
     the dedicated recv thread + parser worker reconstruct the same points as direct

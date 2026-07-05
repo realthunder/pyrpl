@@ -309,12 +309,21 @@ localparam IDX = FSZ + FRAC;
 //                and each channel re-anchors its own position with its own header
 //                (independent/sparse-ready, 16-ch friendly). ~3.9% overhead.
 // The host (dma_client.py) auto-detects the version from the packet header.
+// Intensity option (build option DMA_INTENSITY): each point's index word is
+// followed by a VALUE word carrying the raw up/down peak amplitudes (DSZ bits
+// each) so the host can derive reflectivity (amplitude x bin, distance
+// compensation). Bumps the format version: v3->v5 (combined), v4->v6 (tagged).
+`ifdef DMA_INTENSITY
+localparam int   DMA_INT         = 1;
+`else
+localparam int   DMA_INT         = 0;
+`endif
 `ifdef DMA_PER_CHAN_TAG
 localparam int   DMA_PCT         = 1;
-localparam [7:0] DMA_FMT_VERSION = 8'd4;
+localparam [7:0] DMA_FMT_VERSION = DMA_INT ? 8'd6 : 8'd4;
 `else
 localparam int   DMA_PCT         = 0;
-localparam [7:0] DMA_FMT_VERSION = 8'd3;
+localparam [7:0] DMA_FMT_VERSION = DMA_INT ? 8'd5 : 8'd3;
 `endif
 // Max DMA channels physically present in this build (fft_b omitted when single).
 localparam [3:0] DMA_MAXCH = FFT_SINGLE ? 4'd1 : 4'd2;
@@ -622,6 +631,8 @@ logic [ DSZ-1: 0]   fft_peak_down_b;
 logic               dma_point_valid_a, dma_point_valid_b;
 logic [ IDX-1: 0]   dma_point_up_a, dma_point_down_a;
 logic [ IDX-1: 0]   dma_point_up_b, dma_point_down_b;
+logic [ DSZ-1: 0]   dma_point_val_up_a, dma_point_val_down_a;
+logic [ DSZ-1: 0]   dma_point_val_up_b, dma_point_val_down_b;
 logic [ HSZ-1: 0]   dma_point_idx_a, dma_point_idx_b;
 // NCH = number of active DMA channels (0=off, 1=ch0, 2=ch0+ch1). Set via the
 // control register; bounded to the channels physically present.
@@ -908,6 +919,8 @@ fft_a (
    .dma_point_valid_o (dma_point_valid_a),
    .dma_point_up_o    (dma_point_up_a),
    .dma_point_down_o  (dma_point_down_a),
+   .dma_point_val_up_o   (dma_point_val_up_a),
+   .dma_point_val_down_o (dma_point_val_down_a),
    .dma_point_idx_o   (dma_point_idx_a),
 
    .status_o (fft_status[0]),
@@ -946,6 +959,8 @@ if (FFT_SINGLE) begin : gen_no_fft_b
    assign dma_point_valid_b      = 1'b0;
    assign dma_point_up_b         = '0;
    assign dma_point_down_b       = '0;
+   assign dma_point_val_up_b     = '0;
+   assign dma_point_val_down_b   = '0;
    assign dma_point_idx_b        = '0;
 end else begin : gen_fft_b
 fft_proc #(.ASZ(ASZ),
@@ -1002,6 +1017,8 @@ fft_proc #(.ASZ(ASZ),
    .dma_point_valid_o (dma_point_valid_b),
    .dma_point_up_o    (dma_point_up_b),
    .dma_point_down_o  (dma_point_down_b),
+   .dma_point_val_up_o   (dma_point_val_up_b),
+   .dma_point_val_down_o (dma_point_val_down_b),
    .dma_point_idx_o   (dma_point_idx_b),
 
    .status_o (fft_status[1]),
@@ -1028,6 +1045,11 @@ end
 //   data   [63]=0: [62]=advance (set on the ch0 word only), [2*IDX-1:IDX]=down,
 //                  [IDX-1:0]=up.  One group per scan index = NCH data words
 //                  (ch0, ch1, ...); the host steps position on the ch0 advance.
+//   value  [63]=0 (intensity builds only, v5/v6): follows its channel's data
+//                  word; [2*DSZ-1:DSZ]=down amplitude, [DSZ-1:0]=up amplitude
+//                  (raw peak values; advance/dir bits 0, v6 keeps the ch tag).
+//                  The host tells data from value words by position (idx/value
+//                  alternate after a header; groups never straddle packets).
 //   sentinel = all-ones (header bit + NCH nibble 0xF): pads a packet tail too
 //              small to hold a whole group, so a group never straddles packets.
 // A header is (re)emitted on packet start, scan-position jump (delta not 0/1),
@@ -1044,7 +1066,17 @@ localparam int ASM_RSVD = 62 - 2*IDX;                // data-word reserved span
 // (ASM_FCW-DMA_SEQ_W) bits — turnover detection only needs inequality. Requires
 // DMA_SEQ_W < ASM_FCW (true for HSZ <= 38). Advertised in descriptor 0x194[27:20].
 localparam int DMA_SEQ_W = 16;
-localparam [1:0] S_HDR = 2'd0, S_DATA = 2'd1, S_PAD = 2'd2;
+localparam [1:0] S_HDR = 2'd0, S_DATA = 2'd1, S_PAD = 2'd2, S_VAL = 2'd3;
+// Words per channel within a group: index word (+ value word on intensity builds).
+localparam int ASM_CHW = DMA_INT ? 2 : 1;
+// The value word packs {down,up} amplitudes below the flag/tag bits: 2*DSZ must
+// fit in 61 (combined) / 57 (tagged) payload bits or the size-cast would truncate.
+generate
+if (DMA_INT && 2*DSZ > (DMA_PCT ? 57 : 61)) begin : gen_dma_int_width_check
+    $error("DMA_INTENSITY: 2*DSZ exceeds the value-word payload (DSZ <= %0d required)",
+           (DMA_PCT ? 57 : 61)/2);
+end
+endgenerate
 
 logic [ASM_WCW-1:0] asm_wc;          // next word index within the packet
 logic               asm_need_hdr;
@@ -1057,6 +1089,7 @@ logic               asm_busy;
 logic [1:0]         asm_state;
 logic [3:0]         asm_ch;
 logic [IDX-1:0]     pt_up0, pt_dn0, pt_up1, pt_dn1;
+logic [DSZ-1:0]     pt_vu0, pt_vd0, pt_vu1, pt_vd1;   // raw peak amplitudes (intensity builds)
 logic [HSZ-1:0]     pt_idx;
 logic               pt_adv;       // step magnitude (1 = ±1 advance, 0 = hold)
 logic               pt_dir;       // step direction (1 = -1 backward, 0 = +1 forward)
@@ -1105,6 +1138,8 @@ always @(posedge fft_input_clk) begin
             if (dma_point_valid_a && dma_nch != 0) begin
                 pt_up0 <= dma_point_up_a;  pt_dn0 <= dma_point_down_a;
                 pt_up1 <= dma_point_up_b;  pt_dn1 <= dma_point_down_b;
+                pt_vu0 <= dma_point_val_up_a;  pt_vd0 <= dma_point_val_down_a;
+                pt_vu1 <= dma_point_val_up_b;  pt_vd1 <= dma_point_val_down_b;
                 pt_idx <= dma_point_idx_a;
                 pt_nch <= dma_nch;
                 pt_adv <= asm_inc || asm_dec;     // ±1 step rides the advance bits
@@ -1113,9 +1148,9 @@ always @(posedge fft_input_clk) begin
                 asm_frame_pend <= 1'b0;
                 asm_busy <= 1'b1;
                 // Reserve the worst-case index span so it never straddles a packet:
-                //   v3 combined  = 1 shared header + NCH data
-                //   v4 tagged    = NCH headers + NCH data
-                if ((asm_wc + (DMA_PCT ? 2*dma_nch : (1 + dma_nch))) > ASM_PKT)
+                //   v3/v5 combined = 1 shared header + NCH*(1 or 2) data words
+                //   v4/v6 tagged   = NCH headers + NCH*(1 or 2) data words
+                if ((asm_wc + (DMA_PCT ? (1+ASM_CHW)*dma_nch : (1 + ASM_CHW*dma_nch))) > ASM_PKT)
                     asm_state <= S_PAD;
                 else begin
                     asm_state <= asm_hdr_need ? S_HDR : S_DATA;
@@ -1186,11 +1221,38 @@ always @(posedge fft_input_clk) begin
                     asm_pkt_seq  <= asm_pkt_seq + 1'b1;          // packet boundary
                 end
                 asm_prev_idx <= pt_idx;                          // shared position
-                if (asm_ch + 1 >= pt_nch) asm_busy <= 1'b0;      // index done
+                if (DMA_INT)
+                    asm_state <= S_VAL;                          // v5/v6: value word next
+                else if (asm_ch + 1 >= pt_nch) asm_busy <= 1'b0; // index done
                 else begin
                     asm_ch <= asm_ch + 1'b1;
                     if (DMA_PCT) asm_state <= pt_hdr ? S_HDR : S_DATA;  // v4: re-header next ch on jump
                 end                                              // v3: stays in S_DATA
+            end
+            S_VAL: begin   // intensity builds (v5/v6): raw up/down peak amplitudes
+                           // for the channel whose index word was just sent.
+                           // No advance/dir (position already stepped); v6 keeps
+                           // the channel tag so the word routes like its index word.
+                if (DMA_PCT)
+                    asm_tdata <= {1'b0, 2'b00, asm_ch,
+                                  57'({(asm_ch == 0 ? pt_vd0 : pt_vd1),
+                                       (asm_ch == 0 ? pt_vu0 : pt_vu1)})};
+                else
+                    asm_tdata <= {1'b0, 2'b00,
+                                  61'({(asm_ch == 0 ? pt_vd0 : pt_vd1),
+                                       (asm_ch == 0 ? pt_vu0 : pt_vu1)})};
+                asm_tvalid <= 1'b1;
+                asm_tlast  <= asm_last_word;
+                asm_wc     <= asm_last_word ? '0 : asm_wc + 1'b1;
+                if (asm_last_word) begin
+                    asm_need_hdr <= 1'b1;
+                    asm_pkt_seq  <= asm_pkt_seq + 1'b1;          // packet boundary
+                end
+                if (asm_ch + 1 >= pt_nch) asm_busy <= 1'b0;      // index done
+                else begin
+                    asm_ch    <= asm_ch + 1'b1;
+                    asm_state <= (DMA_PCT && pt_hdr) ? S_HDR : S_DATA;  // v6: re-header next ch on jump
+                end
             end
             default: asm_busy <= 1'b0;
         endcase

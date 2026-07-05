@@ -20,6 +20,15 @@ jump, a new 2D frame, or a packet boundary).
     [IDX-1:0]       peak_bin_up   (k_interp, Q(FSZ).FRAC)
     IDX = FSZ + FRAC. Each value is unsigned Q(FSZ).FRAC; the raw value is kept
     (host fractional bin = value / 2**FRAC), matching Scope.get_fft_history().
+  Value word, bit[63] = 0 (intensity formats v5/v6 only):
+    follows its channel's data word, same layout flags but advance/dir = 0:
+    [2*DSZ-1:DSZ]   peak amplitude down (raw detector value, DSZ bits)
+    [DSZ-1:0]       peak amplitude up
+    Data and value words are told apart by POSITION (they strictly alternate
+    after a header and a point group never straddles a packet). The parser
+    derives a distance-compensated REFLECTIVITY from the amplitude (see
+    DmaUdpClient._reflectivity): coherent-detection radiometry gives
+    rho ∝ A^2 * R^alpha, reported in centi-dB (int32; 0 = no return).
 
 Reconstruction: walk the words; at a header set pos = hist_index (the segment's
 first point sits at pos); each data word does pos += advance, then writes the
@@ -69,12 +78,16 @@ _SO_RCVBUF_REQUEST = 64 * 1024 * 1024
 # receiver thread keeps draining the socket independently); capped so the parser
 # still yields the GIL to the GUI ~every batch.
 _MAX_RECV_BATCH = 32
+# Reflectivity LUT sentinel for bins at/behind the range zero (bin <= bin0):
+# far enough below any real centi-dB value that lut+amplitude stays negative.
+_REFL_INVALID = np.int32(-(1 << 24))
 
 
 class _FrameLease:
     """Context manager returned by DmaUdpClient.frame(): grabs a zero-copy,
     read-only view of the current point cloud on enter and releases it (returning
-    the buffer to the recycle pool) on exit. Yields (peak_down, peak_up) or None.
+    the buffer to the recycle pool) on exit. Yields (peak_down, peak_up) — plus
+    (refl_down, refl_up) in intensity mode — or None.
     """
     def __init__(self, client, channel, length):
         self._client = client
@@ -86,8 +99,8 @@ class _FrameLease:
         res = self._client._grab(self._channel, self._length)
         if res is None:
             return None
-        down, up, self._buf = res
-        return down, up
+        views, self._buf = res
+        return views
 
     def __exit__(self, *exc):
         if self._buf is not None:
@@ -115,11 +128,16 @@ class DmaUdpClient:
 
     get_frame() returns (peak_down, peak_up), each an int32 array of length
     max_frame_size, matching the convention of Scope.get_fft_history().
+    With an intensity bitstream (packet formats v5/v6, configure(intensity=True))
+    it returns (peak_down, peak_up, refl_down, refl_up) instead, where refl is
+    the distance-compensated reflectivity in centi-dB (0 = no return; see
+    _reflectivity for the model and the refl_alpha/refl_bin0/refl_cal knobs).
     """
 
     def __init__(self, mcast_ip=_DEFAULT_MCAST_IP, port=_DEFAULT_PORT,
                  unicast=True, unicast_port=_DEFAULT_UNI_PORT, board_ip=None,
-                 fsz=13, frac=8, hist_block_size=183, hsz=24,
+                 fsz=13, frac=8, hist_block_size=183, hsz=24, dsz=24,
+                 intensity=False,
                  max_frame_size=128*1024, max_interval=0.0, time_fn=None,
                  pool_size=4, max_parse_rate=2000,
                  recv_pool_size=2048, recv_bufsize=2048):
@@ -159,6 +177,18 @@ class DmaUdpClient:
         hsz : int
             fft_hist_index field width in header word (default 24). Overridden at
             runtime from FPGA descriptor reg 0x170 via Scope._configure_dma_client.
+        dsz : int
+            Peak amplitude field width in bits in the value word (= FFT_WIDTH
+            build parameter; read from FPGA reg 0x34 by the scope). Only used by
+            the intensity formats v5/v6.
+        intensity : bool
+            Expect the intensity packet formats (v5/v6): each point carries a
+            value word with the raw up/down peak amplitudes, from which the
+            parser derives a distance-compensated reflectivity in centi-dB
+            (see _reflectivity; tune with configure(refl_alpha/refl_bin0/
+            refl_cal)). When True the live buffers gain two reflectivity
+            columns and frame()/get_frame() yield (down, up, refl_down,
+            refl_up). Set from the FPGA descriptor version by the scope.
         max_frame_size : int
             Maximum number of (peak_up, peak_down) pairs per frame.  Points whose
             scan cell >= max_frame_size are silently discarded.  Defaults to
@@ -234,19 +264,32 @@ class DmaUdpClient:
         self._zigzag_edge = 0.0
         self._zigzag_tau = 4.0
         self._zigzag_stride = 0
+        # Reflectivity model parameters (see _reflectivity). Initialized before
+        # the configure() call below, like the zigzag state.
+        self._refl_alpha = 2.0   # range exponent of the echo POWER loss (far field)
+        self._refl_bin0 = 0.0    # range-zero bin offset (internal path delay)
+        self._refl_cal = None    # optional per-integer-bin dB correction LUT
+        # Reflectivity speckle averaging (see _write_channel): bounded running
+        # mean over up to refl_avg samples per cell, restarted when the cell's
+        # peak index moves by more than refl_avg_tol bins (new surface).
+        self._refl_avg = 0       # samples in the running mean; 0 = no averaging
+        self._refl_avg_tol = 1.0 # max |bin move| to keep averaging (bins)
+        self._avg_cnt = [None, None]  # per-cell sample counts, lazy (n,2) uint16
         self._zz_lut_f = None   # int corr per x, forward
         self._zz_lut_r = None   # int corr per x, reverse (mirrored, negated)
         self._zz_dir = 1
-        self.configure(fsz=fsz, frac=frac, hsz=hsz,
+        self.configure(fsz=fsz, frac=frac, hsz=hsz, dsz=dsz,
+                       intensity=intensity,
                        hist_block_size=hist_block_size)
 
         # Internal LIVE buffers: shape (max_frame_size, 2), col 0 = peak_up,
-        # col 1 = peak_down. Continuously overwritten by incoming points and
-        # NEVER cleared on frame turnover (matching the persistent FPGA history
+        # col 1 = peak_down; intensity mode appends col 2 = refl_up, col 3 =
+        # refl_down. Continuously overwritten by incoming points and NEVER
+        # cleared on frame turnover (matching the persistent FPGA history
         # RAM) — this is what keeps the display live during a scanner pause.
         self._live = [
-            np.zeros((max_frame_size, 2), dtype=np.int32),
-            np.zeros((max_frame_size, 2), dtype=np.int32),
+            np.zeros((max_frame_size, self._ncols), dtype=np.int32),
+            np.zeros((max_frame_size, self._ncols), dtype=np.int32),
         ]
         # Published full-frame copies (when max_interval > 0): made on a frame
         # turnover or once per max_interval. None until the first publish.
@@ -306,6 +349,9 @@ class DmaUdpClient:
     # ------------------------------------------------------------------
 
     def configure(self, fsz=None, frac=None, hsz=None, hist_block_size=None,
+                  dsz=None, intensity=None,
+                  refl_alpha=None, refl_bin0=None, refl_cal=None,
+                  refl_avg=None, refl_avg_tol=None,
                   max_interval=None, max_parse_rate=None, seq_bits=None,
                   zigzag_shift=None, zigzag_edge=None, zigzag_tau=None,
                   zigzag_stride=None):
@@ -325,6 +371,33 @@ class DmaUdpClient:
             self._frac = frac
         if hsz is not None:
             self._hsz = hsz
+        if dsz is not None:
+            self._dsz = dsz
+        if intensity is not None:
+            intensity = bool(intensity)
+            if getattr(self, '_intensity', None) != intensity:
+                self._intensity = intensity
+                # Rebuild the live buffers with/without the reflectivity columns
+                # (no-op during __init__, where the buffers don't exist yet).
+                if hasattr(self, '_live'):
+                    n = self._max_frame_size
+                    self._max_frame_size = -1   # force the rebuild
+                    self.set_max_frame_size(n)
+        if refl_alpha is not None:
+            self._refl_alpha = float(refl_alpha)
+        if refl_bin0 is not None:
+            self._refl_bin0 = float(refl_bin0)
+        if refl_cal is not None:
+            # Per-integer-bin dB correction LUT (front-end response calibration);
+            # pass an empty sequence to clear it.
+            cal = np.asarray(refl_cal, dtype=np.float64)
+            self._refl_cal = cal if cal.size else None
+        if refl_avg is not None:
+            self._refl_avg = max(0, int(refl_avg))
+            if self._refl_avg == 0:
+                self._avg_cnt = [None, None]   # drop the per-cell counters
+        if refl_avg_tol is not None:
+            self._refl_avg_tol = max(0.0, float(refl_avg_tol))
         if hist_block_size is not None:
             self._hist_block_size = hist_block_size
         if max_interval is not None:
@@ -357,6 +430,27 @@ class DmaUdpClient:
         # Peak field width IDX = fsz + frac; value is unsigned Q(fsz).frac.
         self._idx = self._fsz + self._frac
         self._mask = (1 << self._idx) - 1
+        self._val_mask = (1 << self._dsz) - 1   # amplitude field in value words
+        # Averaging tolerance in RAW peak-index units (Q(fsz).frac counts).
+        self._refl_avg_tol_raw = int(round(self._refl_avg_tol * (1 << self._frac)))
+        # Rebuild the reflectivity LUT (range + calibration term of
+        # _reflectivity, centi-dB): 100*(10*alpha*log10(bin - bin0) + cal[bin]),
+        # sampled at quarter-bin resolution (finer buys nothing: the far-field
+        # model error exceeds the quantization everywhere it matters). Rebuilt
+        # on every configure (a few 10k entries, ~100 us) so it tracks any of
+        # fsz / frac / refl_alpha / refl_bin0 / refl_cal changing.
+        sub = min(2, self._frac)                 # kept fractional bits
+        self._refl_lut_shift = self._frac - sub  # raw idx -> LUT index shift
+        n = 1 << (self._fsz + sub)
+        d = np.arange(n, dtype=np.float64) / (1 << sub) - self._refl_bin0
+        lut = np.full(n, _REFL_INVALID, dtype=np.int32)
+        ok = d > 0
+        db = 10.0 * self._refl_alpha * np.log10(d[ok])
+        if self._refl_cal is not None:
+            ci = np.minimum(np.nonzero(ok)[0] >> sub, self._refl_cal.size - 1)
+            db = db + self._refl_cal[ci]
+        lut[ok] = np.rint(100.0 * db).astype(np.int32)
+        self._refl_lut = lut
         self._hist_mask = (1 << self._hsz) - 1
         self._pkt_words = self._hist_block_size + 1
         self._pkt_bytes = self._pkt_words * 8
@@ -369,6 +463,11 @@ class DmaUdpClient:
         # surplus is shed by the kernel buffer (not a functional loss). 0 = no cap.
         self._parse_min_interval = (1.0 / (self._max_parse_rate * _PARSE_MARGIN)
                                     if self._max_parse_rate else 0.0)
+
+    @property
+    def _ncols(self):
+        """Live-buffer columns: peak up/down (+ reflectivity up/down in intensity mode)."""
+        return 4 if self._intensity else 2
 
     def set_max_frame_size(self, n):
         """Resize the per-channel point buffers to hold n scan cells. The lidar links
@@ -383,7 +482,7 @@ class DmaUdpClient:
         with self._lock[0], self._lock[1]:
             self._max_frame_size = n
             for ch in (0, 1):
-                self._live[ch] = np.zeros((n, 2), dtype=np.int32)
+                self._live[ch] = np.zeros((n, self._ncols), dtype=np.int32)
                 self._published[ch] = None
                 self._published_frame_cnt[ch] = -1
                 self._last_publish_time[ch] = None
@@ -391,6 +490,7 @@ class DmaUdpClient:
                 self._out[ch] = {}
                 self._max_pos[ch] = -1
                 self._seen[ch] = False
+                self._avg_cnt[ch] = None   # sized to the buffer; re-alloc lazily
 
     def start(self):
         """Start the background receive thread."""
@@ -446,13 +546,17 @@ class DmaUdpClient:
     def frame(self, channel, length=None):
         """Context manager yielding a zero-copy (peak_down, peak_up) snapshot.
 
+        In intensity mode (packet formats v5/v6) the tuple is
+        (peak_down, peak_up, refl_down, refl_up) — distance-compensated
+        reflectivity in centi-dB (int32, 0 = no return; see _reflectivity).
+
         Preferred for high-rate / large-buffer polling: it hands out a read-only
         view with no copy and, on exit, recycles the buffer — so steady-state
         grab/release allocates nothing.  Yields None if no data yet.  Usage::
 
             with client.frame(0, length) as f:
                 if f is not None:
-                    peak_down, peak_up = f   # valid only inside the block
+                    peak_down, peak_up = f[:2]   # valid only inside the block
 
         The arrays are READ-ONLY and only valid within the `with` block; copy out
         anything you need to keep or mutate.
@@ -462,7 +566,8 @@ class DmaUdpClient:
         return _FrameLease(self, channel, length)
 
     def get_frame(self, channel, length=None):
-        """Return an independent (peak_down, peak_up) copy, or None.
+        """Return an independent (peak_down, peak_up) copy, or None; in
+        intensity mode (peak_down, peak_up, refl_down, refl_up).
 
         Convenience wrapper over frame() for callers that don't manage a lease
         (the returned arrays are writable and outlive any producer update).  At
@@ -471,8 +576,7 @@ class DmaUdpClient:
         with self.frame(channel, length) as f:
             if f is None:
                 return None
-            down, up = f
-            return down.copy(), up.copy()
+            return tuple(a.copy() for a in f)
 
     # --- copy-on-write buffer recycling -------------------------------------
     def _take_buffer(self, ch):
@@ -484,7 +588,7 @@ class DmaUdpClient:
         """
         if self._pool[ch]:
             return self._pool[ch].pop()
-        return np.zeros((self._max_frame_size, 2), dtype=np.int32)
+        return np.zeros((self._max_frame_size, self._ncols), dtype=np.int32)
 
     def _grab(self, ch, length):
         """Mark the current readable buffer checked out; return read-only views."""
@@ -508,7 +612,13 @@ class DmaUdpClient:
             up = buf[:n, 0]
             down.flags.writeable = False
             up.flags.writeable = False
-        return down, up, buf
+            if self._intensity and buf.shape[1] >= 4:
+                refl_down = buf[:n, 3]
+                refl_up = buf[:n, 2]
+                refl_down.flags.writeable = False
+                refl_up.flags.writeable = False
+                return (down, up, refl_down, refl_up), buf
+        return (down, up), buf
 
     def _release(self, ch, buf):
         """Drop a reader's hold; recycle the buffer once no reader holds it and
@@ -853,8 +963,18 @@ class DmaUdpClient:
         # strips the seq low bits (>> self._seq_bits) during parsing.
 
         # Format dispatch: header bits [58:55] carry the format version.
-        if ((int(words[hdr_pos[0]]) >> 55) & 0xf) == 4:
-            return self._process_packet_v4(words, is_header)
+        # v4/v6 = per-channel tag (v6 with value words); v5 = combined with
+        # value words; anything else decodes as v3 combined. Sniff the first
+        # REAL header — an all-ones pad sentinel would read as version 0xF.
+        ver = 0
+        for h in hdr_pos:
+            hw = int(words[h])
+            if hw != 0xFFFFFFFFFFFFFFFF:
+                ver = (hw >> 55) & 0xf
+                break
+        if ver in (4, 6):
+            return self._process_packet_v4(words, is_header, has_val=(ver == 6))
+        has_val = (ver == 5)
 
         idx = self._idx
         pmask = np.uint64(self._mask)
@@ -880,7 +1000,9 @@ class DmaUdpClient:
             seg_end = hdr_pos[si + 1] if si + 1 < hdr_pos.size else words.size
             seg = words[h + 1:seg_end]
 
-            ngrp = seg.size // nch
+            # v5: each channel contributes an index word + a value word per group.
+            gw = 2 * nch if has_val else nch
+            ngrp = seg.size // gw
             if ngrp == 0:
                 # Header with no data (e.g. last word of packet): still note the
                 # 2D-frame for each channel so turnover publishing stays coherent.
@@ -888,7 +1010,7 @@ class DmaUdpClient:
                 for c in range(nch):
                     self._write_channel(c, frame_cnt, empty, empty, empty)
                 continue
-            grp = seg[:ngrp * nch].reshape(ngrp, nch)   # rows=groups, cols=channels
+            grp = seg[:ngrp * gw].reshape(ngrp, gw)   # rows=groups, cols=channel words
 
             # Shared scan position per group: start_pos + cumulative SIGNED step
             # (v3). The channel-0 word carries the step: bit62 = magnitude (±1 or
@@ -928,19 +1050,27 @@ class DmaUdpClient:
             p = pos[keep].astype(np.int64)
 
             for c in range(nch):
-                col = grp[:, c]
+                col = grp[:, 2 * c if has_val else c]
                 up = (col & pmask).astype(np.int32)[keep]
                 down = ((col >> np.uint64(idx)) & pmask).astype(np.int32)[keep]
-                self._write_channel(c, frame_cnt, p, up, down)
+                if has_val and self._intensity:
+                    vw = grp[:, 2 * c + 1][keep]
+                    ru, rd = self._reflectivity(vw, up, down)
+                    self._write_channel(c, frame_cnt, p, up, down, ru, rd)
+                else:
+                    self._write_channel(c, frame_cnt, p, up, down)
 
-    def _process_packet_v4(self, words, is_header):
-        """Packet format v4 (per-channel tag). Each word self-describes its
+    def _process_packet_v4(self, words, is_header, has_val=False):
+        """Packet format v4/v6 (per-channel tag). Each word self-describes its
         channel: header [62:59] = tag, data [60:57] = tag. Channels stream
         INDEPENDENTLY — each re-anchors with its own header on a jump, so the
         words for the N channels are interleaved. We route by tag, then walk
         each channel's filtered stream: a header sets the absolute position,
         each data word advances it by a signed step (bit62 mag, bit61 dir; the
-        word right after a header carries step 0 so it sits on the anchor)."""
+        word right after a header carries step 0 so it sits on the anchor).
+        v6 (has_val): each index word is followed by a VALUE word (same tag,
+        step bits 0) carrying the raw up/down amplitudes; index/value words
+        strictly alternate after a header, so they are told apart by parity."""
         idx_sh = np.uint64(self._idx)
         pmask = np.uint64(self._mask)
         hsz = self._hsz
@@ -995,24 +1125,139 @@ class DmaUdpClient:
                 else:
                     pos = pos + dirs * self._zigzag_shift
             data_rows = ~sh
+            if has_val:
+                # Split index words from value words by within-segment parity:
+                # after a header they strictly alternate idx, val, idx, val ...
+                # (value words carry step 0, so pos is untouched and a value
+                # row's pos equals its index row's pos).
+                csd = np.cumsum(data_rows.astype(np.int64))
+                ord1 = csd - csd[sh][seg_id]      # 1-based data ordinal in segment
+                idx_rows = data_rows & (ord1 % 2 == 1)
+                val_rows = data_rows & (ord1 % 2 == 0)
+            else:
+                idx_rows = data_rows
             # Emit per segment so 2D-frame turnover (frame_cnt change) publishes coherently.
             for s in range(anchors.size):
-                rows = data_rows & (seg_id == s)
+                rows = idx_rows & (seg_id == s)
                 if not rows.any():
                     self._write_channel(c, int(seg_fc[s]),
                                         np.empty(0, np.int32), np.empty(0, np.int32),
                                         np.empty(0, np.int32))
                     continue
+                ri = sel[rows]
                 p = pos[rows]
+                rv = None
+                if has_val and self._intensity:
+                    rv = sel[val_rows & (seg_id == s)]
+                    m = min(ri.size, rv.size)     # defensive; equal by construction
+                    ri, rv, p = ri[:m], rv[:m], p[:m]
                 keep = (p >= 0) & (p < self._max_frame_size)
                 p = p[keep].astype(np.int64)
-                srows = sel[rows][keep]
-                self._write_channel(c, int(seg_fc[s]), p, up_all[srows], dn_all[srows])
+                srows = ri[keep]
+                up, dn = up_all[srows], dn_all[srows]
+                if rv is not None:
+                    ru, rd = self._reflectivity(words[rv[keep]], up, dn)
+                    self._write_channel(c, int(seg_fc[s]), p, up, dn, ru, rd)
+                else:
+                    self._write_channel(c, int(seg_fc[s]), p, up, dn)
 
-    def _write_channel(self, ch, frame_cnt, p, up, down):
+    def _reflectivity(self, vw, up, down):
+        """(refl_up, refl_down) from value words: distance-compensated target
+        reflectivity in centi-dB (int32; 0 = no/invalid return).
+
+        Radiometry of the coherent FMCW receiver: heterodyne detection makes
+        the photocurrent beat amplitude A ∝ sqrt(P_LO * P_rx), and a diffuse
+        (Lambertian) target in the far field returns P_rx ∝ rho / R^alpha with
+        alpha = 2. Range R is proportional to the beat frequency, i.e. to the
+        peak bin (minus the range-zero offset bin0 from the internal fiber /
+        electrical path). Hence
+
+            rho ∝ A^2 * (bin - bin0)^alpha
+            rho_dB = 20*log10(A) + 10*alpha*log10(bin - bin0) [+ cal(bin)]
+
+        cal is an optional per-integer-bin dB LUT for the range-dependent
+        front-end response (photodiode/TIA rolloff vs beat frequency), the
+        dominant residual after the geometric term; measure it with a flat
+        target swept through range. alpha is configurable because the R^-2 law
+        only holds in the far field — inside the beam's Rayleigh range / focus
+        the effective exponent differs.
+
+        PERFORMANCE over precision (this runs on the hot parse thread, where
+        numpy op-DISPATCH overhead dominates at ~100 points/packet): both
+        chirp halves go through ONE stacked vector pass; the range +
+        calibration term is a precomputed quarter-bin centi-dB LUT (_refl_lut,
+        one gather), and the amplitude term uses the float32 exponent/mantissa
+        bit trick for log2 (max error ~0.3 dB) — far below the shot-to-shot
+        speckle fading of a coherent lidar return (several dB), so nothing
+        physical is lost. No transcendentals per point. Linear power ratio =
+        10**(value/1000); values clamp to >= 1 so 0 keeps meaning 'empty
+        cell / no return' in the zero-initialized live buffer."""
+        vmask = np.uint64(self._val_mask)
+        amp = np.concatenate((vw & vmask, (vw >> np.uint64(self._dsz)) & vmask))
+        r = self._refl_db(amp, np.concatenate((up, down)))
+        h = up.size
+        return r[:h], r[h:]
+
+    # centi-dB per octave (100 * 20*log10(2)) and the float32-bit-trick log2:
+    # for x > 0, bits(float32(x))/2^23 - 127 ≈ log2(x) (piecewise-linear in the
+    # mantissa; +0.0450 halves the max error to ~0.045 -> ~0.27 dB).
+    _CDB_OCT = 100.0 * 20.0 * np.log10(2.0)
+    _LOG2_SCALE = np.float32(_CDB_OCT / (1 << 23))
+    _LOG2_BIAS = np.float32((127.0 - 0.0450) * (1 << 23))
+
+    def _refl_db(self, amp, idx_raw):
+        """Vector core of _reflectivity: uint amplitudes + raw Q(fsz).frac
+        peak indices -> centi-dB int32 (0 = invalid)."""
+        # Range (+cal) term: gather from the quarter-bin LUT (nearest entry).
+        sh = self._refl_lut_shift
+        if sh:
+            k = np.minimum((idx_raw + (1 << (sh - 1))) >> sh,
+                           self._refl_lut.size - 1)
+        else:
+            k = idx_raw
+        lutv = self._refl_lut[k]
+        # Amplitude term: 100*20*log10(A) via the float32 bit trick.
+        bits = amp.astype(np.float32).view(np.int32).astype(np.float32)
+        cdb = ((bits - self._LOG2_BIAS) * self._LOG2_SCALE).astype(np.int32)
+        out = lutv + cdb
+        valid = (amp > 0) & (lutv != _REFL_INVALID)
+        return np.where(valid, np.maximum(out, 1), 0).astype(np.int32)
+
+    def _avg_refl(self, ch, p, col, idx_new, refl_new):
+        """Reflectivity speckle averaging for one chirp half: a bounded
+        running mean over up to refl_avg samples per cell,
+
+            avg' = avg + (new - avg) / min(cnt+1, refl_avg)
+
+        which converges to a sliding-window-like mean without storing history
+        (speckle fading narrows ~sqrt(N)). A sample only joins the average if
+        the cell's peak index moved by <= refl_avg_tol bins since the last
+        write — a larger move means a different surface entered the cell, so
+        the accumulation restarts from the new sample. A no-return sample
+        (refl 0) resets the cell. Must be called BEFORE the live index column
+        is overwritten (it reads the previous index). Duplicate cells within
+        one segment (dwelling scan) all compare against the same pre-segment
+        state and the last one wins — they average across packets instead."""
+        live = self._live[ch]
+        cnt = self._avg_cnt[ch]
+        if cnt is None or cnt.shape[0] != live.shape[0]:
+            cnt = self._avg_cnt[ch] = np.zeros((live.shape[0], 2), np.uint16)
+        c = cnt[p, col]
+        valid = refl_new > 0
+        keep = valid & (c > 0) & (live[p, 2 + col] > 0) \
+            & (np.abs(idx_new - live[p, col]) <= self._refl_avg_tol_raw)
+        c2 = np.where(keep, np.minimum(c + 1, self._refl_avg), 1).astype(np.int32)
+        prev = live[p, 2 + col]
+        avg = np.where(keep, prev + (refl_new - prev) // c2, refl_new)
+        cnt[p, col] = np.where(valid, c2, 0).astype(np.uint16)
+        return avg
+
+    def _write_channel(self, ch, frame_cnt, p, up, down,
+                       refl_up=None, refl_down=None):
         """Write one channel's points for a segment into its live buffer (COW),
-        handling 2D-frame turnover/interval publishing. p/up/down are aligned
-        arrays (may be empty -> just notes the frame counter)."""
+        handling 2D-frame turnover/interval publishing. p/up/down (and the
+        optional intensity-mode refl_up/refl_down) are aligned arrays (may be
+        empty -> just notes the frame counter)."""
         with self._lock[ch]:
             # On a 2D-frame turnover, publish the just-completed frame BEFORE
             # writing the new frame's points, so the snapshot stays coherent.
@@ -1028,6 +1273,8 @@ class DmaUdpClient:
             if int(p.max()) >= self._max_frame_size:
                 keep = p < self._max_frame_size
                 p, up, down = p[keep], up[keep], down[keep]
+                if refl_up is not None:
+                    refl_up, refl_down = refl_up[keep], refl_down[keep]
                 if p.size == 0:
                     return
             # Copy-on-write: if a reader holds the live buffer, freeze it by
@@ -1037,6 +1284,15 @@ class DmaUdpClient:
                 fresh = self._take_buffer(ch)
                 fresh[:m] = self._live[ch][:m]
                 self._live[ch] = fresh
+            if refl_up is not None and self._live[ch].shape[1] >= 4:
+                if self._refl_avg > 0:
+                    # Speckle averaging: bounded running mean per cell (reads
+                    # the PREVIOUS peak index, so it must run before the index
+                    # columns are overwritten below).
+                    refl_up = self._avg_refl(ch, p, 0, up, refl_up)
+                    refl_down = self._avg_refl(ch, p, 1, down, refl_down)
+                self._live[ch][p, 2] = refl_up
+                self._live[ch][p, 3] = refl_down
             self._live[ch][p, 0] = up
             self._live[ch][p, 1] = down
             self._max_pos[ch] = max(self._max_pos[ch], int(p.max()))

@@ -163,6 +163,13 @@ fi
 #   Default 183 → 184 * 8 = 1472 B = one standard Ethernet MTU (no fragmentation).
 #export HIST_BLOCK_SIZE=183
 
+# DMA_INTENSITY: stream the raw up/down FFT peak AMPLITUDES in an extra value
+#   word after each point's index word in the point-cloud DMA stream. The host
+#   derives reflectivity = amplitude x bin (distance compensation) and exposes it
+#   alongside the peak indices. Packet version v3->v5 (v4->v6 with
+#   DMA_PER_CHAN_TAG); halves the points per packet; host auto-detects.
+#export DMA_INTENSITY=1
+
 # HSZ: scan-index (hist_index) width in bits → 2^HSZ addressable scan cells.
 #   The DMA header splits 55 bits between hist_index (HSZ) and frame_cnt (55-HSZ),
 #   so larger HSZ shrinks the frame counter (HSZ=24 → 31-bit frame_cnt). Must be
@@ -563,7 +570,8 @@ manifest="$WORKROOT/out/BUILD_INFO.txt"
     echo "# and derived module parameters are appended below by red_pitaya_vivado.tcl):"
     for v in FPGA_PART ADC_SZ CLK_MULT CLK_ADC_DIV FFT_IMPL FFT_SSR FFT_NFFT \
              FFT_WIDTH PEAK_FRAC PEAK_ALGO CFAR_GUARD_MAX CFAR_TRAIN_MAX FFT_SCALED FFT_INTERNAL_W FFT_CLK_PERIOD FFT_CLK_SEL FFT_CLK_200 FFT_CLK_178 \
-             FFT_MULT_LUT FFT_USE_APPROX FFT_UNSCALED FFT_CORDIC_ITER HIST_BLOCK_SIZE HSZ PHYS_OPT OPT_DIRECTIVE FFT_SINGLE DSP_FB_PIPELINE SCOPE_FB_PIPELINE; do
+             FFT_MULT_LUT FFT_USE_APPROX FFT_UNSCALED FFT_CORDIC_ITER HIST_BLOCK_SIZE HSZ PHYS_OPT OPT_DIRECTIVE FFT_SINGLE DSP_FB_PIPELINE SCOPE_FB_PIPELINE \
+             DMA_PER_CHAN_TAG DMA_INTENSITY; do
         printf '%-14s= %s\n' "$v" "${!v:-}"
     done
 } > "$manifest"

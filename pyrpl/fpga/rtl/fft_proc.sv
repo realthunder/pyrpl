@@ -60,6 +60,11 @@ module fft_proc #(
   output logic            dma_point_valid_o,
   output logic [ IDX-1:0] dma_point_up_o,
   output logic [ IDX-1:0] dma_point_down_o,
+  // Raw peak amplitudes captured with the indices — the DMA assembler streams
+  // them as an extra per-point value word when the intensity option is built
+  // (DMA_INTENSITY); otherwise they are left unconnected and pruned.
+  output logic [ DSZ-1:0] dma_point_val_up_o,
+  output logic [ DSZ-1:0] dma_point_val_down_o,
   output logic [ HSZ-1:0] dma_point_idx_o,
 
   output logic [  6-1: 0] status_o,
@@ -942,9 +947,11 @@ always @(posedge clk_i) begin
     end else begin
         dma_point_valid_o <= dma_emit;
         if (dma_emit) begin
-            dma_point_up_o   <= fft_peak_index_up;
-            dma_point_down_o <= fft_peak_index_down;
-            dma_point_idx_o  <= fft_hist_index;
+            dma_point_up_o       <= fft_peak_index_up;
+            dma_point_down_o     <= fft_peak_index_down;
+            dma_point_val_up_o   <= fft_peak_value_up;
+            dma_point_val_down_o <= fft_peak_value_down;
+            dma_point_idx_o      <= fft_hist_index;
         end
     end
 end
