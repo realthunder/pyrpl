@@ -309,21 +309,24 @@ localparam IDX = FSZ + FRAC;
 //                and each channel re-anchors its own position with its own header
 //                (independent/sparse-ready, 16-ch friendly). ~3.9% overhead.
 // The host (dma_client.py) auto-detects the version from the packet header.
-// Intensity option (build option DMA_INTENSITY): each point's index word is
-// followed by a VALUE word carrying the raw up/down peak amplitudes (DSZ bits
-// each) so the host can derive reflectivity (amplitude x bin, distance
-// compensation). Bumps the format version: v3->v5 (combined), v4->v6 (tagged).
+// Intensity option: each point's index word is followed by a VALUE word
+// carrying the raw up/down peak amplitudes (DSZ bits each) so the host can
+// derive reflectivity (distance compensation). RUNTIME-switchable via the
+// dma_int_en register (0x9C bit 0); when on, the stamped format version bumps
+// by +2: v3->v5 (combined), v4->v6 (tagged). The DMA_INTENSITY build option
+// now only sets the register's RESET DEFAULT (the logic is always built —
+// a few LUTs + the pt_v* regs).
 `ifdef DMA_INTENSITY
-localparam int   DMA_INT         = 1;
+localparam       DMA_INT_DEF     = 1'b1;
 `else
-localparam int   DMA_INT         = 0;
+localparam       DMA_INT_DEF     = 1'b0;
 `endif
 `ifdef DMA_PER_CHAN_TAG
 localparam int   DMA_PCT         = 1;
-localparam [7:0] DMA_FMT_VERSION = DMA_INT ? 8'd6 : 8'd4;
+localparam [7:0] DMA_FMT_VERSION = 8'd4;   // BASE version (+2 when intensity on)
 `else
 localparam int   DMA_PCT         = 0;
-localparam [7:0] DMA_FMT_VERSION = DMA_INT ? 8'd5 : 8'd3;
+localparam [7:0] DMA_FMT_VERSION = 8'd3;   // BASE version (+2 when intensity on)
 `endif
 // Max DMA channels physically present in this build (fft_b omitted when single).
 localparam [3:0] DMA_MAXCH = FFT_SINGLE ? 4'd1 : 4'd2;
@@ -637,6 +640,7 @@ logic [ HSZ-1: 0]   dma_point_idx_a, dma_point_idx_b;
 // NCH = number of active DMA channels (0=off, 1=ch0, 2=ch0+ch1). Set via the
 // control register; bounded to the channels physically present.
 logic [ 3:0]        dma_nch;
+logic               dma_int_en;   // runtime intensity enable (sys reg 0x9C bit 0)
 
 // Sub-bin FRACTION of each peak index (low FRAC bits of k_interp), zero-extended to
 // 16 and packed {down, up} per channel for the 0x174/0x178 registers (down in [31:16],
@@ -1067,16 +1071,28 @@ localparam int ASM_RSVD = 62 - 2*IDX;                // data-word reserved span
 // DMA_SEQ_W < ASM_FCW (true for HSZ <= 38). Advertised in descriptor 0x194[27:20].
 localparam int DMA_SEQ_W = 16;
 localparam [1:0] S_HDR = 2'd0, S_DATA = 2'd1, S_PAD = 2'd2, S_VAL = 2'd3;
-// Words per channel within a group: index word (+ value word on intensity builds).
-localparam int ASM_CHW = DMA_INT ? 2 : 1;
 // The value word packs {down,up} amplitudes below the flag/tag bits: 2*DSZ must
-// fit in 61 (combined) / 57 (tagged) payload bits or the size-cast would truncate.
+// fit in 61 (combined) / 57 (tagged) payload bits or the size-cast would
+// truncate. Checked unconditionally — the intensity path is always built.
 generate
-if (DMA_INT && 2*DSZ > (DMA_PCT ? 57 : 61)) begin : gen_dma_int_width_check
-    $error("DMA_INTENSITY: 2*DSZ exceeds the value-word payload (DSZ <= %0d required)",
+if (2*DSZ > (DMA_PCT ? 57 : 61)) begin : gen_dma_int_width_check
+    $error("DMA intensity value word: 2*DSZ exceeds the payload (DSZ <= %0d required)",
            (DMA_PCT ? 57 : 61)/2);
 end
 endgenerate
+
+// Runtime intensity enable, adc domain -> FFT clock (quasi-static level).
+// The FSM samples it only at PACKET boundaries (asm_int below) so one packet
+// never mixes formats — the host detects the version per packet.
+logic dma_int_clk;
+xpm_cdc_single #(
+    .DEST_SYNC_FF (2)
+) dma_int_sync (
+    .src_clk   (adc_clk_i),
+    .src_in    (dma_int_en),
+    .dest_clk  (fft_input_clk),
+    .dest_out  (dma_int_clk)
+);
 
 logic [ASM_WCW-1:0] asm_wc;          // next word index within the packet
 logic               asm_need_hdr;
@@ -1088,6 +1104,8 @@ logic [DMA_SEQ_W-1:0] asm_pkt_seq;       // per-packet (datagram) sequence, head
 logic               asm_busy;
 logic [1:0]         asm_state;
 logic [3:0]         asm_ch;
+logic               asm_int;         // intensity format for the CURRENT packet
+                                     // (dma_int_clk sampled at packet boundaries)
 logic [IDX-1:0]     pt_up0, pt_dn0, pt_up1, pt_dn1;
 logic [DSZ-1:0]     pt_vu0, pt_vd0, pt_vu1, pt_vd1;   // raw peak amplitudes (intensity builds)
 logic [HSZ-1:0]     pt_idx;
@@ -1127,6 +1145,7 @@ always @(posedge fft_input_clk) begin
         asm_flush_d    <= 1'b0;
         asm_busy       <= 1'b0;
         asm_tlast      <= 1'b0;
+        asm_int        <= dma_int_clk;
     end else begin
         asm_flush_d <= fft_frame_start;
         if (asm_flush_rise) begin
@@ -1150,7 +1169,10 @@ always @(posedge fft_input_clk) begin
                 // Reserve the worst-case index span so it never straddles a packet:
                 //   v3/v5 combined = 1 shared header + NCH*(1 or 2) data words
                 //   v4/v6 tagged   = NCH headers + NCH*(1 or 2) data words
-                if ((asm_wc + (DMA_PCT ? (1+ASM_CHW)*dma_nch : (1 + ASM_CHW*dma_nch))) > ASM_PKT)
+                // (asm_int is stable within the packet, so the reservation and
+                // the words actually emitted always agree.)
+                if ((asm_wc + (DMA_PCT ? (asm_int ? 3 : 2)*dma_nch
+                                       : (1 + (asm_int ? 2 : 1)*dma_nch))) > ASM_PKT)
                     asm_state <= S_PAD;
                 else begin
                     asm_state <= asm_hdr_need ? S_HDR : S_DATA;
@@ -1165,6 +1187,7 @@ always @(posedge fft_input_clk) begin
                 if (asm_last_word) begin
                     asm_wc       <= '0;
                     asm_pkt_seq  <= asm_pkt_seq + 1'b1;   // packet boundary
+                    asm_int      <= dma_int_clk;          // format may switch here
                     asm_need_hdr <= 1'b1;
                     asm_state    <= S_HDR;           // new packet -> header
                     asm_ch       <= '0;
@@ -1179,13 +1202,16 @@ always @(posedge fft_input_clk) begin
                 // frame_cnt field = { frame_cnt[high ASM_FCW-DMA_SEQ_W bits],
                 //                     per-packet seq[DMA_SEQ_W bits] } (host splits it).
                 asm_tdata    <= {1'b1, (DMA_PCT ? asm_ch : pt_nch),
-                                 DMA_FMT_VERSION[3:0],
+                                 4'(DMA_FMT_VERSION[3:0] + (asm_int ? 4'd2 : 4'd0)),
                                  pt_idx,
                                  asm_frame_cnt[ASM_FCW-DMA_SEQ_W-1:0], asm_pkt_seq};
                 asm_tvalid   <= 1'b1;
                 asm_tlast    <= asm_last_word;
                 asm_wc       <= asm_last_word ? '0 : asm_wc + 1'b1;
-                if (asm_last_word) asm_pkt_seq <= asm_pkt_seq + 1'b1;   // packet boundary
+                if (asm_last_word) begin
+                    asm_pkt_seq <= asm_pkt_seq + 1'b1;   // packet boundary
+                    asm_int     <= dma_int_clk;
+                end
                 asm_need_hdr <= asm_last_word;
                 asm_nch_seg  <= pt_nch;
                 asm_prev_idx <= pt_idx;
@@ -1219,9 +1245,10 @@ always @(posedge fft_input_clk) begin
                 if (asm_last_word) begin
                     asm_need_hdr <= 1'b1;
                     asm_pkt_seq  <= asm_pkt_seq + 1'b1;          // packet boundary
+                    asm_int      <= dma_int_clk;
                 end
                 asm_prev_idx <= pt_idx;                          // shared position
-                if (DMA_INT)
+                if (asm_int)
                     asm_state <= S_VAL;                          // v5/v6: value word next
                 else if (asm_ch + 1 >= pt_nch) asm_busy <= 1'b0; // index done
                 else begin
@@ -1247,6 +1274,7 @@ always @(posedge fft_input_clk) begin
                 if (asm_last_word) begin
                     asm_need_hdr <= 1'b1;
                     asm_pkt_seq  <= asm_pkt_seq + 1'b1;          // packet boundary
+                    asm_int      <= dma_int_clk;
                 end
                 if (asm_ch + 1 >= pt_nch) asm_busy <= 1'b0;      // index done
                 else begin
@@ -1300,6 +1328,7 @@ if (adc_rstn_i == 1'b0) begin
     fft_trig_sync <= 0;
     fft_clk_sel <= 0;
     dma_nch <= DMA_MAXCH;                 // default: stream all present channels
+    dma_int_en <= DMA_INT_DEF;            // runtime intensity (default = build knob)
 end else if (sys_wen) begin
     if (sys_addr[19:0]==20'h0)  begin
         fft_parallel <= sys_wdata[4];
@@ -1310,6 +1339,10 @@ end else if (sys_wen) begin
     // DMA channel count (0=off,1,2); clamp to channels physically present.
     if (sys_addr[19:0]==20'h98)
         dma_nch <= (sys_wdata[3:0] > DMA_MAXCH) ? DMA_MAXCH : sys_wdata[3:0];
+    // Runtime intensity enable: takes effect at the next DMA packet boundary
+    // (the ASM FSM resamples per packet); the stamped version follows (+2).
+    if (sys_addr[19:0]==20'h9C)
+        dma_int_en <= sys_wdata[0];
     if (sys_addr[19:0]==20'h38) fft_peak_start <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h3C) fft_threshold_k <= sys_wdata[16-1:0];
     if (sys_addr[19:0]==20'h40) fft_peak_minimum <= sys_wdata[DSZ-1:0];
@@ -2116,7 +2149,11 @@ end else begin
      // Data-word peak field width IDX = FSZ+FRAC; host: bin = field / 2^FRAC.
      // (FRAC was previously exposed standalone here; it is now the [15:8] sub-field.)
      20'h00098 : begin sys_ack <= sys_en;          sys_rdata <= {28'h0, dma_nch}                          ; end
-     20'h00170 : begin sys_ack <= sys_en;          sys_rdata <= {DMA_FMT_VERSION, DMA_FMT_HSZ, DMA_FMT_FRAC, DMA_FMT_FSZ}; end
+     20'h0009C : begin sys_ack <= sys_en;          sys_rdata <= {31'h0, dma_int_en}                       ; end
+     // Version byte is LIVE: base +2 while the runtime intensity enable is on,
+     // matching what the packets stamp (after the next packet boundary).
+     20'h00170 : begin sys_ack <= sys_en;          sys_rdata <= {8'(DMA_FMT_VERSION + (dma_int_en ? 8'd2 : 8'd0)),
+                                                                 DMA_FMT_HSZ, DMA_FMT_FRAC, DMA_FMT_FSZ}  ; end
      // Peak-bin sub-bin FRACTION (the low FRAC bits of k_interp), per channel.
      // 0x174/0x178 pack {down, up} for channel A/B — each the FRAC-bit fraction
      // zero-extended to 16, down in [31:16], up in [15:0]. Combine with the integer
@@ -2130,7 +2167,9 @@ end else begin
      // DMA packet geometry (read-only): data words per packet + channel field width
      //   + per-packet seq width. 0x194 [15:0]=HIST_BLOCK_SIZE [19:16]=channel width
      //   [27:20]=DMA_SEQ_W (header low bits used as a per-packet sequence; 0 = none).
-     20'h00194 : begin sys_ack <= sys_en;          sys_rdata <= {4'h0, 8'(DMA_SEQ_W), 4'd4, DMA_PKT_BLK}          ; end
+     // [28] = runtime-intensity capable (the 0x9C enable register exists);
+     // older bitstreams read 0 there, so the host can feature-detect.
+     20'h00194 : begin sys_ack <= sys_en;          sys_rdata <= {3'h0, 1'b1, 8'(DMA_SEQ_W), 4'd4, DMA_PKT_BLK}    ; end
      // 20'h00198 : begin sys_ack <= sys_en;          sys_rdata <= fft_we_cnt[1]                       ; end
 
      20'h1???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_a_rd}              ; end

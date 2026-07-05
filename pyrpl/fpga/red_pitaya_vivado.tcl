@@ -111,10 +111,10 @@ set scope_fb_pipeline [expr {[info exists env(SCOPE_FB_PIPELINE)] ? $env(SCOPE_F
 #                 position (independent channels, sparse/16-ch ready), ~3.9% overhead.
 # Drives a Verilog define; the host auto-detects the version from the packet header.
 set dma_per_chan_tag [expr {[info exists env(DMA_PER_CHAN_TAG)] ? $env(DMA_PER_CHAN_TAG) : 0}]
-# DMA_INTENSITY: stream the raw up/down peak AMPLITUDES in an extra value word
-# after each point's index word (host derives reflectivity = amplitude x bin for
-# distance compensation). Bumps the packet version v3->v5 / v4->v6; halves the
-# points per packet. Drives a Verilog define; host auto-detects from the header.
+# DMA_INTENSITY: RESET DEFAULT of the runtime intensity enable (scope reg 0x9C
+# bit 0). The value-word streaming logic is always built; the register toggles
+# it live (packet version v3<->v5 / v4<->v6, resampled at packet boundaries).
+# The define only picks the power-on state.
 set dma_intensity [expr {[info exists env(DMA_INTENSITY)] ? $env(DMA_INTENSITY) : 0}]
 # fft_width = DSZ (magnitude output bits). Override with FFT_WIDTH env var if needed.
 if {[info exists env(FFT_WIDTH)]} {

@@ -534,6 +534,15 @@ class Scope(HardwareModule, AcquisitionModule):
     # [27:20] spare bits read 0), so the host auto-disables seq drop-detection.
     dma_fmt_seq_bits = IntRegister(0x194, bits=8, bitmask=0x0ff00000,
                                    doc="DMA per-packet sequence width (header low bits)")
+    # Runtime intensity support. _dma_intensity_cap feature-detects the 0x9C
+    # enable register (older bitstreams read 0); _dma_intensity_en is the raw
+    # enable bit. Use the dma_intensity property below, which also keeps the
+    # UDP client's decode mode in sync.
+    _dma_intensity_cap = BoolRegister(0x194, 28,
+                                      doc="bitstream has the runtime DMA intensity enable")
+    _dma_intensity_en = BoolRegister(0x9C, 0,
+                                     doc="stream a value word (peak amplitudes) per point; "
+                                         "takes effect at the next DMA packet boundary")
 
     fft_debug2 = IntRegister(0x174)
     fft_debug3 = IntRegister(0x178)
@@ -726,6 +735,32 @@ class Scope(HardwareModule, AcquisitionModule):
     @dma_zigzag_stride.setter
     def dma_zigzag_stride(self, value):
         self._dma_udp_client.configure(zigzag_stride=value)
+
+    @property
+    def dma_intensity(self):
+        """Runtime DMA intensity streaming: when True the FPGA appends a value
+        word (raw peak amplitudes) to every point and stamps packet version
+        v5/v6; the change lands at the next packet boundary. Setting it also
+        switches the UDP client's decode mode so the reflectivity columns are
+        (de)allocated to match. On bitstreams without the runtime register
+        (capability bit 0x194[28] clear) writes are refused with a warning —
+        the format there is fixed at build time."""
+        return bool(self._dma_intensity_en) if self._dma_intensity_cap \
+            else self.dma_fmt_version in (5, 6)
+
+    @dma_intensity.setter
+    def dma_intensity(self, value):
+        value = bool(value)
+        if not self._dma_intensity_cap:
+            if value != (self.dma_fmt_version in (5, 6)):
+                self._logger.warning(
+                    "dma_intensity: bitstream has no runtime enable; the "
+                    "packet format is fixed at version %d", self.dma_fmt_version)
+            return
+        self._dma_intensity_en = value
+        # Keep the host decoder in step (buffer columns / value-word parsing).
+        self._dma_udp_client.configure(intensity=value,
+                                       dsz=self.fft_data_width)
 
     @property
     def dma_refl_alpha(self):

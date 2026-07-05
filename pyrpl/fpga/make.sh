@@ -163,11 +163,13 @@ fi
 #   Default 183 → 184 * 8 = 1472 B = one standard Ethernet MTU (no fragmentation).
 #export HIST_BLOCK_SIZE=183
 
-# DMA_INTENSITY: stream the raw up/down FFT peak AMPLITUDES in an extra value
-#   word after each point's index word in the point-cloud DMA stream. The host
-#   derives reflectivity = amplitude x bin (distance compensation) and exposes it
-#   alongside the peak indices. Packet version v3->v5 (v4->v6 with
-#   DMA_PER_CHAN_TAG); halves the points per packet; host auto-detects.
+# DMA_INTENSITY: RESET DEFAULT of the runtime intensity enable (scope reg 0x9C).
+#   The intensity path is always built: when enabled the DMA appends a value word
+#   (raw up/down FFT peak AMPLITUDES) to each point and stamps packet version
+#   v3->v5 (v4->v6 with DMA_PER_CHAN_TAG); halves the points per packet. The host
+#   derives distance-compensated reflectivity and auto-detects per packet, and
+#   can toggle at runtime via scope.dma_intensity. This knob only picks the
+#   power-on state.
 #export DMA_INTENSITY=1
 
 # HSZ: scan-index (hist_index) width in bits → 2^HSZ addressable scan cells.

@@ -616,6 +616,37 @@ def test_refl_model():
     return True
 
 
+def test_runtime_intensity_toggle():
+    """Runtime FPGA toggle: v5 and v3 packets alternate in one stream (the
+    enable is resampled at packet boundaries). Geometry parses from both;
+    reflectivity is only written by the v5 packets."""
+    fsz, frac, hsz, blk, dsz = 9, 8, 14, 183, 24
+    idx = fsz + frac
+    c = DmaUdpClient(fsz=fsz, frac=frac, hsz=hsz, dsz=dsz, intensity=True,
+                     hist_block_size=blk, max_frame_size=256, max_interval=0.0)
+
+    def pkt(version, start, n):
+        words = [_make_header(1, version, start, 0, hsz)]   # NCH=1
+        for i in range(n):
+            words.append(_make_data(0 if i == 0 else 1, 1000 + i, 2000 + i, idx))
+            if version == 5:
+                words.append(_make_val(50 + i, 60 + i, dsz))
+        while len(words) < blk + 1:
+            words.append(0xFFFFFFFFFFFFFFFF)
+        return np.array(words[:blk + 1], dtype='<u8').tobytes()
+
+    c._process_packet(pkt(5, 5, 4))     # intensity on: cells 5..8
+    c._process_packet(pkt(3, 20, 4))    # toggled off:  cells 20..23
+    d, u, rd, ru = c.get_frame(0)
+    for i in range(4):
+        assert u[5 + i] == 1000 + i and d[5 + i] == 2000 + i, ('v5 idx', i)
+        assert u[20 + i] == 1000 + i and d[20 + i] == 2000 + i, ('v3 idx', i)
+        assert ru[5 + i] > 0 and rd[5 + i] > 0, ('v5 refl', i)
+        assert ru[20 + i] == 0 and rd[20 + i] == 0, ('v3 no refl', i)
+    assert c._bad_count == 0
+    return True
+
+
 def test_refl_averaging():
     """Bounded running mean of reflectivity per cell: joins while the peak
     index holds within refl_avg_tol bins, restarts on a jump or a no-return,
