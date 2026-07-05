@@ -773,7 +773,22 @@ class HardwareModule(Module):
         self._client.writes(self._addr_base + addr, values)
 
     def _read(self, addr):
-        return int(self._reads(addr, 1)[0])
+        # reads() returns None on a transient fault (an out-of-sync frame, or the
+        # fail-fast guard while a background reconnect is in flight) rather than
+        # raising. Indexing that None used to blow up as a cryptic TypeError deep
+        # in a register get, killing whatever coroutine happened to be reading
+        # (e.g. the lidar acquisition loop, freezing the scope/FFT view while the
+        # DMA point cloud kept running). Retry once — a lone out-of-sync frame
+        # usually clears immediately — then raise a ConnectionError (an OSError,
+        # the type callers and the reconnect path already handle) so the caller
+        # can retry the operation and the bounded-reconnect flow can take over.
+        for _attempt in range(2):
+            vals = self._reads(addr, 1)
+            if vals is not None:
+                return int(vals[0])
+        raise ConnectionError(
+            "register read at %s returned no data (link down or reconnecting)"
+            % hex(addr))
 
     def _write(self, addr, value):
         self._writes(addr, [int(value)])
