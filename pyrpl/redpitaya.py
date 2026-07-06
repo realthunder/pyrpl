@@ -242,8 +242,11 @@ class RedPitaya(object):
             return
         # connect to the redpitaya board
         self.start_ssh()
+        # if the PL was parked (held in reset / blanked by pl_reset.sh), release
+        # it, drop the stale monitor_server, and reflash before anything else
+        recovered_pl = self._recover_pl_reset()
         # start other stuff
-        if self.parameters['reloadfpga']:  # flash fpga
+        if self.parameters['reloadfpga'] and not recovered_pl:  # flash fpga
             self.update_fpga()
         if self.parameters['reloadserver']:  # reinstall server app
             self.installserver()
@@ -398,6 +401,68 @@ class RedPitaya(object):
                 sleep(self.parameters['delay'])
             else:
                 return
+
+    # PS registers that report the PL (fabric) state, poked via the on-board
+    # `monitor` tool (same ones pl_reset.sh uses to park the board for low power).
+    _SLCR_FPGA_RST_CTRL = '0xF8000240'   # bits[3:0]: the 4 PL FCLK resets
+    _DEVCFG_STATUS      = '0xF800700C'   # bit2 PCFG_DONE: 0 -> PL not configured
+
+    def _read_ps_reg(self, addr):
+        """Read a 32-bit PS register via /opt/redpitaya/bin/monitor. Returns the
+        int value, or None if the read failed (tool missing, ssh hiccup)."""
+        try:
+            ret, out = self.ssh.run('/opt/redpitaya/bin/monitor ' + addr)
+        except Exception:
+            self.logger.debug('PS register read failed (%s)', addr, exc_info=True)
+            return None
+        if ret != 0:
+            return None
+        try:
+            return int(out.strip().split()[0], 16)
+        except (ValueError, IndexError):
+            return None
+
+    def _pl_held_in_reset(self):
+        """True when the PL fabric is parked — held in reset (FPGA_RST_CTRL bits
+        set) or blanked (devcfg PROG_B low) — so the custom FFT/DMA bitstream is
+        not actually running. Best-effort: returns False when the state can't be
+        read, so a monitor-tool-less board is never disrupted."""
+        rst = self._read_ps_reg(self._SLCR_FPGA_RST_CTRL)
+        sts = self._read_ps_reg(self._DEVCFG_STATUS)
+        if rst is None or sts is None:
+            return False
+        held  = (rst & 0xf) != 0        # any FCLK reset asserted
+        blank = (sts & 0x4) == 0        # PCFG_DONE low -> fabric not configured
+        if held or blank:
+            self.logger.warning(
+                "PL fabric is %s (FPGA_RST_CTRL=0x%08x, devcfg STATUS=0x%08x); "
+                "releasing and reflashing.",
+                "held in reset" if held else "blank/unconfigured", rst, sts)
+        return held or blank
+
+    def _recover_pl_reset(self):
+        """If the PL was parked (e.g. by pl_reset.sh to cut heat/power), release
+        the reset, drop any monitor_server left spinning on the now-dead DMA
+        fabric, and force a fresh FPGA flash so the bitstream is actually loaded.
+        Returns True if a recovery was performed (the caller then skips its own
+        update_fpga, which _recover already ran). Called on (re)connect."""
+        if not self._pl_held_in_reset():
+            return False
+        # release the 4 PL FCLK resets (pl_reset.sh 'stop' asserts these)
+        self.ssh.run('/opt/redpitaya/bin/monitor %s 0x0'
+                     % self._SLCR_FPGA_RST_CTRL)
+        # stop the server that was reading a reset/blank fabric (the DMA thread
+        # spins in its framing re-align when the fabric produces no valid data)
+        self._kill_monitor_server()
+        # invalidate the boot-flash marker so update_fpga actually reflashes even
+        # if it thinks the current bitstream was already flashed this boot
+        serverbinfilename = os.path.join(self.parameters['serverdirname'],
+                                         self.parameters['serverbinfilename'])
+        self._remount_root_rw()
+        self.ssh.run('rm -f %s.version' % serverbinfilename)
+        self._restore_root_mount()
+        self.update_fpga()   # reflashes (marker gone) and kills any server again
+        return True
 
     def update_fpga(self, filename=None):
         serverdirname = self.parameters['serverdirname']
@@ -808,6 +873,9 @@ class RedPitaya(object):
             self.parameters['hostname'] = hostname
         # fresh ssh channel (raises ExpectedPyrplError after a few tries)
         self.start_ssh()
+        # if the board was parked (PL held in reset / blanked) while we were away,
+        # release + reflash and drop the stale monitor_server before reconnecting
+        self._recover_pl_reset()
         # make sure an up-to-date monitor_server is running on the board
         port = self.startserver()
         if self.client is None:
