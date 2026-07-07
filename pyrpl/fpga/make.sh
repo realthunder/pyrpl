@@ -204,6 +204,15 @@ fi
 #   n9-125    — IMPL=4 SSR=4 NFFT=9 (512-pt), FFT on adc_clk @ 125 MHz, dsz24/frac8/
 #             scaled2/approx + DSP fb pipeline, place WLDrivenBlockPlacement
 #             (DETERMINISTIC=4). Best n9/125: pll_adc +0.272 (ser non-binding).
+#             NOTE: DET=4 (WLDriven) FAILS setup with the default CA-CFAR detector —
+#             use the n9-125-cfar profile below for the 512-pt fast image.
+#   n9-125-cfar — same knobs as fft125ssr4n11 but NFFT=9 (512-pt), tuned for the
+#             default CA-CFAR detector. 512-pt/N9 is setup-roomy and HOLD-bound; an
+#             11-place sweep found Default (DETERMINISTIC=8) x AggressiveExplore best:
+#             pll_adc WNS +0.076 / WHS +0.051 (ser non-binding, FFT on adc_clk). Most
+#             directives pin WHS ~+0.006-0.012; Default relaxes the hold-critical net.
+#             LUT 70% / FF 45% / BRAM 55% / DSP 67%. Archive:
+#             out.d/sweep-impl4-ssr4n9-125-dsz24-fbpipe-cfar-det8-AggressiveExplore.
 case "${PROFILE:-}" in
     ""|none) ;;
     fft200ssr2)
@@ -334,8 +343,30 @@ case "${PROFILE:-}" in
         export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
         echo "==> PROFILE=n9-125: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe, place WLDrivenBlockPlacement (DETERMINISTIC=4), phys_opt AggressiveExplore"
         ;;
+    n9-125-cfar)
+        # 512-pt fast image tuned for the (default) CA-CFAR detector: same datapath as
+        # fft125ssr4n11 (IMPL=4 SSR=4, dsz24/frac8/scaled2/approx + DSP fb pipeline) but
+        # NFFT=9. N9 is setup-roomy and HOLD-bound; an 11-place sweep (x AggressiveExplore)
+        # found Default (DETERMINISTIC=8) best-balanced: pll_adc WNS +0.076 / WHS +0.051
+        # (ser non-binding, FFT on adc_clk). Most directives pin WHS ~+0.006-0.012 while
+        # Default relaxes the hold-critical net; det4 (WLDriven, the plain n9-125 pick)
+        # actually FAILS setup here. LUT 70% / FF 45% / BRAM 55% / DSP 67%. Archive:
+        # out.d/sweep-impl4-ssr4n9-125-dsz24-fbpipe-cfar-det8-AggressiveExplore.
+        export FFT_IMPL=${FFT_IMPL:-4}
+        export FFT_SSR=${FFT_SSR:-4}
+        export FFT_NFFT=${FFT_NFFT:-9}
+        export FFT_WIDTH=${FFT_WIDTH:-24}
+        export PEAK_FRAC=${PEAK_FRAC:-8}
+        export FFT_SCALED=${FFT_SCALED:-2}
+        export FFT_USE_APPROX=${FFT_USE_APPROX:-1}
+        export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
+        export DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-1}
+        export DETERMINISTIC=${DETERMINISTIC:-8}
+        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
+        echo "==> PROFILE=n9-125-cfar: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe, place Default (DETERMINISTIC=8), phys_opt AggressiveExplore"
+        ;;
     *)
-        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 ssr2n13-125 fft178ssr4n11 fft125ssr4n11 fft125ssr4n13-single fft178ssr8n11 n9-125)" >&2; exit 1 ;;
+        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 ssr2n13-125 fft178ssr4n11 fft125ssr4n11 fft125ssr4n13-single fft178ssr8n11 n9-125 n9-125-cfar)" >&2; exit 1 ;;
 esac
 
 # ---- Active build defaults (override on the command line, e.g. FFT_IMPL=5 ./make.sh) ----
