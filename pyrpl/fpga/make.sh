@@ -457,6 +457,14 @@ fi
 # e.g. DETERMINISTIC=1 ./make.sh   (or sweep DETERMINISTIC=1..N for the best WNS).
 export DETERMINISTIC=${DETERMINISTIC:-0}
 
+# POWER_OPT gates the post-opt_design power_opt_design pass (clock gating to cut
+# dynamic power / temperature). Default off; POWER_OPT=1 ./make.sh enables it.
+# Enabling it ALSO drops the NoBramPowerOpt opt_design default (-> Default, which
+# includes BRAM power optimisation) unless OPT_DIRECTIVE is set explicitly.
+# Timing-risky on tight builds (gating can regress WNS) — verify closure after.
+# See red_pitaya_vivado.tcl for the value grammar (1/on/default, or a directive).
+export POWER_OPT=${POWER_OPT:-off}
+
 # ---- Resolved build settings banner ---------------------------------------
 # Print the EFFECTIVE configuration after profile + command-line overrides
 # resolve, so every build self-documents the actual values handed to Vivado.

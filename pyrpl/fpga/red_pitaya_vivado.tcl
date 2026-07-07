@@ -415,13 +415,35 @@ set_false_path -from [get_cells -hier -filter {NAME =~ *fft_peak_start_arg*}] \
 set_false_path -from [get_cells -hier -filter {NAME =~ *fft_peak_minimum_arg*}] \
 				-to   [get_cells -hier -filter {NAME =~ *pd_i*}]
 
-# opt_design. OPT_DIRECTIVE env overrides the directive (default NoBramPowerOpt).
-# Area-reducing variants (ExploreArea/ExploreSequentialArea) can relieve congestion;
-# AddRemap reduces logic levels; Explore is general. Sweep to A/B on a tight design.
-set opt_dir [expr {[info exists env(OPT_DIRECTIVE)] ? $env(OPT_DIRECTIVE) : "NoBramPowerOpt"}]
+# Power-optimisation enable flag (parsed before opt_design so it can also drop
+# the NoBramPowerOpt default). POWER_OPT env: 1/on/yes/true/default enables the
+# clock-gating pass; off/0/no/none/'' disables; any other value is a directive.
+set power_opt [expr {[info exists env(POWER_OPT)] ? $env(POWER_OPT) : "off"}]
+set power_opt_on [expr {[lsearch -exact {off 0 no none false {}} \
+                        [string tolower $power_opt]] < 0}]
+
+# opt_design. OPT_DIRECTIVE env overrides the directive. Default NoBramPowerOpt
+# (runs opt_design but SKIPS BRAM power optimisation, for timing stability) —
+# except when power optimising, where we WANT BRAM power opt, so the default
+# becomes Default (which includes it). Area-reducing variants (ExploreArea/
+# ExploreSequentialArea) can relieve congestion; AddRemap reduces logic levels.
+set opt_dir [expr {[info exists env(OPT_DIRECTIVE)] ? $env(OPT_DIRECTIVE) : \
+                   ($power_opt_on ? "Default" : "NoBramPowerOpt")}]
 puts "INFO: opt_design -directive $opt_dir"
 opt_design -directive $opt_dir
-# power_opt_design
+
+# power_opt_design — clock-gating power optimisation (cuts dynamic power by
+# gating idle sequential logic). OFF by default: on this timing-tight design the
+# inserted gating can add delay / perturb placement and regress the worst clock.
+if {!$power_opt_on} {
+    puts "INFO: POWER_OPT=$power_opt — skipping power_opt_design"
+} elseif {[lsearch -exact {1 on yes true default} [string tolower $power_opt]] >= 0} {
+    puts "INFO: power_opt_design (clock-gating power optimisation)"
+    power_opt_design
+} else {
+    puts "INFO: power_opt_design -directive $power_opt"
+    power_opt_design -directive $power_opt
+}
 # NOTE: place_design -directive Explore was tried and regressed both clocks
 # (adc -0.483->-0.593, ser -0.674->-0.771). The default placer finds a better
 # basin for this design; leave it on default.
