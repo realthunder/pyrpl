@@ -133,6 +133,7 @@ int newsockfd;
 #define DMA_BUF_BYTES        (DMA_BUF_WORDS * 8)
 #define DMA_REG_BASE         0x40a00000UL /* AXI-Lite slot 5: [0]=wr_ptr [1]=hist_block */
 #define DMA_PKT_WORDS_DEFAULT 184        /* fallback: 1 header + 183 data = 1472 B = one MTU */
+#define DMA_PAD_WORD         ((uint64_t)~0ULL)  /* all-ones idle/pad sentinel (bit63=1 but NOT a real header) */
 #define DMA_DEFAULT_MCAST "239.255.0.1"
 #define DMA_DEFAULT_PORT  12468
 #define DMA_DEFAULT_UNI_PORT 12466       /* unicast workaround for multicast-unfriendly hosts */
@@ -185,7 +186,15 @@ static uint32_t dma_align(volatile uint64_t *dma_buf, volatile uint32_t *dma_reg
             for (k = 0; k < ALIGN_K; k++) {
                 uint32_t idx = (rd + p + (uint32_t)k * pkt_words)
                                & (DMA_BUF_WORDS - 1);
-                score += (int)(dma_buf[idx] >> 63);
+                /* A REAL header has bit63 set AND is not the all-ones pad
+                 * sentinel. Counting pads as headers (they also have bit63)
+                 * made a pad-run region score 16/16 at MANY phases -> the align
+                 * reported "ambiguous", fell back to a wrong best guess, and
+                 * thrashed slip<->realign forever (never recovering from an
+                 * assembler-reset storm). Excluding pads leaves only the true
+                 * framing phase scoring high. */
+                uint64_t w = dma_buf[idx];
+                score += ((w >> 63) & 1) && w != DMA_PAD_WORD;
             }
             if (score > best_score) { best_score = score; best_p = p; }
             if (score == ALIGN_K)   { perfect++; perfect_p = p; }
