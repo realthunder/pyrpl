@@ -113,10 +113,14 @@ static int check(const char *tag, const frame_result &r, const ref_result &ref,
 
 int main() {
     int errors = 0;
-    const int LOG2 = 10, N = 1 << LOG2;
+    // Frame size MUST match the DUT's compiled FSZ: the DUT sizes its ping-pong
+    // magnitude buffer as mag[FSSR][(1<<FSZ)/FSSR], so streaming a larger frame
+    // (the old hardcoded LOG2=10 / N=1024) overruns that buffer at FSZ<10 and
+    // segfaults csim. Derive N from FSZ so the tb tracks any NFFT build.
+    const int LOG2 = FSZ, N = 1 << LOG2;
     const int LO = 8, HI = N - 8;   // valid band (leave room for windows at edges)
     const int G = 2, T = 16;        // guard / training cells each side
-    const int PBIN = 400;
+    const int PBIN = (N * 400) / 1024;   // peak bin, scaled to N (was fixed 400 @ N=1024)
 
     // ---- [1] flat floor + strong peak with distinct neighbors -> DETECT -----
     {
@@ -201,7 +205,7 @@ int main() {
     // two-sided guard (needs >= T/4 cells each side) must REJECT it. Use a raised
     // cutoff (CLO) so the argmax is exactly at the edge.
     {
-        const int CLO = 200;                     // high-pass cutoff bin
+        const int CLO = (N * 200) / 1024;        // high-pass cutoff bin, scaled to N
         std::vector<int> s(N, 50);
         // descending skirt spilling past the cutoff: highest at CLO, decaying up
         for (int k = 0; k < 30; k++) {
