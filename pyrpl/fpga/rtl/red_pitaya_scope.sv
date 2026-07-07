@@ -666,12 +666,22 @@ logic [ 32-1: 0]    fft_we_cnt[1:0];
 logic [ 32-1: 0]    fft_skip_cnt;
 // logic               fft_index_flush = adc_rstn_i == 1'b0 || sync_rst_i;
 logic               fft_index_flush = sync_rst_i;
-// One-cycle pulse each time the raster scan wraps back to origin (0,0) = a
-// completed 2D frame. This is the real per-frame boundary; fft_index_flush is only
-// the ASG sync reset. Drives the DMA header frame_cnt (asm_frame_cnt) so the host
-// sees frame turnover. Generated in the adc_clk index pipeline below and consumed
-// in the fft_input_clk ASM FSM (same/related clock, CLK_SEL=0), like fft_index_flush.
+// One-cycle pulse per completed RASTER: on the scan's wrap back to origin
+// (0,0) and, with a ping-pong (zigzag) slow axis, also at the far slow-axis
+// turnaround — detected as the scan dwelling on the SAME non-origin cell for
+// two consecutive points (both ASG axes double their endpoints there, so the
+// far-corner cell legitimately repeats; nowhere else does a running scan
+// repeat a cell). Without the second pulse a zigzag frame_cnt spanned the
+// full up+down ping-pong, so the host's turnover publish fired only once per
+// TWO visual passes and its interval flushes landed mid-sweep, mixing the two
+// opposite-direction rasters (the swinging-block artifact, see
+// HANDOFF_zigzag_column_shift.md). fft_index_flush is only the ASG sync
+// reset. Drives the DMA header frame_cnt (asm_frame_cnt) so the host sees
+// frame turnover. Generated in the adc_clk index pipeline below and consumed
+// in the fft_input_clk ASM FSM (same/related clock, CLK_SEL=0), like
+// fft_index_flush.
 logic               fft_frame_start;
+logic               fft_rep_d;   // previous sample already repeated its predecessor
 
 logic               fft_peak_ready_a;
 logic               fft_peak_ready_b;
@@ -732,11 +742,12 @@ if (fft_index_flush) begin
    x_step <= 0;
    y_step <= 0;
    fft_frame_start <= 1'b0;
+   fft_rep_d <= 1'b0;
    `ifdef DEBUG_FFT_INDEX
       y_step_0 <= 0;
    `endif
 end else begin
-    fft_frame_start <= 1'b0;   // default: pulse only on the origin wrap below
+    fft_frame_start <= 1'b0;   // default: pulse only on the raster boundaries below
     fft_index_valid = {fft_index_valid[IDX_PIPELINE+1: 0], fft_trig_i && &fft_done};
 
    `ifdef DEBUG_FFT_INDEX
@@ -755,9 +766,27 @@ end else begin
             // stalled scan re-hits (0,0) each point), which would over-count frames.
             if (x_step != 0 || y_step != 0)
                 fft_frame_start <= 1'b1;
-        end else if (fft_hist_step < x_step_i + 1)
-            fft_hist_step <= x_step_i + 1; 
+        end else begin
+            if (fft_hist_step < x_step_i + 1)
+                fft_hist_step <= x_step_i + 1;
+            // Mid-ping-pong raster boundary (zigzag slow axis): the far slow
+            // turnaround dwells on the same cell for two consecutive points
+            // (see the fft_frame_start declaration). Qualified to y!=0 (the
+            // real far turnaround always is; a y==0 line is where the stride
+            // is still growing, so every ascending cell transiently looks
+            // like an endpoint) and to a fast-axis ENDPOINT cell (x==0 or
+            // x==stride-1; fft_hist_step holds the old stride = x_max+1
+            // here), so a scan stalling mid-line (a missed scan one-shot)
+            // cannot fake a boundary — only a stall exactly on a line-end
+            // cell can, and fft_rep_d bounds any stall/parked scan to ONE
+            // extra tick.
+            if (y_step_i != 0 &&
+                    x_step_i == x_step && y_step_i == y_step && !fft_rep_d &&
+                    (x_step_i == 0 || x_step_i + 1 == fft_hist_step))
+                fft_frame_start <= 1'b1;
+        end
 
+        fft_rep_d <= (x_step_i == x_step) && (y_step_i == y_step);
         x_step <= x_step_i;
         y_step <= y_step_i;
     end
