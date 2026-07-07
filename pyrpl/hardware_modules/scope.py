@@ -240,11 +240,18 @@ class SamplingTimeProperty(SelectProperty):
 
 class DmaMaxIntervalProperty(FloatProperty):
     """FloatProperty that also pushes the new value into a running DMA UDP client,
-    so the publish cadence applies live (no acquisition restart needed)."""
+    so the publish cadence applies live (no acquisition restart needed).
+
+    Negative values are a MULTIPLIER of the scan's theoretical frame period
+    (-2 = a fallback publish every two raster periods, for a stalled frame
+    counter). The scope cannot derive that period itself, so a negative value
+    is only STORED here — the lidar layer (pointcloud._sync_dma_parse_rate)
+    converts it to seconds from the measured scan rate and pushes the result
+    straight to the client."""
     def set_value(self, obj, val):
         super(DmaMaxIntervalProperty, self).set_value(obj, val)
         client = getattr(obj, '_dma_udp_client', None)
-        if client is not None:
+        if client is not None and float(val) >= 0:
             client.configure(max_interval=float(val))
         return val
 
@@ -451,13 +458,18 @@ class Scope(HardwareModule, AcquisitionModule):
                               "cloud DMA: 0 = DMA off, 1 = ch0 only, 2 = ch0+ch1. "
                               "Clamped in the FPGA to the channels present.")
 
-    dma_max_interval = DmaMaxIntervalProperty(default=0.0, min=0.0, max=100.0,
+    dma_max_interval = DmaMaxIntervalProperty(default=0.0, min=-100.0, max=100.0,
                                      doc="Max seconds between published point-cloud "
                                          "frames when points keep arriving but the 2D "
                                          "scan does not turn over (e.g. a paused "
                                          "scanner). 0 = always expose the live buffer "
                                          "on any update; >0 = frame-coherent snapshot "
-                                         "refreshed at least this often. Applies live.")
+                                         "refreshed at least this often; <0 = "
+                                         "multiplier of the scan's theoretical frame "
+                                         "period (-2 = fallback publish every two "
+                                         "raster periods, for a stalled frame counter; "
+                                         "derived and pushed by the lidar layer). "
+                                         "Applies live.")
 
     dma_unicast = DmaUnicastProperty(default=True,
                                      doc="Receive the DMA point cloud as unicast "
@@ -693,48 +705,31 @@ class Scope(HardwareModule, AcquisitionModule):
         self._dma_udp_client.configure(max_parse_rate=value)
 
     @property
-    def dma_zigzag_shift(self):
-        """Bidirectional-scan weave correction, uniform term (scan cells): the
-        DMA parser shifts each point's write target by the direction-signed
-        correction corr(i) = shift + edge*exp(-i/tau), i = cells since the
-        point's own line start (needs dma_zigzag_stride). Applies live; plain
-        proxies to the UDP client (not persisted registers)."""
-        return self._dma_udp_client._zigzag_shift
-
-    @dma_zigzag_shift.setter
-    def dma_zigzag_shift(self, value):
-        self._dma_udp_client.configure(zigzag_shift=value)
-
-    @property
-    def dma_zigzag_edge(self):
-        """Turnaround-transient amplitude of the weave correction (cells); the
-        mirror is still settling right after each line reversal, displacing the
-        first few cells. See dma_zigzag_shift."""
-        return self._dma_udp_client._zigzag_edge
-
-    @dma_zigzag_edge.setter
-    def dma_zigzag_edge(self, value):
-        self._dma_udp_client.configure(zigzag_edge=value)
-
-    @property
-    def dma_zigzag_tau(self):
-        """Settle length of the turnaround transient (cells). See
-        dma_zigzag_shift."""
-        return self._dma_udp_client._zigzag_tau
-
-    @dma_zigzag_tau.setter
-    def dma_zigzag_tau(self, value):
-        self._dma_udp_client.configure(zigzag_tau=value)
-
-    @property
     def dma_zigzag_stride(self):
-        """Scan row stride (x_count) for the per-x weave-correction LUT; 0
-        disables the edge term (uniform shift only)."""
+        """Scan row stride (the fast-axis cell count, pushed by the host):
+        converts the whole-column dma_zigzag_shift into flat scan cells
+        and derives each point's column. 0 disables the correction."""
         return self._dma_udp_client._zigzag_stride
 
     @dma_zigzag_stride.setter
     def dma_zigzag_stride(self, value):
         self._dma_udp_client.configure(zigzag_stride=value)
+
+    @property
+    def dma_zigzag_shift(self):
+        """SLOW-axis zigzag correction (whole scan columns): the slow galvo
+        axis lags its command, so with a bidirectional slow scan the
+        descending-column raster lands offset from the ascending one by ~2x
+        the lag (the swinging-block artifact in the live 2D view). The DMA
+        parser shifts every point of a descending-column sweep by this many
+        columns (x dma_zigzag_stride cells); ascending sweeps (= the
+        unidirectional reference direction) define the frame and are left
+        as-is. Applies live; plain proxy to the UDP client."""
+        return self._dma_udp_client._zigzag_shift
+
+    @dma_zigzag_shift.setter
+    def dma_zigzag_shift(self, value):
+        self._dma_udp_client.configure(zigzag_shift=value)
 
     @property
     def dma_intensity(self):

@@ -242,28 +242,26 @@ class DmaUdpClient:
         # the FPGA descriptor via configure(seq_bits=...).
         self._seq_bits = 0
         self._seq_mask = 0
-        # Bidirectional-scan (zigzag) weave correction. Measured on hardware:
-        # the trigger chain settles the galvo before each acquisition, so the
-        # MID-LINE forward/reverse offset is ~0 — but right after each line
-        # turnaround the mirror is still settling and the first cells land
-        # displaced (~1-2 cells, opposite signs at the two ends, decaying in a
-        # few cells). Model, per point, i = cells since that point's own line
-        # start (x forward, stride-1-x reverse):
-        #     corr(i) = zigzag_shift + zigzag_edge * exp(-i / zigzag_tau)
-        # applied as dir * corr to the WRITE TARGET only (the running position
-        # reconstruction is untouched). zigzag_shift is the uniform term
-        # (usually 0 here), zigzag_edge the turnaround transient amplitude,
-        # zigzag_tau the settle length in cells. Compiled into per-direction
-        # integer LUTs over x = pos % zigzag_stride (the scan row stride =
-        # x_count, pushed by the host); stride 0 disables the edge term.
-        # Live-tunable via configure(). _zz_dir carries the last seen scan
-        # direction across segments/packets (dwell points step 0).
-        # NOTE: must be initialized BEFORE the configure() call below — the LUT
-        # rebuild in configure() reads these.
-        self._zigzag_shift = 0
-        self._zigzag_edge = 0.0
-        self._zigzag_tau = 4.0
+        # Bidirectional-scan (zigzag) slow-axis correction. The slow galvo
+        # axis lags its command; with a ping-pong slow scan the lag's sign
+        # flips with the sweep direction, so the descending-column raster
+        # lands offset from the ascending one by ~2x the lag — whole COLUMNS,
+        # since one slow-axis cell is one column (the swinging-block artifact
+        # in the live 2D view, see fpga/HANDOFF_zigzag_column_shift.md).
+        # Ascending sweeps match the unidirectional reference direction and
+        # define the frame; points of descending sweeps are shifted by
+        # zigzag_shift whole columns (x zigzag_stride cells, precompiled
+        # to _zz_slow_steps; stride = the scan row stride, pushed by the
+        # host). The per-stream column trend (_zz_slow_state) supplies each
+        # segment's direction; at the two slow turnarounds the trend is only
+        # visible one line late, so exactly one line per turnaround keeps the
+        # stale direction — an accepted edge-column artifact. Live-tunable
+        # via configure(). NOTE: must be initialized BEFORE the configure()
+        # call below — the rebuild in configure() reads these.
         self._zigzag_stride = 0
+        self._zigzag_shift = 0
+        self._zz_slow_steps = 0    # flat-position shift, rebuilt in configure()
+        self._zz_slow_state = {}   # stream key -> (last col, trend dir +/-1)
         # Reflectivity model parameters (see _reflectivity). Initialized before
         # the configure() call below, like the zigzag state.
         self._refl_alpha = 2.0   # range exponent of the echo POWER loss (far field)
@@ -275,9 +273,6 @@ class DmaUdpClient:
         self._refl_avg = 0       # samples in the running mean; 0 = no averaging
         self._refl_avg_tol = 1.0 # max |bin move| to keep averaging (bins)
         self._avg_cnt = [None, None]  # per-cell sample counts, lazy (n,2) uint16
-        self._zz_lut_f = None   # int corr per x, forward
-        self._zz_lut_r = None   # int corr per x, reverse (mirrored, negated)
-        self._zz_dir = 1
         self.configure(fsz=fsz, frac=frac, hsz=hsz, dsz=dsz,
                        intensity=intensity,
                        hist_block_size=hist_block_size)
@@ -353,8 +348,7 @@ class DmaUdpClient:
                   refl_alpha=None, refl_bin0=None, refl_cal=None,
                   refl_avg=None, refl_avg_tol=None,
                   max_interval=None, max_parse_rate=None, seq_bits=None,
-                  zigzag_shift=None, zigzag_edge=None, zigzag_tau=None,
-                  zigzag_stride=None):
+                  zigzag_stride=None, zigzag_shift=None):
         """Set the packet-layout / delivery parameters (typically from the scope).
 
         Recomputes the derived field masks and expected packet size. Call before
@@ -401,29 +395,25 @@ class DmaUdpClient:
         if hist_block_size is not None:
             self._hist_block_size = hist_block_size
         if max_interval is not None:
-            self._max_interval = max_interval
+            # The client only understands seconds (0 = live buffer). Negative
+            # rate-multiplier values are converted by the lidar layer before
+            # they get here; clamp any stray negative to live mode instead of
+            # letting `now - last >= interval` publish on every segment.
+            self._max_interval = max(0.0, float(max_interval))
         if max_parse_rate is not None:
             self._max_parse_rate = max_parse_rate
-        if zigzag_shift is not None:
-            self._zigzag_shift = int(zigzag_shift)
-        if zigzag_edge is not None:
-            self._zigzag_edge = float(zigzag_edge)
-        if zigzag_tau is not None:
-            self._zigzag_tau = max(0.5, float(zigzag_tau))
         if zigzag_stride is not None:
             self._zigzag_stride = int(zigzag_stride)
-        # Rebuild the per-direction correction LUTs (see __init__ comment):
-        # forward: corr(x) = shift + edge*exp(-x/tau); reverse mirrored in x
-        # and negated (correction rides the scan direction).
-        if self._zigzag_stride > 1:
-            x = np.arange(self._zigzag_stride, dtype=np.float64)
-            cf = self._zigzag_shift + self._zigzag_edge * np.exp(-x / self._zigzag_tau)
-            cr = self._zigzag_shift + self._zigzag_edge * np.exp(-x[::-1] / self._zigzag_tau)
-            self._zz_lut_f = np.rint(cf).astype(np.int64)
-            self._zz_lut_r = -np.rint(cr).astype(np.int64)
-        else:
-            self._zz_lut_f = None
-            self._zz_lut_r = None
+        if zigzag_shift is not None:
+            self._zigzag_shift = int(zigzag_shift)
+        # Slow-axis column shift, precompiled to a flat-position offset (see
+        # __init__ comment). Reset the per-stream trend state only when a
+        # related knob was actually passed, so unrelated configure() calls
+        # (refl_*, max_interval, ...) don't drop the running direction.
+        if zigzag_shift is not None or zigzag_stride is not None:
+            self._zz_slow_state = {}
+        self._zz_slow_steps = (self._zigzag_shift * self._zigzag_stride
+                              if self._zigzag_stride > 1 else 0)
         if seq_bits is not None:
             self._seq_bits = int(seq_bits)
             self._seq_mask = (1 << self._seq_bits) - 1
@@ -943,6 +933,21 @@ class DmaUdpClient:
         self._publish_seq[ch] += 1
         self._last_publish_time[ch] = self._time()
 
+    def _zz_slow_dir_shift(self, key, col):
+        """Track the slow-axis column trend for one segment and return its
+        flat-position shift: _zz_slow_steps on DESCENDING-column sweeps, 0 on
+        ascending (the ascending direction matches the unidirectional
+        reference, so it defines the frame — same convention as the measured
+        weave LUT). A segment never crosses a line boundary with a column
+        change (those are position jumps and force a new header/anchor), so
+        the anchor's column is the whole segment's column. key identifies the
+        position stream (-1 = the shared v3/v5 stream, channel for v4/v6)."""
+        last, dirn = self._zz_slow_state.get(key, (None, 1))
+        if last is not None and col != last:
+            dirn = 1 if col > last else -1
+        self._zz_slow_state[key] = (col, dirn)
+        return self._zz_slow_steps if dirn < 0 else 0
+
     def _process_packet(self, data):
         if len(data) != self._pkt_bytes:
             logger.debug("Unexpected packet length %d (expected %d)", len(data), self._pkt_bytes)
@@ -1021,31 +1026,13 @@ class DmaUdpClient:
             step = mag * (1 - 2 * drc)          # +1 fwd, -1 back, 0 hold
             step[0] = 0
             pos = start_pos + np.cumsum(step)
-            if self._zigzag_shift or self._zigzag_edge:
-                # Per-point scan direction from the nonzero step signs: dwell
-                # points (step 0) take the running direction — LEADING dwell
-                # points take the segment's UPCOMING direction (backfill from
-                # the first nonzero step; a turnaround segment dwells at the
-                # new line's first cell before its first step). Then shift the
-                # write target by the direction-signed correction: per-x LUT
-                # (edge-transient model) when the row stride is known, else
-                # the uniform dir*shift.
-                nzm = step != 0
-                nzi = np.nonzero(nzm)[0]
-                if nzi.size:
-                    last = np.where(nzm, np.arange(ngrp), -1)
-                    np.maximum.accumulate(last, out=last)
-                    dirs = np.where(last >= 0, step[np.maximum(last, 0)],
-                                    step[nzi[0]])   # backfill leading dwell
-                    self._zz_dir = int(step[nzi[-1]])
-                else:
-                    dirs = np.full(ngrp, self._zz_dir, dtype=np.int64)
-                if self._zz_lut_f is not None:
-                    x = pos % self._zigzag_stride
-                    pos = pos + np.where(dirs > 0, self._zz_lut_f[x],
-                                         self._zz_lut_r[x])
-                else:
-                    pos = pos + dirs * self._zigzag_shift
+            if self._zz_slow_steps:
+                # Slow-axis column correction: whole-column shift on
+                # descending-column sweeps, from the raw segment anchor.
+                sh = self._zz_slow_dir_shift(
+                    -1, int(start_pos) // self._zigzag_stride)
+                if sh:
+                    pos = pos + sh
             keep = (pos >= 0) & (pos < self._max_frame_size)
             p = pos[keep].astype(np.int64)
 
@@ -1105,25 +1092,15 @@ class DmaUdpClient:
             seg_fc = fcnt[sel][sh]
             seg_start_cs = cs[sh]
             pos = anchors[seg_id] + (cs - seg_start_cs[seg_id])
-            if self._zigzag_shift or self._zigzag_edge:
-                # Weave correction (see v3 path): direction-signed per-x LUT
-                # (edge-transient model) or uniform shift fallback.
-                nzm = step != 0
-                nzi = np.nonzero(nzm)[0]
-                if nzi.size:
-                    last = np.where(nzm, np.arange(step.size), -1)
-                    np.maximum.accumulate(last, out=last)
-                    dirs = np.where(last >= 0, step[np.maximum(last, 0)],
-                                    step[nzi[0]])
-                    self._zz_dir = int(step[nzi[-1]])
-                else:
-                    dirs = np.full(step.size, self._zz_dir, dtype=np.int64)
-                if self._zz_lut_f is not None:
-                    xq = pos % self._zigzag_stride
-                    pos = pos + np.where(dirs > 0, self._zz_lut_f[xq],
-                                         self._zz_lut_r[xq])
-                else:
-                    pos = pos + dirs * self._zigzag_shift
+            if self._zz_slow_steps:
+                # Slow-axis column correction, per segment (see v3/v5 path);
+                # each channel is its own position stream, hence its own key.
+                st = self._zigzag_stride
+                seg_sh = np.fromiter(
+                    (self._zz_slow_dir_shift(c, int(a) // st) for a in anchors),
+                    dtype=np.int64, count=anchors.size)
+                if seg_sh.any():
+                    pos = pos + seg_sh[seg_id]
             data_rows = ~sh
             if has_val:
                 # Split index words from value words by within-segment parity:
