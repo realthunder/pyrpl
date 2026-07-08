@@ -194,38 +194,66 @@ static void cfar_detect_stage(
     ncnt_t n_right= 0;   // ... and the high-freq side, for the two-sided edge guard
     wsum_t Sigma = 0;
     wsq_t  Q     = 0;
+    // SEPARATE left/right accumulators: each is a single independent loop-carried
+    // add per iteration (the two run in PARALLEL, not chained), so the critical
+    // loop-carry path is ONE wide add — chaining Sig/Q for both sides in one
+    // iteration would double it and drop Fmax (~86 MHz). Combined once after loop.
+    wsum_t Sig_l = 0, Sig_r = 0;
+    wsq_t  Q_l   = 0, Q_r   = 0;
 
     // Walk both reference bands: offsets G+1 .. G+T on each side of the CUT.
-    // Fixed compile-time bound CFAR_TRAIN_MAX; the runtime T gates via break/skip.
-    // NOT pipelined II=1: latency-tolerant, so HLS schedules it multi-cycle with a
-    // REGISTERED square multiply (an II=1 pipeline would fuse x*x combinationally
-    // into the loop-carried accumulate and blow the clock).
+    // Fixed compile-time bound CFAR_TRAIN_MAX; the runtime T gates via break.
+    //
+    // PIPELINE II=1 with a ONE-ITERATION DEFERRED accumulate: the DSP square is
+    // computed this iteration but its result (dl_sq/dr_sq) is accumulated on the
+    // NEXT iteration, so the multiply is registered OUT of the loop-carried
+    // accumulate path (the loop carry is then a single add per side). Same deferral
+    // idiom as the STREAM stage's argmax merge — it is what makes II=1 safe here
+    // (the reason the original ran un-pipelined: a naive II=1 fuses x*x
+    // combinationally into the accumulate and blows the clock). Latency drops from
+    // ~3T to ~T cycles, so even the widened window fits inside one FFT frame's
+    // stream time (N/FSSR beats) -> the CFAR ping-pong hides it again and the point
+    // rate no longer stalls at high chirp rate (train=32 recovers 300k @ N9/300kHz).
+    wsq_t  dl_sq = 0, dr_sq = 0;   // deferred registered squares (left/right)
+    wsum_t dl_x  = 0, dr_x  = 0;   // deferred magnitudes for Sigma
+    bool   dl_v  = false, dr_v = false;
+
     CFAR_WIN: for (int t = 1; t <= CFAR_TRAIN_MAX; t++) {
+#pragma HLS PIPELINE II=1
         if (t > T) break;                 // runtime training-cell count
+        // accumulate the PREVIOUS iteration's registered products/values. Invalid
+        // cells carry 0 (xl/xr forced to 0 below), so we ALWAYS add — no guard mux
+        // in front of the wide 56-bit add (that select was the Fmax limiter). Left
+        // and right chains are independent -> two parallel single adds. Only the
+        // (narrow) valid-cell counts are conditionally incremented.
+        Sig_l += dl_x; Q_l += dl_sq; if (dl_v) n_left  += 1;
+        Sig_r += dr_x; Q_r += dr_sq; if (dr_v) n_right += 1;
+
         int off = G + t;                  // distance from CUT to this reference cell
         int bl = c - off;                 // left reference cell
-        if (bl >= lo && bl <= hi && bl >= 0 && bl < PK_NMAX) {
-            data_t x = MAG_AT(bl);
-            wsq_t  xsq;
-#pragma HLS BIND_OP variable=xsq op=mul impl=dsp
-            xsq    = (wsq_t)((ap_uint<2*DSZ>)x * x);
-            Sigma += (wsum_t)x;
-            Q     += xsq;
-            n     += 1;
-            n_left += 1;
-        }
+        bool   vl = (bl >= lo) && (bl <= hi) && (bl >= 0) && (bl < PK_NMAX);
+        data_t xl = vl ? MAG_AT(bl) : (data_t)0;
+        wsq_t  xl_sq;
+#pragma HLS BIND_OP variable=xl_sq op=mul impl=dsp
+        xl_sq = (wsq_t)((ap_uint<2*DSZ>)xl * xl);
+
         int br = c + off;                 // right reference cell
-        if (br >= lo && br <= hi && br >= 0 && br < PK_NMAX) {
-            data_t x = MAG_AT(br);
-            wsq_t  xsq;
-#pragma HLS BIND_OP variable=xsq op=mul impl=dsp
-            xsq    = (wsq_t)((ap_uint<2*DSZ>)x * x);
-            Sigma += (wsum_t)x;
-            Q     += xsq;
-            n     += 1;
-            n_right += 1;
-        }
+        bool   vr = (br >= lo) && (br <= hi) && (br >= 0) && (br < PK_NMAX);
+        data_t xr = vr ? MAG_AT(br) : (data_t)0;
+        wsq_t  xr_sq;
+#pragma HLS BIND_OP variable=xr_sq op=mul impl=dsp
+        xr_sq = (wsq_t)((ap_uint<2*DSZ>)xr * xr);
+
+        dl_sq = xl_sq; dl_x = (wsum_t)xl; dl_v = vl;
+        dr_sq = xr_sq; dr_x = (wsum_t)xr; dr_v = vr;
     }
+    // flush the last processed iteration's deferred products (invalid carry 0)
+    Sig_l += dl_x; Q_l += dl_sq; if (dl_v) n_left  += 1;
+    Sig_r += dr_x; Q_r += dr_sq; if (dr_v) n_right += 1;
+    // combine the two sides once (off the loop-carried critical path)
+    Sigma = Sig_l + Sig_r;
+    Q     = Q_l + Q_r;
+    n     = (ncnt_t)(n_left + n_right);
 
     // Local z-score test: (P*n - Sigma)^2 > k^2 * (n*Q - Sigma^2), requiring
     // n>0 and P above the local mean (P*n > Sigma). No divide or sqrt. Multiply
