@@ -192,36 +192,36 @@ fi
 #             FFT shares adc_clk @125 MHz (FFT_CLK_SEL=0) + DSP_FB_PIPELINE — one fewer
 #             clock domain. Place AltSpreadLogic_high (DETERMINISTIC=3), phys_opt
 #             AggressiveExplore. Best: pll_adc +0.283 (ser non-binding, FFT on adc_clk).
-#   fft125ssr4n11 — IMPL=4 SSR=4 NFFT=11 (2048-pt), FFT on adc_clk @125 MHz — single-clock
-#             version of fft178ssr4n11. dsz24/frac8/scaled2/approx + DSP fb pipeline, place
+# (Naming: 125 MHz is the default FFT clock and CA-CFAR is the default detector, so
+# neither is spelled out — plain ssrXnY = SSR=X / NFFT=Y @125 / CFAR. Non-default clocks
+# keep an fftNNN prefix; non-default variants take a suffix, e.g. -impl5, -single, -global.)
+#   ssr4n11 — IMPL=4 (native xfft) SSR=4 NFFT=11 (2048-pt) — single-clock version of
+#             fft178ssr4n11. dsz24/frac8/scaled2/approx + DSP fb pipeline, place
 #             AltSpreadLogic_medium (DETERMINISTIC=7), phys_opt AggressiveExplore. Best:
 #             pll_adc +0.170 (ser non-binding). N11@125 placement is netlist-sensitive —
 #             re-sweep DETERMINISTIC after RTL edits.
-#   fft125ssr4n11-impl5 — same as fft125ssr4n11 but the DSP-based direct hls::fft
-#             (FFT_IMPL=5) instead of the native xfft. Dual-channel N11 @125 CFAR. The
-#             hls::fft puts delay/reorder in BRAM (not SRL/LUT-RAM) → LUT drops 89%→78%,
-#             relaxing the congestion that pins IMPL=4: closes ~3x wider (WNS +0.032 /
-#             WHS +0.051 at ExtraPostPlacementOpt/DET=5) AND ~0.7 W / 8 C cooler. Cost:
-#             DSP 96% + BRAM 96% (the reorder buffers) — near-zero headroom. Use when N11
-#             timing/power matter more than resource room.
-#   fft125ssr4n13-single — IMPL=5 SSR=4 NFFT=13 (8192-pt) SINGLE-CHANNEL, FFT on adc_clk
-#             @125 MHz. Finest resolution; single-channel because natural_order reorder
-#             buffers make dual-channel N13 1 BRAM tile over. natural order auto-on via
-#             frac8. Fits BRAM ~85% / LUT 53% / DSP 63%; closes pll_adc +0.148 (MT).
-#   n9-125    — IMPL=4 SSR=4 NFFT=9 (512-pt), FFT on adc_clk @ 125 MHz, dsz24/frac8/
-#             scaled2/approx + DSP fb pipeline, place WLDrivenBlockPlacement
-#             (DETERMINISTIC=4). Best n9/125: pll_adc +0.272 (ser non-binding).
-#             NOTE: the plain n9-125 pick shifts with the netlist — use the
-#             n9-125-cfar profile below for the 512-pt fast image.
-#   n9-125-cfar — same knobs as fft125ssr4n11 but NFFT=9 (512-pt), tuned for the
-#             default CA-CFAR detector. N9 @125 is placement-noisy: the winning
-#             DETERMINISTIC moves with RTL churn — RE-SWEEP after RTL edits. On the
-#             current mainline (post scope-zigzag change, commit 6e794ba0) the best is
-#             ExtraNetDelay_high (DETERMINISTIC=2) x AggressiveExplore: pll_adc WNS
-#             +0.054 / WHS +0.039 (ser non-binding, FFT on adc_clk). (Pre-change the
-#             winner was Default/DET=8 at +0.076/+0.051 — it now FAILS setup at −0.156.)
-#             LUT 70% / FF 45% / BRAM 55% / DSP 67%. Archive:
+#   ssr4n11-impl5 — LOWER-DR experiment, NOT for product. Same 2048-pt image as ssr4n11 but
+#             the direct hls::fft (FFT_IMPL=5). It only fits because it runs INTERNAL_W=16
+#             (16-bit *scaled* internal datapath) vs ssr4n11's unscaled 28-bit full-growth —
+#             ~12 fewer internal bits, ~72 dB DR (−65 dBFS) vs ~90 dB. At that reduced
+#             precision it closes wider (WNS +0.032/WHS +0.051 at DET=5, LUT 78%), but a
+#             DR-matched INTERNAL_W=24 rebuild does NOT fit (DSP 125% / BRAM 113% / LUT
+#             127%). Keep ssr4n11 (IMPL=4) for full-DR N11. See BuildLog.
+#   ssr4n13-single — IMPL=5 SSR=4 NFFT=13 (8192-pt) SINGLE-CHANNEL. Finest resolution;
+#             single-channel because natural_order reorder buffers make dual-channel N13 1
+#             BRAM tile over. natural order auto-on via frac8. Fits BRAM ~85% / LUT 53% /
+#             DSP 63%; closes pll_adc +0.148 (MT).
+#   ssr4n9    — IMPL=4 SSR=4 NFFT=9 (512-pt) fast image, dsz24/frac8/scaled2/approx + DSP
+#             fb pipeline. N9 @125 is placement-noisy — RE-SWEEP DETERMINISTIC after RTL
+#             edits. On mainline 6e794ba0 the best is ExtraNetDelay_high (DETERMINISTIC=2) x
+#             AggressiveExplore: pll_adc WNS +0.054 / WHS +0.039 (ser non-binding). (The
+#             pre-scope-change winner Default/DET=8 at +0.076/+0.051 now FAILS setup at
+#             −0.156.) LUT 70% / FF 45% / BRAM 55% / DSP 67%. Archive:
 #             out.d/sweep-impl4-ssr4n9-125-dsz24-fbpipe-cfar-det2-AggressiveExplore.
+#   ssr4n9-global — ssr4n9 with the legacy global peak detector (PEAK_ALGO=global) instead
+#             of the default CA-CFAR — the original 512-pt profile. WLDrivenBlockPlacement
+#             (DETERMINISTIC=4) was its pre-CFAR pick (pll_adc +0.272); RE-SWEEP under the
+#             current netlist/detector — the winning directive is not stable.
 case "${PROFILE:-}" in
     ""|none) ;;
     fft200ssr2)
@@ -271,7 +271,7 @@ case "${PROFILE:-}" in
         export PHYS_OPT=${PHYS_OPT:-Explore}
         echo "==> PROFILE=fft178ssr4n11: SSR=4 NFFT=11 FFT@178.57MHz, place EarlyBlockPlacement (DETERMINISTIC=6), phys_opt Explore"
         ;;
-    fft125ssr4n11)
+    ssr4n11)
         # Single-clock 2048-pt image: IMPL=4 (native xfft, natural order) SSR=4 NFFT=11,
         # FFT on adc_clk @125 MHz (FFT_CLK_SEL=0) — one fewer clock domain than
         # fft178ssr4n11. dsz24 + sub-bin interp (frac8) + scaled2 + approx mag + DSP fb
@@ -292,19 +292,22 @@ case "${PROFILE:-}" in
         export DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-1}
         export DETERMINISTIC=${DETERMINISTIC:-7}
         export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
-        echo "==> PROFILE=fft125ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe, place AltSpreadLogic_medium (DETERMINISTIC=7), phys_opt AggressiveExplore"
+        echo "==> PROFILE=ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe, place AltSpreadLogic_medium (DETERMINISTIC=7), phys_opt AggressiveExplore"
         ;;
-    fft125ssr4n11-impl5)
-        # Same 2048-pt dual-channel CFAR image as fft125ssr4n11 but the DSP-based direct
-        # hls::fft (FFT_IMPL=5) instead of the native xfft. hls::fft implements the FFT
-        # delay/reorder lines in BRAM rather than SRL/LUT-RAM, so LUT drops 89% -> 78%,
-        # relaxing the routing congestion that pins IMPL=4 at +0.010. 11-place sweep (x
-        # AggressiveExplore) on mainline 6e794ba0: best ExtraPostPlacementOpt (DET=5) ->
-        # pll_adc WNS +0.032 / WHS +0.051 (ser non-binding, FFT on adc_clk) — ~3x IMPL=4's
-        # margin, and ~0.7 W lower / 8 C cooler (SRL delay lines are signal/logic-power
-        # heavy; BRAM is power-dense). Cost: DSP 96% (211) + BRAM 96% (~134.5 tiles), near
-        # zero headroom. LUT 78% (41,620) / FF 52%. csim PASS; natural order via frac8.
-        # Archive: out.d/sweep-impl5-ssr4n11-125-dsz24-fbpipe-cfar-det5-AggressiveExplore.
+    ssr4n11-impl5)
+        # LOWER-DR experiment — NOT the product N11 image (use ssr4n11 / IMPL=4 for that).
+        # Same 2048-pt dual-channel CFAR datapath but the DSP-based direct hls::fft
+        # (FFT_IMPL=5), which puts the FFT delay/reorder lines in BRAM rather than SRL/
+        # LUT-RAM. It ONLY fits because it runs the default INTERNAL_W=16 (16-bit *scaled*
+        # internal datapath, ÷2 per stage) vs ssr4n11's native xfft UNSCALED 28-bit full
+        # bit-growth — ~12 fewer internal bits, ~72 dB DR (−65 dBFS floor) vs ~90 dB. At
+        # that reduced precision an 11-place sweep (mainline 6e794ba0) closes wider than
+        # IMPL=4 — best ExtraPostPlacementOpt (DET=5): pll_adc WNS +0.032 / WHS +0.051,
+        # LUT 78% (41,620) / DSP 96% / BRAM 96% — but that margin is bought by the lower
+        # precision, NOT a real win. A DR-matched rebuild (FFT_INTERNAL_W=24) does NOT fit:
+        # DSP 276 (125%) / BRAM 317 RAMB18-eq (113%) / LUT 67,351 (127%), DRC abort. So
+        # IMPL=5 is a dead end for full-DR N11; kept only as a reference point. csim PASS.
+        # Override FFT_INTERNAL_W to explore precision/fit; see docs/BuildLog.md.
         export FFT_IMPL=${FFT_IMPL:-5}
         export FFT_SSR=${FFT_SSR:-4}
         export FFT_NFFT=${FFT_NFFT:-11}
@@ -316,9 +319,9 @@ case "${PROFILE:-}" in
         export DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-1}
         export DETERMINISTIC=${DETERMINISTIC:-5}
         export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
-        echo "==> PROFILE=fft125ssr4n11-impl5: IMPL=5 SSR=4 NFFT=11 (2048-pt) direct hls::fft FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe, place ExtraPostPlacementOpt (DETERMINISTIC=5), phys_opt AggressiveExplore"
+        echo "==> PROFILE=ssr4n11-impl5: IMPL=5 SSR=4 NFFT=11 (2048-pt) direct hls::fft FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe, place ExtraPostPlacementOpt (DETERMINISTIC=5), phys_opt AggressiveExplore"
         ;;
-    fft125ssr4n13-single)
+    ssr4n13-single)
         # Finest-resolution single-clock image: IMPL=5 (direct hls::fft, DSP-based) SSR=4
         # NFFT=13 (8192-pt), SINGLE-CHANNEL (fft_b dropped) so the natural_order reorder
         # buffers fit — dual-channel N13 is 1 BRAM tile over. FFT on adc_clk @125 MHz.
@@ -339,7 +342,7 @@ case "${PROFILE:-}" in
         export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
         export DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-1}
         export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
-        echo "==> PROFILE=fft125ssr4n13-single: IMPL=5 SSR=4 NFFT=13 (8192-pt) SINGLE-CHANNEL FFT@125MHz on adc_clk, natural order (frac8), dsz24 scaled2 approx fbpipe, phys_opt AggressiveExplore (DET default = MT, not reproducible — sweep for a pinned point)"
+        echo "==> PROFILE=ssr4n13-single: IMPL=5 SSR=4 NFFT=13 (8192-pt) SINGLE-CHANNEL FFT@125MHz on adc_clk, natural order (frac8), dsz24 scaled2 approx fbpipe, phys_opt AggressiveExplore (DET default = MT, not reproducible — sweep for a pinned point)"
         ;;
     fft178ssr8n11)
         # Experimental SSR=8 single-FFT build: only fft_a is synthesised (FFT_SINGLE=1,
@@ -356,32 +359,12 @@ case "${PROFILE:-}" in
         export PHYS_OPT=${PHYS_OPT:-Explore}
         echo "==> PROFILE=fft178ssr8n11: SSR=8 NFFT=11 FFT@178.57MHz, fft_b disabled (FFT_SINGLE=1), place EarlyBlockPlacement (DETERMINISTIC=6), phys_opt Explore — EXPERIMENTAL"
         ;;
-    n9-125)
-        # Fast/closing native-SSR build: IMPL=4 SSR=4 NFFT=9 (512-pt), FFT on
-        # adc_clk @ 125 MHz (FFT_CLK_SEL=0). dsz24 + sub-bin frac8 + FFT_SCALED=2 +
-        # approx twiddles + DSP feedback pipeline; placed WLDrivenBlockPlacement
-        # (DETERMINISTIC=4), phys_opt AggressiveExplore. Best n9/125 point:
-        # pll_adc +0.272, pll_ser +1.845 (ser non-binding — FFT runs on adc_clk).
-        # Archive: out.d/20260629-1131-...-impl4ssr4n9-125-dsz24-fbpipe-det4wldriven-adc0.272.
-        export FFT_IMPL=${FFT_IMPL:-4}
-        export FFT_SSR=${FFT_SSR:-4}
-        export FFT_NFFT=${FFT_NFFT:-9}
-        export FFT_WIDTH=${FFT_WIDTH:-24}
-        export PEAK_FRAC=${PEAK_FRAC:-8}
-        export FFT_SCALED=${FFT_SCALED:-2}
-        export FFT_USE_APPROX=${FFT_USE_APPROX:-1}
-        export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
-        export DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-1}
-        export DETERMINISTIC=${DETERMINISTIC:-4}
-        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
-        echo "==> PROFILE=n9-125: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe, place WLDrivenBlockPlacement (DETERMINISTIC=4), phys_opt AggressiveExplore"
-        ;;
-    n9-125-cfar)
-        # 512-pt fast image tuned for the (default) CA-CFAR detector: same datapath as
-        # fft125ssr4n11 (IMPL=4 SSR=4, dsz24/frac8/scaled2/approx + DSP fb pipeline) but
-        # NFFT=9. N9 @125 is placement-noisy — the winning DETERMINISTIC moves with RTL
-        # churn, so RE-SWEEP after RTL edits. On the current mainline (post scope-zigzag
-        # change, commit 6e794ba0) the best is ExtraNetDelay_high (DETERMINISTIC=2) x
+    ssr4n9)
+        # Default 512-pt fast image (IMPL=4 SSR=4 NFFT=9, default CA-CFAR detector): same
+        # datapath as ssr4n11 (dsz24/frac8/scaled2/approx + DSP fb pipeline) but NFFT=9.
+        # N9 @125 is placement-noisy — the winning DETERMINISTIC moves with RTL churn, so
+        # RE-SWEEP after RTL edits. On the current mainline (post scope-zigzag change,
+        # commit 6e794ba0) the best is ExtraNetDelay_high (DETERMINISTIC=2) x
         # AggressiveExplore: pll_adc WNS +0.054 / WHS +0.039 (ser non-binding, FFT on
         # adc_clk). The pre-change winner Default/DET=8 (+0.076/+0.051) now FAILS setup
         # at −0.156. LUT 70% / FF 45% / BRAM 55% / DSP 67%. Archive:
@@ -397,10 +380,30 @@ case "${PROFILE:-}" in
         export DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-1}
         export DETERMINISTIC=${DETERMINISTIC:-2}
         export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
-        echo "==> PROFILE=n9-125-cfar: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe, place ExtraNetDelay_high (DETERMINISTIC=2), phys_opt AggressiveExplore"
+        echo "==> PROFILE=ssr4n9: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, CA-CFAR, dsz24 frac8 scaled2 approx fbpipe, place ExtraNetDelay_high (DETERMINISTIC=2), phys_opt AggressiveExplore"
+        ;;
+    ssr4n9-global)
+        # ssr4n9 with the LEGACY global peak detector (PEAK_ALGO=global) instead of the
+        # default CA-CFAR — the original 512-pt profile. IMPL=4 SSR=4 NFFT=9, dsz24 +
+        # sub-bin frac8 + FFT_SCALED=2 + approx twiddles + DSP fb pipeline. Placed
+        # WLDrivenBlockPlacement (DETERMINISTIC=4) was its pre-CFAR pick (pll_adc +0.272,
+        # ser +1.845); RE-SWEEP under the current netlist/detector — not verified since.
+        export FFT_IMPL=${FFT_IMPL:-4}
+        export FFT_SSR=${FFT_SSR:-4}
+        export FFT_NFFT=${FFT_NFFT:-9}
+        export FFT_WIDTH=${FFT_WIDTH:-24}
+        export PEAK_FRAC=${PEAK_FRAC:-8}
+        export PEAK_ALGO=${PEAK_ALGO:-global}
+        export FFT_SCALED=${FFT_SCALED:-2}
+        export FFT_USE_APPROX=${FFT_USE_APPROX:-1}
+        export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
+        export DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-1}
+        export DETERMINISTIC=${DETERMINISTIC:-4}
+        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
+        echo "==> PROFILE=ssr4n9-global: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, LEGACY global detector (PEAK_ALGO=global), dsz24 frac8 scaled2 approx fbpipe, place WLDrivenBlockPlacement (DETERMINISTIC=4), phys_opt AggressiveExplore"
         ;;
     *)
-        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 ssr2n13-125 fft178ssr4n11 fft125ssr4n11 fft125ssr4n11-impl5 fft125ssr4n13-single fft178ssr8n11 n9-125 n9-125-cfar)" >&2; exit 1 ;;
+        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 ssr2n13-125 fft178ssr4n11 ssr4n11 ssr4n11-impl5 ssr4n13-single fft178ssr8n11 ssr4n9 ssr4n9-global)" >&2; exit 1 ;;
 esac
 
 # ---- Active build defaults (override on the command line, e.g. FFT_IMPL=5 ./make.sh) ----
