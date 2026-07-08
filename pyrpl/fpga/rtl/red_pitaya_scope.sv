@@ -609,6 +609,8 @@ logic [ DSZ-1: 0]   fft_rdata_down_b, fft_rdata_down_b_;
 logic [ QSZ-1:0]    fft_q_wp_a;
 logic [ QSZ-1:0]    fft_q_rp_a;
 logic [ 32-1: 0]    fft_overflow_cnt;
+// Per-engine input-FIFO reset diagnostics {rst_drop[31:16], zero_frame[15:0]}
+logic [ 32-1: 0]    fft_diag[0:1];
 logic [ 16-1: 0]    fft_threshold_k, fft_a_threshold_k, fft_b_threshold_k;
 logic [ FSZ-1:0]    fft_peak_start, fft_a_peak_start, fft_b_peak_start;
 logic [ DSZ-1: 0]   fft_peak_minimum, fft_a_peak_minimum, fft_b_peak_minimum;
@@ -707,6 +709,21 @@ logic fft_trig_i = fft_trig_sync ? (adc_trig && !adc_dly_do && pretrig_ok) : fft
 logic fft_dvalid = (!fft_trig_sync || adc_we) && adc_dv; 
 logic fft_up = fft_state == S_FFT_UP;
 logic fft_down = fft_state == S_FFT_DOWN;
+
+// Canonical per-frame trigger ACCEPT: exactly the FSM's S_IDLE -> S_WAIT1
+// condition below. Every per-frame consumer (fft_proc feed engines, scan-index
+// queue push, scan-step trigger) must key off THIS pulse, not the raw
+// fft_trig_i && &fft_done: the feed engine's own done is the clk_i-domain
+// SOURCE of the adc-domain fft_done here, so it rises 2-3 CDC cycles EARLIER.
+// A chirp landing in that lag window used to be rejected by the FSM (no
+// acquisition, no index push) while still STARTING both feed engines — which
+// then post-padded a whole frame of zeros (acq_done still set from the frame
+// before, FIFO empty): the silent all-zero spectrum frames, plus a phantom
+// peak_ready popping the index FIFO out of phase. Whether chirp edges precess
+// through the 2-3-cycle window depends on the exact fractional chirp period —
+// hence the extreme wait1/frequency sensitivity of the observed dips.
+logic fft_trig_accept = (fft_state == S_IDLE) && fft_trig_i && (&fft_done)
+                        && (fft_reconf_wait == 0);
 // export the acq windows for PID gating (EO-PLL locks only inside them)
 assign fft_window_o = {fft_down, fft_up};
 
@@ -748,7 +765,7 @@ if (fft_index_flush) begin
    `endif
 end else begin
     fft_frame_start <= 1'b0;   // default: pulse only on the raster boundaries below
-    fft_index_valid = {fft_index_valid[IDX_PIPELINE+1: 0], fft_trig_i && &fft_done};
+    fft_index_valid = {fft_index_valid[IDX_PIPELINE+1: 0], fft_trig_accept};
 
    `ifdef DEBUG_FFT_INDEX
        if (fft_index_valid[IDX_PIPELINE+2]) begin
@@ -921,7 +938,7 @@ fft_a (
    .data_in (adc_a_dat),
    .enable_in (fft_up || (fft_down && !fft_parallel)),
    .dvalid_in (fft_dvalid),
-   .trig_in (fft_trig_i),
+   .trig_in (fft_trig_accept),
 
    .fft_parallel_in (fft_parallel),
 
@@ -970,7 +987,8 @@ fft_a (
 
    .fft_conf_data_in (fft_conf_data),
 
-   .overflow_cnt_o (fft_overflow_cnt)
+   .overflow_cnt_o (fft_overflow_cnt),
+   .diag_o (fft_diag[0])
 );
 
 if (FFT_SINGLE) begin : gen_no_fft_b
@@ -982,6 +1000,7 @@ if (FFT_SINGLE) begin : gen_no_fft_b
    assign fft_hist_rdata_up_b_   = '0;
    assign fft_hist_rdata_down_b_ = '0;
    assign fft_status[1]          = '0;
+   assign fft_diag[1]            = '0;
    assign fft_done[1]            = 1'b1;
    assign fft_peak_ready_b       = 1'b1;
    assign fft_peak_index_up_b    = '0;
@@ -1019,7 +1038,7 @@ fft_proc #(.ASZ(ASZ),
    .data_in (fft_parallel ? adc_a_dat : adc_b_dat),
    .enable_in ((!fft_parallel && fft_up) || fft_down),
    .dvalid_in (fft_dvalid),
-   .trig_in (fft_trig_i),
+   .trig_in (fft_trig_accept),
 
    .fft_parallel_in (fft_parallel),
 
@@ -1065,7 +1084,8 @@ fft_proc #(.ASZ(ASZ),
    // .point_cnt_o (fft_point_cnt),
    .fft_we_cnt (fft_we_cnt[1]),
 
-   .fft_conf_data_in (fft_conf_data)
+   .fft_conf_data_in (fft_conf_data),
+   .diag_o (fft_diag[1])
 );
 end
 
@@ -1439,7 +1459,7 @@ end else begin
         else if (fft_reconf_wait != 0)
             fft_reconf_wait <= fft_reconf_wait - 1'b1;
 
-        if (fft_trig_i && &fft_done && fft_reconf_wait == 0) begin
+        if (fft_trig_accept) begin
             fft_state_cnt <= 0;
             fft_state <= S_WAIT1;
             // new frame: clear both half-done flags so the engine doesn't post-pad
@@ -2053,7 +2073,7 @@ end else begin
    sys_err <= 1'b0 ;
 
    if (!scope_sig) begin
-     scope_sig <= fft_trig_i && &fft_done;
+     scope_sig <= fft_trig_accept;
      scope_sig_pre_cnt <= scope_sig_dly;
      scope_sig_post_cnt <= SCAN_SIG_POST; // short scan-trigger pulse (was 125 = 1us debug)
    end else if (scope_sig_pre_cnt != 0)
@@ -2199,7 +2219,9 @@ end else begin
      // [28] = runtime-intensity capable (the 0x9C enable register exists);
      // older bitstreams read 0 there, so the host can feature-detect.
      20'h00194 : begin sys_ack <= sys_en;          sys_rdata <= {3'h0, 1'b1, 8'(DMA_SEQ_W), 4'd4, DMA_PKT_BLK}    ; end
-     // 20'h00198 : begin sys_ack <= sys_en;          sys_rdata <= fft_we_cnt[1]                       ; end
+     // Input-FIFO reset diagnostics per engine: {rst_drop[31:16], zero_frame[15:0]}
+     20'h00198 : begin sys_ack <= sys_en;          sys_rdata <= fft_diag[0]                         ; end
+     20'h0019C : begin sys_ack <= sys_en;          sys_rdata <= fft_diag[1]                         ; end
 
      20'h1???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_a_rd}              ; end
      20'h2???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_b_rd}              ; end

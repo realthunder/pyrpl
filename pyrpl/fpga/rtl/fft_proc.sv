@@ -83,7 +83,14 @@ module fft_proc #(
 
   input logic  [  16-1:0] fft_conf_data_in,
 
-  output logic [  32-1:0] overflow_cnt_o
+  output logic [  32-1:0] overflow_cnt_o,
+
+  // Input-FIFO reset diagnostics: {rst_drop_cnt[15:0], zero_frame_cnt[15:0]}.
+  // rst_drop:   ADC writes rejected because the per-frame FIFO reset was still
+  //             propagating (should stay 0 for any sane wait1).
+  // zero_frame: frame halves fed with zero real data beats — the silent
+  //             all-zero-spectrum failure (host takes deltas, wraps at 16 bit).
+  output logic [  32-1:0] diag_o
 );
 
 localparam SSR_BITS = $clog2(FSSR);
@@ -128,6 +135,12 @@ logic           fft_frame_start, fft_tlast_missing, fft_tlast_unexp;
 // wrap between host polls even at high drop rates.
 logic [ 32-1:0] overflow_cnt;
 assign overflow_cnt_o = overflow_cnt;
+
+// Input-FIFO reset diagnostics (see diag_o): writes rejected inside the reset
+// shadow (adc domain) and frame halves fed with zero real data beats (clk_i
+// domain, gray-crossed for readback). Both wrap; the host takes deltas.
+logic [16-1:0] rst_drop_cnt;
+logic [16-1:0] zero_frame_cnt;
 
 logic [ 32-1: 0] point_cnt;
 logic [ 32-1: 0] scan_point_cnt;
@@ -593,6 +606,20 @@ xpm_cdc_gray #(
     .dest_out_bin (scan_point_cnt_o)
 );
 
+// zero_frame_cnt lives in the feed-engine (clk_i) domain; gray-cross it to the
+// sys-readback (adc) domain like point_cnt. rst_drop_cnt is already adc-domain.
+logic [16-1:0] zero_frame_cnt_sys;
+xpm_cdc_gray #(
+    .WIDTH        (16),
+    .DEST_SYNC_FF (SYNC_FF)
+) zero_frame_sync (
+    .src_clk      (clk_i),
+    .src_in_bin   (zero_frame_cnt),
+    .dest_clk     (adc_clk_i),
+    .dest_out_bin (zero_frame_cnt_sys)
+);
+assign diag_o = {rst_drop_cnt, zero_frame_cnt_sys};
+
 logic           fft_conf_dvalid;
 
 logic [16+FSZ+FSZ-1:0] fft_conf_input = {fft_acq_up_i>>SSR_BITS, fft_acq_down_i>>SSR_BITS, fft_conf_data_i};
@@ -695,7 +722,48 @@ logic [ FSSR*ASZ-1:0]   fin_dout;
 logic                   fin_rd, fin_dvalid;
 logic                   padding_done;
 logic [ FSZ-1:0]        padding_cnt;
-logic                   fin_rst = !adc_rstn_i || (trig_i && fft_done_o);
+
+// Per-frame flush of fifo_in (clears sample residue when the acq counts aren't
+// beat-aligned), made XPM-legal per UG974: rst is a REGISTERED multi-cycle pulse
+// synchronous to wr_clk, launched at FEED COMPLETION (fft_done_o rising edge) —
+// the earliest instant of the inter-frame quiet window: the residue is final,
+// writes stopped when the acq window closed, and the feed engine released
+// fin_rd one done-CDC lag earlier. Launching here (not at the next trigger
+// accept, as the pre-fix combinational reset did) absorbs the reset SHADOW
+// (rst + rst_busy propagation, ~30 wr cycles in the XPM model) into the
+// done->next-trigger gap instead of eating into wait1: a trigger can't be
+// accepted before fft_done_o is high, so the shadow has (gap + wait1) cycles
+// to clear before the next frame's first write. Both FIFO sides are
+// additionally gated on the FIFO's own wr_rst_busy/rd_rst_busy so an enable
+// can never be active while the reset propagates through either clock domain:
+// a violating write is rejected and counted (rst_drop_cnt, diag_o) instead of
+// silently corrupting the FIFO state.
+localparam FIN_RST_CYC = 2;
+logic [FIN_RST_CYC-1:0] fin_rst_sr;
+logic fft_done_o_d;
+always @(posedge adc_clk_i) begin
+    fft_done_o_d <= fft_done_o;
+    if (!adc_rstn_i)
+        fin_rst_sr <= '1;
+    else
+        fin_rst_sr <= {fin_rst_sr[FIN_RST_CYC-2:0], fft_done_o && !fft_done_o_d};
+end
+wire fin_rst = |fin_rst_sr;
+wire fin_wr_rst_busy, fin_rd_rst_busy;
+wire fin_wr_en = enable_i && dvalid_i;
+wire fin_wr_ok = !fin_rst && !fin_wr_rst_busy;
+
+// Writes attempted inside the reset shadow. Nonzero means an acquisition window
+// opened before the per-frame FIFO reset finished propagating (wait1 too small).
+always @(posedge adc_clk_i)
+    if (!adc_rstn_i)
+        rst_drop_cnt <= 0;
+    else if (fin_wr_en && !fin_wr_ok)
+        rst_drop_cnt <= rst_drop_cnt + 1;
+
+// data_valid gated on rd_rst_busy so an in-flight read-side reset can never pop
+// (rd_en) nor feed (fft_saxi_valid/fft_data_i) a beat — pop and consume stay atomic.
+wire fin_dvalid_g = fin_dvalid && !fin_rd_rst_busy;
 
 xpm_fifo_async #(
     .FIFO_WRITE_DEPTH(1<<QSZ),
@@ -707,13 +775,15 @@ xpm_fifo_async #(
 ) fifo_in (
     .rst             (fin_rst),
     .wr_clk          (adc_clk_i),
-    .wr_en           (enable_i & dvalid_i),
+    .wr_en           (fin_wr_en && fin_wr_ok),
     .din             (data_i),
+    .wr_rst_busy     (fin_wr_rst_busy),
 
     .rd_clk          (clk_i),
-    .rd_en           (padding_done & fft_saxi_rdy & fin_rd & fin_dvalid),
+    .rd_en           (padding_done & fft_saxi_rdy & fin_rd & fin_dvalid_g),
     .dout            (fin_dout),
     .data_valid      (fin_dvalid),
+    .rd_rst_busy     (fin_rd_rst_busy),
 
     // .empty           (fin_empty),
     // .full            (fin_full)
@@ -760,9 +830,16 @@ assign fft_saxi_last = fft_we_one || fft_we_length_plus_one;
 // dropped sample just becomes a zero (minor spectral degradation, not a hang).
 // During live acquisition (acq_done low) a transient empty still stalls/waits,
 // so real samples are never replaced by zeros prematurely.
-wire fft_postpad = padding_done && acq_done && !fin_dvalid;
-assign fft_saxi_valid = (!padding_done || fin_dvalid || fft_postpad) && fin_rd;
-assign fft_data_i = (padding_done && fin_dvalid) ? fin_dout : '0;
+wire fft_postpad = padding_done && acq_done && !fin_dvalid_g;
+assign fft_saxi_valid = (!padding_done || fin_dvalid_g || fft_postpad) && fin_rd;
+assign fft_data_i = (padding_done && fin_dvalid_g) ? fin_dout : '0;
+
+// Frame halves that completed with ZERO real data beats (all writes lost — the
+// silent all-zero-spectrum failure this diagnostic exists to expose). A data
+// beat is a feed handshake with padding_done && fin_dvalid_g; each half ends on
+// the fft_we_one / fft_we_length_plus_one beat. Halves configured with an empty
+// acq window are not counted.
+logic          half_had_data;
 
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
@@ -775,6 +852,8 @@ if (rstn_i == 1'b0) begin
     padding_cnt <= 0;
     padding_done <= 0;
     overflow_cnt <= 0;
+    half_had_data <= 0;
+    zero_frame_cnt <= 0;
 
 end else begin
 
@@ -806,6 +885,19 @@ end else begin
                 padding_cnt <= padding_cnt - 1;
                 padding_done <= padding_cnt == 1;
             end
+            // Zero-frame diagnostic: at each half's final beat, bump the counter
+            // if neither the earlier beats (half_had_data) nor this closing beat
+            // carried real FIFO data. up_in still names the half being closed
+            // (it only flips on this handshake). In parallel mode up_in stays 1
+            // and acq_up holds that engine's single window, so the guard is
+            // correct in both modes.
+            if (fft_we_one || fft_we_length_plus_one) begin
+                if (!half_had_data && !(padding_done && fin_dvalid_g)
+                    && (up_in ? acq_up : acq_down) != 0)
+                    zero_frame_cnt <= zero_frame_cnt + 1;
+                half_had_data <= 0;
+            end else if (padding_done && fin_dvalid_g)
+                half_had_data <= 1;
             fft_we_cnt <= fft_we_cnt - 1;
             fft_done <= fft_we_one;
             fft_we_one <= fft_we_cnt == 2;

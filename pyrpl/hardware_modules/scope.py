@@ -525,6 +525,15 @@ class Scope(HardwareModule, AcquisitionModule):
 
     fft_overflow_cnt = IntRegister(0x190, doc="FFT buffer overflow count")
 
+    # Input-FIFO reset diagnostics, one per FFT engine. Packed 32-bit word:
+    # [31:16] rst_drop   — ADC writes rejected while the per-frame FIFO reset was
+    #                      still propagating (should stay 0 for any sane wait1)
+    # [15:0]  zero_frame — frame halves fed with zero real data beats (the silent
+    #                      all-zero-spectrum failure). Both wrap; take deltas.
+    fft_diag_a = IntRegister(0x198, doc="FFT input-FIFO reset diagnostics, engine A")
+
+    fft_diag_b = IntRegister(0x19C, doc="FFT input-FIFO reset diagnostics, engine B")
+
     fft_wp_last = IntRegister(0x68, doc="FFT last write size")
 
     # DMA point-cloud packet-format descriptor (read-only, self-describing).
