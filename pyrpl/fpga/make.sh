@@ -197,6 +197,13 @@ fi
 #             AltSpreadLogic_medium (DETERMINISTIC=7), phys_opt AggressiveExplore. Best:
 #             pll_adc +0.170 (ser non-binding). N11@125 placement is netlist-sensitive —
 #             re-sweep DETERMINISTIC after RTL edits.
+#   fft125ssr4n11-impl5 — same as fft125ssr4n11 but the DSP-based direct hls::fft
+#             (FFT_IMPL=5) instead of the native xfft. Dual-channel N11 @125 CFAR. The
+#             hls::fft puts delay/reorder in BRAM (not SRL/LUT-RAM) → LUT drops 89%→78%,
+#             relaxing the congestion that pins IMPL=4: closes ~3x wider (WNS +0.032 /
+#             WHS +0.051 at ExtraPostPlacementOpt/DET=5) AND ~0.7 W / 8 C cooler. Cost:
+#             DSP 96% + BRAM 96% (the reorder buffers) — near-zero headroom. Use when N11
+#             timing/power matter more than resource room.
 #   fft125ssr4n13-single — IMPL=5 SSR=4 NFFT=13 (8192-pt) SINGLE-CHANNEL, FFT on adc_clk
 #             @125 MHz. Finest resolution; single-channel because natural_order reorder
 #             buffers make dual-channel N13 1 BRAM tile over. natural order auto-on via
@@ -287,6 +294,30 @@ case "${PROFILE:-}" in
         export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
         echo "==> PROFILE=fft125ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe, place AltSpreadLogic_medium (DETERMINISTIC=7), phys_opt AggressiveExplore"
         ;;
+    fft125ssr4n11-impl5)
+        # Same 2048-pt dual-channel CFAR image as fft125ssr4n11 but the DSP-based direct
+        # hls::fft (FFT_IMPL=5) instead of the native xfft. hls::fft implements the FFT
+        # delay/reorder lines in BRAM rather than SRL/LUT-RAM, so LUT drops 89% -> 78%,
+        # relaxing the routing congestion that pins IMPL=4 at +0.010. 11-place sweep (x
+        # AggressiveExplore) on mainline 6e794ba0: best ExtraPostPlacementOpt (DET=5) ->
+        # pll_adc WNS +0.032 / WHS +0.051 (ser non-binding, FFT on adc_clk) — ~3x IMPL=4's
+        # margin, and ~0.7 W lower / 8 C cooler (SRL delay lines are signal/logic-power
+        # heavy; BRAM is power-dense). Cost: DSP 96% (211) + BRAM 96% (~134.5 tiles), near
+        # zero headroom. LUT 78% (41,620) / FF 52%. csim PASS; natural order via frac8.
+        # Archive: out.d/sweep-impl5-ssr4n11-125-dsz24-fbpipe-cfar-det5-AggressiveExplore.
+        export FFT_IMPL=${FFT_IMPL:-5}
+        export FFT_SSR=${FFT_SSR:-4}
+        export FFT_NFFT=${FFT_NFFT:-11}
+        export FFT_WIDTH=${FFT_WIDTH:-24}
+        export PEAK_FRAC=${PEAK_FRAC:-8}
+        export FFT_SCALED=${FFT_SCALED:-2}
+        export FFT_USE_APPROX=${FFT_USE_APPROX:-1}
+        export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
+        export DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-1}
+        export DETERMINISTIC=${DETERMINISTIC:-5}
+        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
+        echo "==> PROFILE=fft125ssr4n11-impl5: IMPL=5 SSR=4 NFFT=11 (2048-pt) direct hls::fft FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe, place ExtraPostPlacementOpt (DETERMINISTIC=5), phys_opt AggressiveExplore"
+        ;;
     fft125ssr4n13-single)
         # Finest-resolution single-clock image: IMPL=5 (direct hls::fft, DSP-based) SSR=4
         # NFFT=13 (8192-pt), SINGLE-CHANNEL (fft_b dropped) so the natural_order reorder
@@ -369,7 +400,7 @@ case "${PROFILE:-}" in
         echo "==> PROFILE=n9-125-cfar: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe, place ExtraNetDelay_high (DETERMINISTIC=2), phys_opt AggressiveExplore"
         ;;
     *)
-        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 ssr2n13-125 fft178ssr4n11 fft125ssr4n11 fft125ssr4n13-single fft178ssr8n11 n9-125 n9-125-cfar)" >&2; exit 1 ;;
+        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 ssr2n13-125 fft178ssr4n11 fft125ssr4n11 fft125ssr4n11-impl5 fft125ssr4n13-single fft178ssr8n11 n9-125 n9-125-cfar)" >&2; exit 1 ;;
 esac
 
 # ---- Active build defaults (override on the command line, e.g. FFT_IMPL=5 ./make.sh) ----
