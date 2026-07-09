@@ -23,7 +23,8 @@ import traceback
 import numpy as np
 from collections import OrderedDict
 from ..attributes import BoolProperty, BoolRegister, FloatRegister, SelectRegister, SelectProperty, StringProperty,\
-                             IntRegister, LongRegister, PhaseRegister, FrequencyRegister, FloatProperty, epsilon
+                             IntRegister, LongRegister, PhaseRegister, FrequencyRegister, FloatProperty, epsilon,\
+                             ExtTriggerSelectRegister
 from ..modules import HardwareModule, SignalModule
 from ..widgets.module_widgets import AsgWidget
 from ..widgets.attribute_widgets import FileAttributeWidget
@@ -330,7 +331,7 @@ def make_asg(channel=0):
             ])
         trigger_sources = _trigger_sources.keys()
 
-        trigger_source = SelectRegister(_START_OFFSET, bitmask=0x0007 << _BIT_OFFSET,
+        trigger_source = ExtTriggerSelectRegister(_START_OFFSET, bitmask=0x0007 << _BIT_OFFSET,
                                         default='off',
                                         options=_trigger_sources,
                                         doc="trigger source for triggered "

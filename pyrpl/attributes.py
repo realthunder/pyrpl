@@ -1321,6 +1321,39 @@ class SelectRegister(BaseRegister, SelectProperty):
         return int(value)
 
 
+class _ExtTriggerPinFreeMixin(object):
+    """Trigger-source select mix-in: when the source is set to the external
+    pin-0 edge (DIO0_P), turn off that pin's hk output mode so DIO0_P is an
+    input and can be read as the trigger. Applied to modules whose external
+    trigger is wired to DIO0_P (scope, asg)."""
+    # option names that route the external trigger through DIO0_P
+    _EXT_PIN0_SOURCES = ('ext_positive_edge', 'ext_negative_edge')
+
+    def set_value(self, obj, value):
+        result = super(_ExtTriggerPinFreeMixin, self).set_value(obj, value)
+        if value in self._EXT_PIN0_SOURCES:
+            try:
+                hk = getattr(getattr(obj, 'parent', None), 'hk', None)
+                if hk is not None and hk.expansion_P0_output:
+                    hk.expansion_P0_output = False
+            except Exception:
+                obj._logger.debug("could not free DIO0_P (hk.expansion_P0) "
+                                  "for the external trigger", exc_info=True)
+        return result
+
+
+class ExtTriggerSelectProperty(_ExtTriggerPinFreeMixin, SelectProperty):
+    """SelectProperty for a trigger source that frees DIO0_P (hk.expansion_P0)
+    whenever it is set to the external pin-0 edge."""
+    pass
+
+
+class ExtTriggerSelectRegister(_ExtTriggerPinFreeMixin, SelectRegister):
+    """SelectRegister for a trigger source that frees DIO0_P (hk.expansion_P0)
+    whenever it is set to the external pin-0 edge."""
+    pass
+
+
 class ProxyProperty(BaseProperty):
     """
     An attribute that is a proxy to another attribute.

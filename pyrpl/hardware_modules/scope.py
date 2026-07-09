@@ -359,7 +359,7 @@ class Scope(HardwareModule, AcquisitionModule):
     _trigger_source_register = SelectRegister(0x4, doc="Trigger source",
                                               options=_trigger_sources)
 
-    trigger_source = SelectProperty(default='immediately',
+    trigger_source = ExtTriggerSelectProperty(default='immediately',
                                     options=_trigger_sources.keys(),
                                     doc="Trigger source for the scope. Use "
                                         "'immediately' if no "
