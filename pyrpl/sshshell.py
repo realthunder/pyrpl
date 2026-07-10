@@ -111,7 +111,9 @@ class SshShell(object):
         # against an unbounded hang, not against slow-but-progressing commands.
         if timeout is None:
             timeout = _RUN_TIMEOUT
-        self._logger.debug(f'< {cmd}')
+        # NB: deliberately NOT logging the command here — run() is used for
+        # frequent per-transaction commands (e.g. the laser serial-mux switch),
+        # and echoing each one spams any DEBUG log sink (the GUI status bar).
         stdin_, stdout_, stderr_ = self.ssh.exec_command(cmd, timeout=timeout)
         channel = stdout_.channel
         channel.set_combine_stderr(True)
@@ -126,8 +128,7 @@ class SshShell(object):
                     if not line:
                         break
                     line = line.strip()
-                    self._logger.debug(f'> {line}')
-                    lines.append(line)
+                    lines.append(line)                # not logged (see above)
             if exited:
                 ret = channel.recv_exit_status()
                 channel.close()
