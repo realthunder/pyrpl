@@ -872,8 +872,9 @@ class DmaUdpClient:
 
     def _parse_worker(self):
         """Parser thread: pop filled buffers (in batches, to amortise the GIL
-        yield), parse each into the point cloud, recycle the buffers, then pace so
-        the GUI keeps its slice, decoupled from the socket drain."""
+        yield), parse the WHOLE batch in one vectorized pass (_parse_batch),
+        recycle the buffers, then pace so the GUI keeps its slice, decoupled
+        from the socket drain."""
         while self._running:
             batch = []
             with self._cond:
@@ -886,16 +887,207 @@ class DmaUdpClient:
                         break
                     batch.append(self._filled.popleft())
             n = len(batch)
-            for buf, nbytes in batch:
-                self._pkt_count += 1
-                self._parse_count += 1
-                # memoryview slice avoids copying; _process_packet fully consumes
-                # it (all numpy ops copy out) before we recycle the buffer below.
-                self._process_packet(memoryview(buf)[:nbytes])
-            with self._cond:
-                for buf, _ in batch:
-                    self._free.append(buf)
+            self._pkt_count += n
+            self._parse_count += n
+            try:
+                self._parse_batch(batch)
+            finally:
+                # Recycle even if the parse raised, so the ring never leaks.
+                with self._cond:
+                    for buf, _ in batch:
+                        self._free.append(buf)
             self._pace(n)
+
+    def _parse_batch(self, batch):
+        """Parse one worker batch of datagrams in a single vectorized pass.
+
+        Per-packet numpy dispatch overhead used to dominate the parse thread
+        (~40 small-array ops per 1.4 kB datagram, ~270 us of GIL-held CPU);
+        concatenating the batch and running every decode step once over all
+        packets cuts that by an order of magnitude, which is what keeps the
+        parser ahead of the board when the GUI or the host is busy.
+
+        Semantics match the per-packet parser exactly: each datagram's words
+        before its FIRST header word are discarded (and a headerless datagram
+        is counted bad), so a datagram lost or shed between two batched ones
+        can never splice stale scan positions across the gap. v4/v6 keep
+        their per-packet walk (they re-anchor per channel at each packet
+        boundary); mixed layout versions or channel counts within one batch
+        (a mode toggle in flight) fall back to the per-packet parser."""
+        nw = self._pkt_words
+        views, arrays = [], []
+        for buf, nbytes in batch:
+            if nbytes != self._pkt_bytes:
+                logger.debug("Unexpected packet length %d (expected %d)",
+                             nbytes, self._pkt_bytes)
+                self._bad_count += 1
+                continue
+            views.append(memoryview(buf)[:nbytes])
+            arrays.append(np.frombuffer(buf, dtype='<u8', count=nw))
+        npkt = len(arrays)
+        if not npkt:
+            return
+        words = np.concatenate(arrays)
+        is_header = ((words >> np.uint64(63)) & np.uint64(1)).astype(bool)
+        csh = np.cumsum(is_header)               # headers seen up to each word
+        # Headers per packet, from the running count at each packet's last word.
+        pkt_last = csh.reshape(npkt, nw)[:, -1]
+        nohdr = int((np.diff(np.r_[0, pkt_last]) == 0).sum())
+        if csh[-1] == 0:
+            self._bad_count += nohdr             # whole batch headerless
+            return
+        hw = words[is_header]
+        real = hw != np.uint64(0xFFFFFFFFFFFFFFFF)   # drop pad sentinel
+        if not real.any():
+            self._bad_count += nohdr
+            return
+        vers = ((hw[real] >> np.uint64(55)) & np.uint64(0xf)).astype(np.int64)
+        ver = int(vers[0])
+        if bool((vers == ver).all()):
+            if ver in (4, 6):
+                self._bad_count += nohdr
+                for q in range(npkt):
+                    s = slice(q * nw, (q + 1) * nw)
+                    self._process_packet_v4(words[s], is_header[s],
+                                            has_val=(ver == 6))
+                return
+            if self._process_v35_batch(words, is_header, csh, npkt,
+                                       has_val=(ver == 5)):
+                self._bad_count += nohdr
+                return
+        # Mixed versions / heterogeneous NCH — parse packet by packet (the
+        # per-packet parser does its own bad-counting).
+        for v in views:
+            self._process_packet(v)
+
+    def _process_v35_batch(self, words, is_header, csh, npkt, has_val):
+        """Combined-stream formats v3/v5, vectorized over a whole batch.
+
+        Same reconstruction as the v3/v5 branch of _process_packet (one shared
+        scan position, data words in groups of NCH — 2*NCH with value words),
+        but every decode step runs ONCE over all packets' segments: segment
+        membership from the cumsum over header flags, in-segment word ordinals
+        from a counting cumsum, group positions from one global cumsum of the
+        per-group steps rebased at each segment's anchor (the v4 parser's
+        technique). The remaining Python-level work per batch is one small
+        loop over segments for the stateful zigzag trend plus one
+        _write_channel call per channel per frame-counter run (almost always
+        exactly one — the 2D frame turns over a few times per second).
+
+        Returns False (nothing parsed) when the segments disagree on NCH; the
+        caller then re-parses the batch packet by packet."""
+        nchan = len(self._live)
+        hdr_pos = np.nonzero(is_header)[0]
+        hw = words[hdr_pos]
+        nch_h = ((hw >> np.uint64(59)) & np.uint64(0xf)).astype(np.int64)
+        seg_ok = (nch_h > 0) & (nch_h <= nchan)  # 0xF pad / unknown -> skip segment
+        if not seg_ok.any():
+            return True
+        nch = int(nch_h[np.argmax(seg_ok)])
+        if not bool((nch_h[seg_ok] == nch).all()):
+            return False
+        hsz = self._hsz
+        fc_mask = np.uint64((1 << (55 - hsz)) - 1)
+        fc_h = ((hw & fc_mask) >> np.uint64(self._seq_bits)).astype(np.int64)
+        anchor_h = ((hw >> np.uint64(55 - hsz))
+                    & np.uint64((1 << hsz) - 1)).astype(np.int64)
+        nseg = hdr_pos.size
+        nw = words.size // npkt
+
+        # A word is parseable when its own datagram has already anchored (the
+        # per-packet parser drops words before a datagram's first header — a
+        # shed/lost datagram must not splice positions across the gap) and its
+        # segment decodes. Words before the batch's first header have
+        # seg_id -1; `anchored` is False there, masking the wrapped lookup.
+        seg_id = csh - 1                          # segment index per word
+        pkt_first = np.r_[0, csh.reshape(npkt, nw)[:-1, -1]]
+        anchored = (csh.reshape(npkt, nw) > pkt_first[:, None]).ravel()
+        ok = (~is_header) & anchored & seg_ok[seg_id]
+
+        gw = 2 * nch if has_val else nch
+        csd = np.cumsum(ok)
+        seg_base = csd[hdr_pos]                   # parseable words before each segment
+        seg_cnt = np.r_[seg_base[1:], csd[-1]] - seg_base
+        full = (seg_cnt // gw) * gw               # words in complete groups only
+        rows = np.nonzero(ok)[0]
+        seg_r = seg_id[rows]
+        o = csd[rows] - 1 - seg_base[seg_r]       # in-segment word ordinal
+        kf = o < full[seg_r]                      # drop a trailing partial group
+        if not kf.all():
+            rows, seg_r, o = rows[kf], seg_r[kf], o[kf]
+        if rows.size == 0:
+            # Headers only: still note the newest frame counter so 2D-frame
+            # turnover publishing stays coherent (the per-packet parser wrote
+            # an empty segment for this).
+            last_fc = int(fc_h[np.nonzero(seg_ok)[0][-1]])
+            empty = np.empty(0, np.int32)
+            for c in range(nch):
+                self._write_channel(c, last_fc, empty, empty, empty)
+            return True
+        w_r = words[rows]
+        slot = o % gw                             # word's column within its group
+
+        # One shared position stream: the step rides on each group's first
+        # word (channel 0's index word), the first group of a segment is
+        # pinned at the anchor. One global cumsum, rebased per segment.
+        g0 = np.nonzero(slot == 0)[0]
+        w0 = w_r[g0]
+        s0 = seg_r[g0]                            # segment of each group
+        mag = ((w0 >> np.uint64(62)) & np.uint64(1)).astype(np.int64)
+        drc = ((w0 >> np.uint64(61)) & np.uint64(1)).astype(np.int64)
+        step = mag * (1 - 2 * drc)                # +1 fwd, -1 back, 0 hold
+        firsts = np.nonzero(np.r_[True, s0[1:] != s0[:-1]])[0]
+        step[firsts] = 0
+        cs = np.cumsum(step)
+        rebase = np.zeros(nseg, np.int64)
+        rebase[s0[firsts]] = cs[firsts]
+        pos = anchor_h[s0] + (cs - rebase[s0])
+        if self._zz_slow_steps:
+            # Slow-axis column correction — the trend is stateful and must be
+            # fed every segment in arrival order, so this small loop stays
+            # (it runs per segment, not per packet or point).
+            st = self._zigzag_stride
+            present = s0[firsts]
+            sh = np.fromiter(
+                (self._zz_slow_dir_shift(-1, int(anchor_h[s]) // st)
+                 for s in present), dtype=np.int64, count=present.size)
+            if sh.any():
+                per_seg = np.zeros(nseg, np.int64)
+                per_seg[present] = sh
+                pos = pos + per_seg[s0]
+        keep = (pos >= 0) & (pos < self._max_frame_size)
+
+        # Emit one write per channel per frame-counter RUN (merging segments
+        # that share a frame counter — turnover publishing only cares about
+        # the counter CHANGING, and it changes a few times per second).
+        fc_g = fc_h[s0]
+        bnd = np.nonzero(fc_g[1:] != fc_g[:-1])[0] + 1
+        starts = np.r_[0, bnd]
+        ends = np.r_[bnd, fc_g.size]
+        idx_sh = np.uint64(self._idx)
+        pmask = np.uint64(self._mask)
+        for c in range(nch):
+            ci = w_r[slot == (2 * c if has_val else c)]
+            up = (ci & pmask).astype(np.int32)
+            dn = ((ci >> idx_sh) & pmask).astype(np.int32)
+            vw = w_r[slot == 2 * c + 1] if (has_val and self._intensity) else None
+            for a, b in zip(starts, ends):
+                k = keep[a:b]
+                p = pos[a:b][k].astype(np.int64)
+                u, d = up[a:b][k], dn[a:b][k]
+                if vw is not None:
+                    ru, rd = self._reflectivity(vw[a:b][k], u, d)
+                    self._write_channel(c, int(fc_g[a]), p, u, d, ru, rd)
+                else:
+                    self._write_channel(c, int(fc_g[a]), p, u, d)
+        # A trailing data-less segment with a NEW frame counter still needs
+        # noting (it is what publishes the just-completed frame).
+        last_seg = int(np.nonzero(seg_ok)[0][-1])
+        if fc_h[last_seg] != fc_g[-1]:
+            empty = np.empty(0, np.int32)
+            for c in range(nch):
+                self._write_channel(c, int(fc_h[last_seg]), empty, empty, empty)
+        return True
 
     def _track_seq(self, seq):
         """Gap-count the per-packet FPGA sequence (wrap-safe within seq_bits). A
