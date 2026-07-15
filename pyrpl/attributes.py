@@ -31,7 +31,8 @@ from .widgets.attribute_widgets import BoolAttributeWidget, \
                                        LedAttributeWidget, \
                                        PlotAttributeWidget, \
                                        BasePropertyListPropertyWidget, \
-                                       ComplexAttributeWidget
+                                       ComplexAttributeWidget, \
+                                       FileAttributeWidget
 
 from .curvedb import CurveDB
 from collections import OrderedDict
@@ -1131,6 +1132,14 @@ class TextProperty(StringProperty):
     Same as StringProperty, but the gui displays it as multi-line text.
     """
     _widget_class = TextAttributeWidget
+
+
+class FileProperty(StringProperty):
+    """
+    Same as StringProperty, but the gui displays it as a line edit plus a
+    '...' button that opens a file-browse dialog.
+    """
+    _widget_class = FileAttributeWidget
 
 
 class SelectProperty(BaseProperty):

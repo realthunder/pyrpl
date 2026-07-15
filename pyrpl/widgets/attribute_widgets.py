@@ -12,6 +12,7 @@ from .spinbox import NumberSpinBox, IntSpinBox, FloatSpinBox, ComplexSpinBox
 from .. import pyrpl_utils
 from ..curvedb import CurveDB
 
+import os
 import sys
 
 # TODO: try to remove widget_name from here (again)
@@ -188,10 +189,15 @@ class FileAttributeWidget(BaseAttributeWidget):
     """
     Widget for file entry with browse button
     """
+    # last directory a file was picked from, shared by ALL file attributes for
+    # the session (class attribute; deliberately not persisted as a setting)
+    _last_dir = ''
+
     def _make_widget(self):
         self.widget = QtWidgets.QWidget()
         layout = self.lay = QtWidgets.QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         self.widget.setLayout(layout)
         self.lineedit = QtWidgets.QLineEdit()
         layout.addWidget(self.lineedit)
@@ -202,9 +208,21 @@ class FileAttributeWidget(BaseAttributeWidget):
         self.lineedit.textChanged.connect(self.write_widget_value_to_attribute)
 
     def _on_browse(self):
-        filename = QtWidgets.QFileDialog.getOpenFileName()
-        if filename:
+        # start at the session's last browsed directory; before any browse,
+        # fall back to the directory of the attribute's current value
+        start_dir = FileAttributeWidget._last_dir
+        if not start_dir:
+            current = str(self.lineedit.text()).strip()
+            if current:
+                d = current if os.path.isdir(current) \
+                    else os.path.dirname(current)
+                if os.path.isdir(d):
+                    start_dir = d
+        filename = QtWidgets.QFileDialog.getOpenFileName(
+            self.widget, 'Select file', start_dir)
+        if filename and filename[0]:
             self.lineedit.setText(filename[0])
+            FileAttributeWidget._last_dir = os.path.dirname(filename[0])
 
     def _get_widget_value(self):
         return str(self.lineedit.text())
