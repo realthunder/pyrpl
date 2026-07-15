@@ -29,6 +29,7 @@ import os
 import random
 import hashlib
 import socket
+import time
 from time import sleep
 import numpy as np
 
@@ -86,6 +87,12 @@ defaultparameters = dict(
                           # not instantiated, so the client never touches their
                           # (unmapped) register space. Accepts a list or a
                           # comma/space-separated string (for env/config use).
+    reserve_dma_memory=True,  # verify on startup that the kernel leaves the DMA
+                              # ring window (0x1E000000+) unmanaged (u-boot
+                              # 'mem=480M'); if not, patch /boot/u-boot.scr on
+                              # the board and REBOOT it once to apply. See
+                              # docs/DmaStreaming.md §9. Set False to skip the
+                              # check (e.g. boards without the DMA bitstream).
     reconnect_retries=-1,  # runtime register-link reconnection budget. When the
                            # live TCP register link drops (board reboot / cable
                            # pull / network blip) the client tries to reconnect.
@@ -242,6 +249,11 @@ class RedPitaya(object):
             return
         # connect to the redpitaya board
         self.start_ssh()
+        # make sure the kernel leaves the FPGA DMA ring window unmanaged; may
+        # patch u-boot.scr and reboot the board ONCE (before any flashing, so
+        # the reboot doesn't waste a flash — the marker is boot-scoped anyway)
+        if self.parameters.get('reserve_dma_memory', True):
+            self._ensure_dma_mem_reservation()
         # if the PL was parked (held in reset / blanked by pl_reset.sh), release
         # it, drop the stale monitor_server, and reflash before anything else
         recovered_pl = self._recover_pl_reset()
@@ -463,6 +475,182 @@ class RedPitaya(object):
         self._restore_root_mount()
         self.update_fpga()   # reflashes (marker gone) and kills any server again
         return True
+
+    # ---- DMA DDR reservation (docs/DmaStreaming.md §9) ----------------------
+    # The FPGA DMA writes its point-cloud ring at a fixed physical address; the
+    # kernel must not manage that RAM or the DMA and kernel corrupt each other.
+    # The reservation is a one-line u-boot bootargs cap ('mem=480M') carried by
+    # a PRE-BUILT /boot/u-boot.scr bundled with pyrpl (pyrpl/uboot/), one per
+    # supported board revision. Nothing is built or patched at runtime — the
+    # host (which may be Windows, no u-boot-tools) just uploads the matching
+    # script; an unknown hw_rev (e.g. a future Gen 2 board) only warns.
+    _DMA_BUF_BASE  = 0x1E000000   # DMA ring base = 480 MiB
+    _DMA_MEM_TOKEN = 'mem=480M'   # kernel RAM cap that frees 0x1E000000+
+    _RAM_512M_TOP  = 0x1FFFFFFF   # unreserved 512 MiB board (the only layout
+                                  # the fixed 480M cap is valid for)
+    # board hw_rev (factory EEPROM, the value u-boot branches on) -> bundled
+    # pre-built boot script (relative to pyrpl/uboot/). Gen 1 boards only so
+    # far; add Gen 2 entries here once a script is built and verified for them.
+    _UBOOT_PREBUILT = {
+        'STEM_125-14_Z7020_LN_v1.1': 'u-boot.scr.STEM_125-14_Z7020_LN_v1.1',
+    }
+
+    def _system_ram_top(self):
+        """Highest 'System RAM' end address from the board's /proc/iomem, or
+        None when it can't be read."""
+        ret, out = self.ssh.run("grep 'System RAM' /proc/iomem")
+        if ret != 0:
+            return None
+        top = None
+        for line in out.splitlines():
+            try:
+                end = int(line.split(':')[0].strip().split('-')[1], 16)
+            except (IndexError, ValueError):
+                continue
+            top = end if top is None else max(top, end)
+        return top
+
+    def _dma_mem_reserved(self):
+        """True if the kernel's RAM ends below the DMA ring window, False if it
+        covers it, None when the state can't be read."""
+        top = self._system_ram_top()
+        if top is None:
+            return None
+        return top < self._DMA_BUF_BASE
+
+    def _board_hw_rev(self):
+        """The board's hardware revision string from the factory EEPROM (the
+        same value u-boot branches on), or '' when unreadable."""
+        ret, out = self.ssh.run(
+            "strings /sys/bus/i2c/devices/0-0050/eeprom 2>/dev/null"
+            " | grep -a '^hw_rev='")
+        if ret != 0:
+            return ''
+        return out.strip().splitlines()[0].partition('=')[2] if out.strip() else ''
+
+    def _reboot_and_reconnect(self, timeout=180):
+        """Reboot the board and poll for ssh to come back (True on success)."""
+        self.logger.warning("Rebooting the Red Pitaya to apply the DMA memory "
+                            "reservation...")
+        try:
+            self.ssh.run('reboot')
+        except BaseException:
+            pass  # the connection dropping mid-command is expected
+        try:
+            self.end_ssh()
+        except BaseException:
+            pass
+        deadline = time.time() + timeout
+        sleep(10)  # let it actually go down before probing
+        while time.time() < deadline:
+            try:
+                self.start_ssh()
+                return True
+            except BaseException:
+                sleep(5)
+        self.logger.error("Board did not come back within %d s after the "
+                          "reboot.", timeout)
+        return False
+
+    def _ensure_dma_mem_reservation(self):
+        """Verify the kernel leaves the DMA ring window (0x1E000000+)
+        unmanaged; if not, install the bundled PRE-BUILT /boot/u-boot.scr for
+        this board's hw_rev and reboot ONCE to apply. No boot-script tooling
+        is required on the host (may be Windows) or the board — the matching
+        script is simply uploaded, verified by md5, and installed with a
+        backup. Any check failing (unknown hw_rev — e.g. a Gen 2 board, no
+        bundled script, non-512 MiB layout) leaves the board untouched and
+        warns with a pointer to the manual procedure.
+
+        Returns True when the reservation is in place when we're done."""
+        reserved = self._dma_mem_reserved()
+        if reserved:
+            self.logger.debug("DMA memory reservation in place (kernel RAM "
+                              "ends below 0x%08X).", self._DMA_BUF_BASE)
+            return True
+        if reserved is None:
+            self.logger.debug("Could not read /proc/iomem; skipping the DMA "
+                              "memory reservation check.")
+            return False
+        manual = ("fix it manually per docs/DmaStreaming.md 'DDR reservation'"
+                  " or set reserve_dma_memory=False to silence this.")
+        top = self._system_ram_top()
+        if top != self._RAM_512M_TOP:
+            self.logger.warning(
+                "Kernel RAM covers the DMA ring window but the board is not an "
+                "unreserved 512 MiB layout (RAM top 0x%08X); the fixed %s cap "
+                "does not apply — %s", top, self._DMA_MEM_TOKEN, manual)
+            return False
+        hw_rev = self._board_hw_rev()
+        prebuilt = self._UBOOT_PREBUILT.get(hw_rev)
+        if prebuilt is None:
+            self.logger.warning(
+                "DMA ring window is NOT reserved and no pre-built boot script "
+                "is bundled for this board revision (hw_rev %r — a Gen 2 or "
+                "otherwise unsupported board?); only Gen 1 revisions %s are "
+                "covered so far. Leaving the board untouched; %s",
+                hw_rev or '<unreadable>',
+                sorted(self._UBOOT_PREBUILT), manual)
+            return False
+        local = os.path.join(os.path.abspath(os.path.dirname(__file__)),
+                             'uboot', prebuilt)
+        if not os.path.isfile(local):
+            self.logger.warning("Bundled boot script %s is missing from this "
+                                "pyrpl installation; %s", local, manual)
+            return False
+        with open(local, 'rb') as f:
+            data = f.read()
+        if self._DMA_MEM_TOKEN.encode() not in data:
+            self.logger.error("Bundled boot script %s does not carry the '%s' "
+                              "reservation — refusing to install it; %s",
+                              prebuilt, self._DMA_MEM_TOKEN, manual)
+            return False
+        md5 = hashlib.md5(data).hexdigest()
+        _, onboard = self.ssh.run('md5sum /boot/u-boot.scr 2>/dev/null')
+        onboard = onboard.split()[0] if onboard.strip() else ''
+        if onboard == md5:
+            # the right script is already installed but the running kernel
+            # doesn't reflect it: a reboot is pending. Don't reboot
+            # automatically here — if the script were ineffective this would
+            # loop a reboot on every connect.
+            self.logger.warning(
+                "The matching boot script is already installed but the "
+                "reservation is not active — reboot the board to apply it "
+                "(not rebooting automatically to avoid a reboot loop).")
+            return False
+        self.logger.warning(
+            "Kernel RAM covers the FPGA DMA ring window (no '%s' in "
+            "bootargs); installing the pre-built boot script for hw_rev %s "
+            "and rebooting the board.", self._DMA_MEM_TOKEN, hw_rev)
+        # upload, then back up + install (/boot may be mounted read-only)
+        self._scp_put_retry(local, '/tmp/u-boot.scr.pyrpl')
+        ret, out = self.ssh.run(
+            'mount -o remount,rw /boot && '
+            'cp -a /boot/u-boot.scr /boot/u-boot.scr.bak-$(date +%Y%m%d-%H%M%S)'
+            ' && cp /tmp/u-boot.scr.pyrpl /boot/u-boot.scr && sync'
+            ' && mount -o remount,ro /boot')
+        if ret != 0:
+            self.logger.error("Installing the boot script failed: %s", out)
+            return False
+        _, back = self.ssh.run('md5sum /boot/u-boot.scr')
+        if not back.startswith(md5):
+            self.logger.error("Installed /boot/u-boot.scr does not match the "
+                              "bundled script (md5 mismatch) — %s", manual)
+            return False
+        self.logger.warning("Pre-built /boot/u-boot.scr installed (backup "
+                            "kept next to it).")
+        if not self._reboot_and_reconnect():
+            return False
+        reserved = self._dma_mem_reserved()
+        if reserved:
+            self.logger.warning("DMA memory reservation applied and active "
+                                "after reboot.")
+        else:
+            self.logger.error(
+                "DMA memory reservation still not active after the reboot "
+                "(RAM top 0x%08X) — not retrying automatically; %s",
+                self._system_ram_top() or 0, manual)
+        return bool(reserved)
 
     def update_fpga(self, filename=None):
         serverdirname = self.parameters['serverdirname']
