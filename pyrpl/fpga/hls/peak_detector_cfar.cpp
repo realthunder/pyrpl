@@ -58,6 +58,14 @@ static const int SSR_BITS = (FSSR == 2) ? 1 : (FSSR == 4) ? 2 :
                             (FSSR == 8) ? 3 : (FSSR == 16) ? 4 : 0;
 // mag bank/address for a natural bin b: bank = b % FSSR, addr = b / FSSR.
 #define MAG_AT(b) mag[(b) & (FSSR - 1)][(b) >> SSR_BITS]
+// Second, identical magnitude copy: the CFAR window walk / interpolation read
+// THIS one, so their 2 scattered reads never collide with the re-sweep's
+// UF-beat group reads that already saturate mag's ports (the two run in the
+// same II=1 fused loop; see cfar_detect_stage).
+#define MAG2_AT(b) mag2[(b) & (FSSR - 1)][(b) >> SSR_BITS]
+
+// Candidate slots bound for the retry loop (1 + CFAR_RETRY_MAX attempts).
+#define CFAR_NSLOT (CFAR_RETRY_MAX + 1)
 
 // Argmax result handed from the STREAM stage to the CFAR stage.
 struct pk_info_t {
@@ -91,6 +99,7 @@ static ap_uint<QB> seq_frac_div(ap_uint<DW> n, ap_uint<DW> d) {
 static void cfar_stream_stage(
     hls::stream<axis_in_pkt> &s_axis,
     data_t                    mag[FSSR][PK_DEPTH],
+    data_t                    mag2[FSSR][PK_DEPTH],
     hls::stream<pk_info_t>   &pk_out,
     count_t start_b, count_t end_b, data_t data_min)
 {
@@ -124,8 +133,10 @@ static void cfar_stream_stage(
 
             // Buffer the raw magnitude of every bin (band/guard/floor decisions
             // are all deferred to the CFAR stage). ch is constant after UNROLL ->
-            // lane writes its own bank, no runtime write-crossbar.
-            mag[ch][beat_idx] = s;
+            // lane writes its own bank, no runtime write-crossbar. Written twice:
+            // mag feeds the re-sweep, mag2 the window walk (see MAG2_AT).
+            mag[ch][beat_idx]  = s;
+            mag2[ch][beat_idx] = s;
 
             bool cand = (bin >= start_b) && (bin <= end_b) && (s > data_min);
             if (cand && s > beat_peak) {
@@ -158,13 +169,42 @@ static void cfar_stream_stage(
 }
 
 // ---- CFAR stage: window test at the argmax + interpolation + output --------
+// RETRY (Option A of the candidate-starvation fix): when the tested candidate
+// FAILS (edge guard / z-test — typically the shoulder of a strong reflection
+// just below start_index, pinned at the cutoff bin, which is also always the
+// global argmax and so starves the real target of a test), this stage
+// RE-SWEEPS the magnitude buffer for the next-highest candidate outside the
+// already-tried neighborhoods (> guard+train bins away) and tests again, up
+// to `retry_count` extra attempts (runtime register, 0 = classic single-shot,
+// bounded by CFAR_RETRY_MAX). The sweep runs HERE, in the latency-tolerant
+// stage, NOT in the II=1 STREAM loop: the exclusion list is constant during a
+// sweep, so it is a feed-forward compare with the same one-beat-deferred
+// argmax merge as the STREAM stage — no new loop-carried recurrence anywhere.
+//
+// WORST-CASE THROUGHPUT (300k points/s continuous, no data-dependent derate):
+// two measures bound the all-retries-firing frame inside one chirp period.
+//  1. The re-sweep processes CFAR_SWEEP_UF beats (UF*FSSR bins) per cycle
+//     (UF=2 = the two native BRAM ports; UF=4 needs the beat-dim partition
+//     but its 16-lane compare fabric does not fit xc7z020 — peak_detector.h).
+//  2. The re-sweep for the NEXT candidate runs FUSED, same II=1 loop, with the
+//     CURRENT candidate's window walk: the sweep's exclusion list only needs
+//     the candidate's BIN (known before its test resolves), never the test
+//     outcome. Per-attempt cost is max(N/(FSSR*UF), T) + the z-test tail
+//     instead of their sum. The window walk reads the mag2 copy so its 2
+//     scattered reads never fight the sweep's port-saturating group reads.
+// At N9/SSR4/UF2/T32 the worst frame is ~337 cycles at retry=2 — inside the
+// ~417-cycle 300 kHz frame budget, fully hidden by the ping-pong. retry=3 is
+// ~450: a ~8% point-rate derate that only occurs while EVERY frame fails all
+// four attempts; cap retries at 2 when a hard 300 kHz guarantee is needed.
 static void cfar_detect_stage(
     data_t                     mag[FSSR][PK_DEPTH],
+    data_t                     mag2[FSSR][PK_DEPTH],
     hls::stream<pk_info_t>    &pk_in,
     hls::stream<axis_out_pkt> &m_axis,
     ap_uint<16> threshold_k_sq,
-    count_t start_index, count_t end_index,
-    count_t guard_cells, count_t train_cells)
+    count_t start_index, count_t end_index, data_t data_min,
+    count_t guard_cells, count_t train_cells,
+    ap_uint<4> retry_count)
 {
     pk_info_t pk = pk_in.read();
     data_t  peak_val   = pk.val;
@@ -185,9 +225,49 @@ static void cfar_detect_stage(
 
     int G = (int)guard_cells;
     int T = (int)train_cells;
-    int c = (int)peak_bin;
     int lo = (int)start_index;
     int hi = (int)end_index;
+    count_t span = (count_t)(guard_cells + train_cells);
+
+    // Attempt loop: attempt 0 tests the STREAM stage's argmax (with
+    // retry_count == 0 this is EXACTLY the classic single-shot detector);
+    // each further attempt re-sweeps for the next-highest candidate outside
+    // the tried neighborhoods and re-runs the unchanged classic test.
+    count_t tried_bin[CFAR_NSLOT];
+#pragma HLS ARRAY_PARTITION variable=tried_bin complete
+    bool passes = false;
+    int  c      = 0;
+    const int SWP_GRPS = PK_DEPTH / CFAR_SWEEP_UF;
+    TRY: for (int a = 0; a < CFAR_NSLOT; a++) {
+#pragma HLS LOOP_TRIPCOUNT min=1 max=4
+        if (a > (int)retry_count) break;
+        if (!peak_valid) break;               // empty frame: nothing to test
+        tried_bin[a] = peak_bin;
+        c = (int)peak_bin;
+        // The fused re-sweep (below) only runs when a further attempt could
+        // consume its result; with retry_count==0 every attempt is EXACTLY
+        // the classic single-shot detector — same work, same cycle count.
+        bool want_next = (a < (int)retry_count) && (a + 1 < CFAR_NSLOT);
+
+        // Exclusion zones as PRECOMPUTED per-slot bounds: |bin - tried| <=
+        // span  <=>  bin in [tried-span, tried+span]. Costs 2 narrow compares
+        // per slot-lane in the sweep instead of subtract+abs+compare, and
+        // unused slots (> a) get an impossible range so no per-lane `k <= a`
+        // gating logic is synthesized at all.
+        typedef ap_int<FSZ + 2> ebnd_t;
+        ebnd_t e_lo[CFAR_NSLOT], e_hi[CFAR_NSLOT];
+#pragma HLS ARRAY_PARTITION variable=e_lo complete
+#pragma HLS ARRAY_PARTITION variable=e_hi complete
+        EBND: for (int k = 0; k < CFAR_NSLOT; k++) {
+#pragma HLS UNROLL
+            if (k <= a) {
+                e_lo[k] = (ebnd_t)tried_bin[k] - (ebnd_t)span;
+                e_hi[k] = (ebnd_t)tried_bin[k] + (ebnd_t)span;
+            } else {
+                e_lo[k] = ebnd_t(1) << FSZ;   // > any bin: never excludes
+                e_hi[k] = -1;
+            }
+        }
 
     ncnt_t n      = 0;
     ncnt_t n_left = 0;   // valid (in-band) reference cells on the low-freq side
@@ -202,7 +282,8 @@ static void cfar_detect_stage(
     wsq_t  Q_l   = 0, Q_r   = 0;
 
     // Walk both reference bands: offsets G+1 .. G+T on each side of the CUT.
-    // Fixed compile-time bound CFAR_TRAIN_MAX; the runtime T gates via break.
+    // The runtime T gates via `wact` (the fused loop may run longer than T
+    // when the re-sweep has more beat-groups than training cells).
     //
     // PIPELINE II=1 with a ONE-ITERATION DEFERRED accumulate: the DSP square is
     // computed this iteration but its result (dl_sq/dr_sq) is accumulated on the
@@ -218,9 +299,31 @@ static void cfar_detect_stage(
     wsum_t dl_x  = 0, dr_x  = 0;   // deferred magnitudes for Sigma
     bool   dl_v  = false, dr_v = false;
 
-    CFAR_WIN: for (int t = 1; t <= CFAR_TRAIN_MAX; t++) {
+    // Next-candidate argmax state for the FUSED re-sweep (deferred-merge, same
+    // idiom as the STREAM stage: per-group winners are REGISTERED and merged
+    // one iteration later, so the only loop-carried compare is the single
+    // running-max merge; the exclusion list is CONSTANT during the sweep).
+    data_t  sv = 0;  count_t sb = 0;  bool s_found = false;
+    data_t  d_p[CFAR_SWEEP_UF]; count_t d_b[CFAR_SWEEP_UF];
+    bool    d_v[CFAR_SWEEP_UF];
+#pragma HLS ARRAY_PARTITION variable=d_p complete
+#pragma HLS ARRAY_PARTITION variable=d_b complete
+#pragma HLS ARRAY_PARTITION variable=d_v complete
+    INIT_D: for (int g = 0; g < CFAR_SWEEP_UF; g++) {
+#pragma HLS UNROLL
+        d_p[g] = 0; d_b[g] = 0; d_v[g] = false;
+    }
+
+    // One II=1 loop drives BOTH walks: iteration t is training offset t+1 of
+    // the window (reads mag2) AND sweep beat-group t (reads mag). Inactive
+    // halves contribute zeros/invalids, so trip count = max of the two.
+    int iters = T;
+    if (want_next && SWP_GRPS > iters) iters = SWP_GRPS;
+
+    FUSED: for (int t = 0; t < iters; t++) {
+#pragma HLS LOOP_TRIPCOUNT min=8 max=256 avg=32
 #pragma HLS PIPELINE II=1
-        if (t > T) break;                 // runtime training-cell count
+        // ---- CFAR window walk (candidate a, reads mag2) --------------------
         // accumulate the PREVIOUS iteration's registered products/values. Invalid
         // cells carry 0 (xl/xr forced to 0 below), so we ALWAYS add — no guard mux
         // in front of the wide 56-bit add (that select was the Fmax limiter). Left
@@ -229,23 +332,66 @@ static void cfar_detect_stage(
         Sig_l += dl_x; Q_l += dl_sq; if (dl_v) n_left  += 1;
         Sig_r += dr_x; Q_r += dr_sq; if (dr_v) n_right += 1;
 
-        int off = G + t;                  // distance from CUT to this reference cell
+        bool wact = (t < T);              // runtime training-cell count
+        int off = G + t + 1;              // distance from CUT to this reference cell
         int bl = c - off;                 // left reference cell
-        bool   vl = (bl >= lo) && (bl <= hi) && (bl >= 0) && (bl < PK_NMAX);
-        data_t xl = vl ? MAG_AT(bl) : (data_t)0;
+        bool   vl = wact && (bl >= lo) && (bl <= hi) && (bl >= 0) && (bl < PK_NMAX);
+        data_t xl = vl ? MAG2_AT(bl) : (data_t)0;
         wsq_t  xl_sq;
 #pragma HLS BIND_OP variable=xl_sq op=mul impl=dsp
         xl_sq = (wsq_t)((ap_uint<2*DSZ>)xl * xl);
 
         int br = c + off;                 // right reference cell
-        bool   vr = (br >= lo) && (br <= hi) && (br >= 0) && (br < PK_NMAX);
-        data_t xr = vr ? MAG_AT(br) : (data_t)0;
+        bool   vr = wact && (br >= lo) && (br <= hi) && (br >= 0) && (br < PK_NMAX);
+        data_t xr = vr ? MAG2_AT(br) : (data_t)0;
         wsq_t  xr_sq;
 #pragma HLS BIND_OP variable=xr_sq op=mul impl=dsp
         xr_sq = (wsq_t)((ap_uint<2*DSZ>)xr * xr);
 
         dl_sq = xl_sq; dl_x = (wsum_t)xl; dl_v = vl;
         dr_sq = xr_sq; dr_x = (wsum_t)xr; dr_v = vr;
+
+        // ---- re-sweep for the NEXT candidate (reads mag) -------------------
+        // merge the PREVIOUS group's registered winners: fold them into a
+        // feed-forward temp (NOT loop-carried — free to pipeline), then ONE
+        // compare against the running max, so the recurrence stays a single
+        // compare-select. Earliest bin wins ties (strict >), matching the
+        // sequential-scan semantics of the software replica.
+        {
+            data_t tp = 0; count_t tb = 0; bool tv = false;
+            MRG: for (int g = 0; g < CFAR_SWEEP_UF; g++) {
+#pragma HLS UNROLL
+                if (d_v[g] && d_p[g] > tp) {
+                    tp = d_p[g]; tb = d_b[g]; tv = true;
+                }
+            }
+            if (tv && tp > sv) { sv = tp; sb = tb; s_found = true; }
+        }
+        bool sact = want_next && (t < SWP_GRPS);
+        GRP: for (int g = 0; g < CFAR_SWEEP_UF; g++) {
+#pragma HLS UNROLL
+            int bt = t * CFAR_SWEEP_UF + g;
+            data_t  bp = 0;
+            count_t bb = 0;
+            bool    bv = false;
+            LANE: for (int ch = 0; ch < FSSR; ch++) {
+#pragma HLS UNROLL
+                count_t bin = (count_t)((ap_uint<FSZ+4>)bt * FSSR + ch);
+                data_t  s   = mag[ch][bt & (PK_DEPTH - 1)];
+                ebnd_t  sbin = (ebnd_t)bin;   // zero-extended, always >= 0
+                bool excl = false;
+                EXCL: for (int k = 0; k < CFAR_NSLOT; k++) {
+#pragma HLS UNROLL
+                    if (sbin >= e_lo[k] && sbin <= e_hi[k]) excl = true;
+                }
+                bool cand = sact && (bin >= (count_t)lo) && (bin <= (count_t)hi)
+                            && (s > data_min) && !excl;
+                if (cand && s > bp) {
+                    bp = s; bb = bin; bv = true;
+                }
+            }
+            d_p[g] = bp; d_b[g] = bb; d_v[g] = bv;
+        }
     }
     // flush the last processed iteration's deferred products (invalid carry 0)
     Sig_l += dl_x; Q_l += dl_sq; if (dl_v) n_left  += 1;
@@ -254,6 +400,14 @@ static void cfar_detect_stage(
     Sigma = Sig_l + Sig_r;
     Q     = Q_l + Q_r;
     n     = (ncnt_t)(n_left + n_right);
+    // flush the last sweep group's registered winners (post-loop, off any
+    // II=1 path, so the plain sequential fold is fine here)
+    FLUSH_D: for (int g = 0; g < CFAR_SWEEP_UF; g++) {
+#pragma HLS UNROLL
+        if (d_v[g] && d_p[g] > sv) {
+            sv = d_p[g]; sb = d_b[g]; s_found = true;
+        }
+    }
 
     // Local z-score test: (P*n - Sigma)^2 > k^2 * (n*Q - Sigma^2), requiring
     // n>0 and P above the local mean (P*n > Sigma). No divide or sqrt. Multiply
@@ -279,8 +433,17 @@ static void cfar_detect_stage(
     bool two_sided = (n_left  >= (ncnt_t)min_side) &&
                      (n_right >= (ncnt_t)min_side);
 
-    bool passes = peak_valid && (n > 0) && (diff > 0) && two_sided &&
-                  ((wthr_t)diff_sq > thr);
+    passes = peak_valid && (n > 0) && (diff > 0) && two_sided &&
+             ((wthr_t)diff_sq > thr);
+    if (passes) break;
+    // advance to the next candidate found by the fused sweep; when it found
+    // nothing (or no further attempt is allowed) the frame reports the last
+    // TESTED candidate with valid=0, exactly like the pre-fused code.
+    if (!want_next || !s_found) break;
+    peak_val   = sv;
+    peak_bin   = sb;
+    peak_valid = true;
+    }   // TRY attempt loop
 
     // --- Sub-bin parabolic interpolation (natural order), neighbors from buffer
     count_t actual_peak_bin = peak_bin;   // natural order: already the bin
@@ -290,8 +453,8 @@ static void cfar_detect_stage(
         // delta = 0.5*(L-R)/(L-2P+R). Read mag[peak-1], mag[peak+1] from the buffer.
         bool have_L = (c - 1) >= lo && (c - 1) >= 0;
         bool have_R = (c + 1) <= hi && (c + 1) < PK_NMAX;
-        data_t peak_L = have_L ? MAG_AT(c - 1) : (data_t)0;
-        data_t peak_R = have_R ? MAG_AT(c + 1) : (data_t)0;
+        data_t peak_L = have_L ? MAG2_AT(c - 1) : (data_t)0;
+        data_t peak_R = have_R ? MAG2_AT(c + 1) : (data_t)0;
 
         bool interp_ok = peak_valid && have_L && have_R && (c != 0)
                          && (peak_L <= peak_val) && (peak_R <= peak_val);
@@ -342,7 +505,8 @@ void peak_detector(
     data_t      data_min,
     ap_uint<4>  nfft,
     count_t     guard_cells,
-    count_t     train_cells
+    count_t     train_cells,
+    ap_uint<4>  retry_count
 ) {
 #pragma HLS INTERFACE axis         port=s_axis
 #pragma HLS INTERFACE axis         port=m_axis
@@ -354,6 +518,7 @@ void peak_detector(
 #pragma HLS INTERFACE ap_none      port=nfft
 #pragma HLS INTERFACE ap_none      port=guard_cells
 #pragma HLS INTERFACE ap_none      port=train_cells
+#pragma HLS INTERFACE ap_none      port=retry_count
 #pragma HLS DATAFLOW
 
     // Frame magnitude buffer, [FSSR banks][depth]. Declared LOCAL (not static) so
@@ -362,6 +527,24 @@ void peak_detector(
     // stage reads the other for frame N -> the CFAR pass overlaps the next frame.
     data_t mag[FSSR][PK_DEPTH];
 #pragma HLS ARRAY_PARTITION variable=mag complete dim=1
+    // Beat-dimension cyclic split: with dual-port BRAM this supplies the
+    // CFAR_SWEEP_UF consecutive-beat reads per bank per cycle the re-sweep
+    // needs (UF/2 subarrays x 2 ports; UF=2 uses the two native ports, no
+    // split). Writes (1/bank/cycle) and the CFAR window's 2 scattered reads
+    // are unaffected. _Pragma stringization because #pragma HLS does not
+    // macro-expand its arguments.
+#if CFAR_SWEEP_PART > 1
+#define PD_STR_(x) #x
+#define PD_PRAGMA_(x) _Pragma(PD_STR_(x))
+    PD_PRAGMA_(HLS ARRAY_PARTITION variable=mag cyclic factor=CFAR_SWEEP_PART dim=2)
+#endif
+
+    // Second identical copy for the window walk / interpolation reads (their 2
+    // scattered accesses must not fight the sweep's port-saturating group
+    // reads inside the fused loop). Written in lockstep by the STREAM stage;
+    // no beat-dim split needed (<= 2 reads/bank/cycle).
+    data_t mag2[FSSR][PK_DEPTH];
+#pragma HLS ARRAY_PARTITION variable=mag2 complete dim=1
 
     // Argmax handoff between the two stages (small ping-pong FIFO).
     hls::stream<pk_info_t> pk_ch;
@@ -369,7 +552,8 @@ void peak_detector(
 
     // Natural order: streaming position already equals the natural bin, so the
     // band bounds are compared directly (nfft unused — kept for interface parity).
-    cfar_stream_stage(s_axis, mag, pk_ch, start_index, end_index, data_min);
-    cfar_detect_stage(mag, pk_ch, m_axis, threshold_k_sq,
-                      start_index, end_index, guard_cells, train_cells);
+    cfar_stream_stage(s_axis, mag, mag2, pk_ch, start_index, end_index, data_min);
+    cfar_detect_stage(mag, mag2, pk_ch, m_axis, threshold_k_sq,
+                      start_index, end_index, data_min,
+                      guard_cells, train_cells, retry_count);
 }

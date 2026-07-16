@@ -515,6 +515,12 @@ class Scope(HardwareModule, AcquisitionModule):
     fft_cfar_train = IntRegister(0x54, doc="CA-CFAR: training/reference cells each "
                                  "side used to estimate the local noise floor")
 
+    fft_cfar_retries = IntRegister(0xA0, doc="CA-CFAR: extra candidates tried when "
+                                   "the argmax fails its window test (0 = classic "
+                                   "single-shot; each retry re-sweeps for the "
+                                   "next-highest candidate > guard+train bins "
+                                   "away from the already-tried ones)")
+
     fft_wait1_cnt = IntRegister(0x58, doc="FFT first stage wait time counter")
 
     fft_wait2_cnt = IntRegister(0x5C, doc="FFT second stage wait time counter")
@@ -878,7 +884,7 @@ class Scope(HardwareModule, AcquisitionModule):
         d = np.array(self._reads(addr, length), dtype=np.uint32)
         width = self.fft_data_width
         d[d >= 2 ** (width-1)] -= 2 ** width
-        d = np.array(d, dtype=float) / 2**(width-3)
+        d = np.array(d, dtype=float) / 2**(width-1)
         d1 = d[np.arange(0, length, 2)]
         d2 = d[np.arange(1, length, 2)]
         return d2, d1

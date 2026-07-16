@@ -20,7 +20,8 @@ struct frame_result {
 static frame_result run_frame(const std::vector<int> &spectrum, int n_fft_log2,
                               ap_uint<16> k_sq, count_t start_idx, count_t end_idx,
                               data_t data_min, ap_uint<4> nfft,
-                              count_t guard, count_t train) {
+                              count_t guard, count_t train,
+                              ap_uint<4> retry = 0) {
     hls::stream<axis_in_pkt>  s_axis;
     hls::stream<axis_out_pkt> m_axis;
 
@@ -41,7 +42,8 @@ static frame_result run_frame(const std::vector<int> &spectrum, int n_fft_log2,
         s_axis.write(pkt);
     }
 
-    peak_detector(s_axis, m_axis, k_sq, start_idx, end_idx, data_min, nfft, guard, train);
+    peak_detector(s_axis, m_axis, k_sq, start_idx, end_idx, data_min, nfft,
+                  guard, train, retry);
 
     frame_result r{-1, 0, false, 0};
     if (m_axis.empty()) { std::cerr << "FAIL: no output produced\n"; return r; }
@@ -220,6 +222,27 @@ int main() {
         errors += check("[5] clutter-edge rejected", r, ref, /*expect*/false);
         std::cout << "    (argmax bin " << r.bin << " == cutoff " << CLO
                   << "? " << (r.bin==CLO) << ", rejected by two-sided guard)\n";
+    }
+
+    // ---- [6] RETRY finds the genuine peak the rejected clutter edge hides ---
+    // Same spectrum as [5]: with retry_count > 0 the DUT must, after the edge
+    // guard rejects the skirt shoulder (attempt 0 = global argmax), test the
+    // next-highest candidate — the genuine in-band peak — and DETECT it. This
+    // starved single-shot detection (test [5] correctly reports nothing).
+    {
+        const int CLO = (N * 200) / 1024;
+        const int PB2 = CLO + 120;               // the genuine peak's bin
+        std::vector<int> s(N, 50);
+        for (int k = 0; k < 30; k++) {
+            int b = CLO + k; if (b < N) s[b] = 5000 - 150*k;
+        }
+        s[PB2] = 1500;
+        for (int t=1;t<=T;t++){int v=(t&1)?70:40;for(int sd=-1;sd<=1;sd+=2){int b=PB2+sd*(G+t); if(b>=0&&b<N)s[b]=v;}}
+        frame_result r = run_frame(s, LOG2, /*k_sq*/9, /*start*/CLO, HI,
+                                   /*data_min*/5, LOG2, G, T, /*retry*/3);
+        // hand-built expectation: the second candidate is the genuine peak
+        ref_result ref{PB2, 1500, true};
+        errors += check("[6] retry detects hidden peak", r, ref, /*expect*/true);
     }
 
     std::cout << (errors == 0 ? "PASS\n" : "FAIL\n");

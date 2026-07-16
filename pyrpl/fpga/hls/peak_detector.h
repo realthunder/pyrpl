@@ -82,6 +82,37 @@ typedef ap_int<SSZ + SQ_BITS + 1>           sdiff_t;    // ap_int<32>
 #ifndef CFAR_TRAIN_MAX
 #define CFAR_TRAIN_MAX 64
 #endif
+// Retry budget: when the tested candidate FAILS (edge guard / z-test), the
+// next-highest candidate at least guard+train bins away is tried, up to
+// `retry_count` extra attempts (runtime register, 0 = classic single-shot).
+// CFAR_RETRY_MAX bounds the candidate slots tracked in the stream pass.
+#ifndef CFAR_RETRY_MAX
+#define CFAR_RETRY_MAX 3
+#endif
+// Retry re-sweep unroll: beats processed per cycle in the detect-stage re-sweep
+// (UF*FSSR bins/cycle), which also runs FUSED with the window walk (see
+// cfar_detect_stage). Sizes the worst-case retry cost against the chirp
+// period: at N9/SSR4/125MHz/300kHz the frame budget is ~417 cycles; UF=2
+// fused puts the T=32 worst frame at ~337 (retry=2, guaranteed continuous)
+// or ~450 (retry=3: ~8% derate ONLY while every frame fails all attempts).
+// UF=2 reads the two native BRAM ports — no partition, no extra BRAM. UF=4
+// (needs CFAR_SWEEP_PART=2) fits retry=3 in-budget but its 16-lane compare
+// fabric costs ~7k LUT/channel and does NOT fit xc7z020 alongside the rest
+// of the design (placer overflow) — only use it on a larger part.
+// Must be a power of two, <= PK_NMAX/FSSR.
+#ifndef CFAR_SWEEP_UF
+#define CFAR_SWEEP_UF 2
+#endif
+// Cyclic partition factor for the beat dimension of the magnitude buffer =
+// CFAR_SWEEP_UF/2 (2 BRAM ports per subarray; 1 = no partition needed). Kept
+// as a literal because HLS pragmas do not evaluate expressions; consistency
+// checked below.
+#ifndef CFAR_SWEEP_PART
+#define CFAR_SWEEP_PART 1
+#endif
+#if (CFAR_SWEEP_PART * 2) != CFAR_SWEEP_UF
+#error "peak_detector: CFAR_SWEEP_PART must equal CFAR_SWEEP_UF/2."
+#endif
 
 #define IN_WIDTH  (FSSR * DSZ)
 #define OUT_WIDTH 64
@@ -116,6 +147,8 @@ void peak_detector(
 #ifdef PEAK_CFAR
     ,
     count_t     guard_cells,       // CFAR: guard cells each side of the CUT (<= CFAR_GUARD_MAX)
-    count_t     train_cells        // CFAR: training/reference cells each side (<= CFAR_TRAIN_MAX)
+    count_t     train_cells,       // CFAR: training/reference cells each side (<= CFAR_TRAIN_MAX)
+    ap_uint<4>  retry_count        // CFAR: extra candidates tried when the argmax fails
+                                   //       (<= CFAR_RETRY_MAX; 0 = classic single-shot)
 #endif
 );

@@ -618,6 +618,7 @@ logic [ DSZ-1: 0]   fft_peak_minimum, fft_a_peak_minimum, fft_b_peak_minimum;
 // harmlessly unconnected otherwise). guard/train cells each side of the peak.
 logic [ FSZ-1:0]    fft_cfar_guard, fft_a_cfar_guard, fft_b_cfar_guard;
 logic [ FSZ-1:0]    fft_cfar_train, fft_a_cfar_train, fft_b_cfar_train;
+logic [     3:0]    fft_cfar_retry, fft_a_cfar_retry, fft_b_cfar_retry;
 
 logic [ 6-1 :  0]   fft_status[0:1];
 logic [ 2-1 :  0]   fft_done;
@@ -913,6 +914,8 @@ always @(posedge adc_clk_i) begin
     fft_b_cfar_guard <= fft_cfar_guard;
     fft_a_cfar_train <= fft_cfar_train;
     fft_b_cfar_train <= fft_cfar_train;
+    fft_a_cfar_retry <= fft_cfar_retry;
+    fft_b_cfar_retry <= fft_cfar_retry;
 end
 
 fft_proc #(.ASZ(ASZ),
@@ -947,6 +950,7 @@ fft_a (
    .fft_peak_minimum_in (fft_a_peak_minimum),
    .fft_cfar_guard_in (fft_a_cfar_guard),
    .fft_cfar_train_in (fft_a_cfar_train),
+   .fft_cfar_retry_in (fft_a_cfar_retry),
 
    .fft_acq_up_in (fft_a_acq1_cnt),
    .fft_acq_down_in (fft_a_acq2_cnt),
@@ -1047,6 +1051,7 @@ fft_proc #(.ASZ(ASZ),
    .fft_peak_minimum_in (fft_b_peak_minimum),
    .fft_cfar_guard_in (fft_b_cfar_guard),
    .fft_cfar_train_in (fft_b_cfar_train),
+   .fft_cfar_retry_in (fft_b_cfar_retry),
 
    .fft_acq_up_in (fft_parallel ? fft_b_acq2_cnt : fft_b_acq1_cnt),
    .fft_acq_down_in (fft_b_acq2_cnt),
@@ -1370,6 +1375,7 @@ if (adc_rstn_i == 1'b0) begin
     fft_peak_minimum <= 1;
     fft_cfar_guard <= 8;    // CA-CFAR: guard cells each side of the peak (~main-lobe half-width)
     fft_cfar_train <= 32;   // CA-CFAR: training/reference cells each side (on the noise floor)
+    fft_cfar_retry <= 0;    // CA-CFAR: extra candidates tried when the argmax fails (0 = classic single-shot)
     fft_wait1_cnt <= 100;
     fft_wait2_cnt <= 200;
     fft_acq1_cnt <= (2**(FSZ-1) - 200) & ~(FSSR-1);
@@ -1399,6 +1405,7 @@ end else if (sys_wen) begin
     // 0x50/0x54 are the genuinely-free slots (see readback comment below).
     if (sys_addr[19:0]==20'h50) fft_cfar_guard <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h54) fft_cfar_train <= sys_wdata[FSZ-1:0];
+    if (sys_addr[19:0]==20'hA0) fft_cfar_retry <= sys_wdata[3:0];
     if (sys_addr[19:0]==20'h58) fft_wait1_cnt <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h5C) fft_wait2_cnt <= sys_wdata[FSZ-1:0];
     // Force acq counts to whole SSR beats: fin packs FSSR samples/beat and the FFT
@@ -2138,6 +2145,7 @@ end else begin
      20'h00050 : begin sys_ack <= sys_en;          sys_rdata <= {{32-FSZ{1'b0}}, fft_cfar_guard}    ; end
      20'h00054 : begin sys_ack <= sys_en;          sys_rdata <= {{32-FSZ{1'b0}}, fft_cfar_train}    ; end
      20'h00058 : begin sys_ack <= sys_en;          sys_rdata <= fft_wait1_cnt                       ; end
+     20'h000A0 : begin sys_ack <= sys_en;          sys_rdata <= {28'h0, fft_cfar_retry}             ; end
      20'h0005C : begin sys_ack <= sys_en;          sys_rdata <= fft_wait2_cnt                       ; end
      20'h00060 : begin sys_ack <= sys_en;          sys_rdata <= fft_acq1_cnt                        ; end
      20'h00064 : begin sys_ack <= sys_en;          sys_rdata <= fft_acq2_cnt                        ; end
