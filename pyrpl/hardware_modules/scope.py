@@ -521,6 +521,15 @@ class Scope(HardwareModule, AcquisitionModule):
                                    "next-highest candidate > guard+train bins "
                                    "away from the already-tried ones)")
 
+    fft_cfar_onesided = BoolRegister(0xA4, 0, doc="CA-CFAR: near-cutoff one-sided "
+                                     "fallback — a candidate inside the edge-guard "
+                                     "dead zone (left reference band out of band) "
+                                     "is tested against the in-band cells only, "
+                                     "gated by guard-span clearance (any louder "
+                                     "below-cutoff cell within the guard span "
+                                     "rejects it as a skirt shoulder). Reset 1; "
+                                     "0 = classic hard two-sided guard")
+
     fft_wait1_cnt = IntRegister(0x58, doc="FFT first stage wait time counter")
 
     fft_wait2_cnt = IntRegister(0x5C, doc="FFT second stage wait time counter")

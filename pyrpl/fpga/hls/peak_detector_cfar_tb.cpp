@@ -21,7 +21,7 @@ static frame_result run_frame(const std::vector<int> &spectrum, int n_fft_log2,
                               ap_uint<16> k_sq, count_t start_idx, count_t end_idx,
                               data_t data_min, ap_uint<4> nfft,
                               count_t guard, count_t train,
-                              ap_uint<4> retry = 0) {
+                              ap_uint<4> retry = 0, ap_uint<1> onesided = 0) {
     hls::stream<axis_in_pkt>  s_axis;
     hls::stream<axis_out_pkt> m_axis;
 
@@ -43,7 +43,7 @@ static frame_result run_frame(const std::vector<int> &spectrum, int n_fft_log2,
     }
 
     peak_detector(s_axis, m_axis, k_sq, start_idx, end_idx, data_min, nfft,
-                  guard, train, retry);
+                  guard, train, retry, onesided);
 
     frame_result r{-1, 0, false, 0};
     if (m_axis.empty()) { std::cerr << "FAIL: no output produced\n"; return r; }
@@ -58,7 +58,8 @@ static frame_result run_frame(const std::vector<int> &spectrum, int n_fft_log2,
 // Plain-C reference: argmax (in-band, > data_min) + CFAR local-z-score verdict.
 struct ref_result { int bin; int val; bool valid; };
 static ref_result ref_cfar(const std::vector<int> &s, int N, int k_sq,
-                           int lo, int hi, int data_min, int G, int T) {
+                           int lo, int hi, int data_min, int G, int T,
+                           bool onesided = false) {
     // argmax
     int pbin = -1, pval = 0;
     for (int b = 0; b < N; b++)
@@ -81,7 +82,16 @@ static ref_result ref_cfar(const std::vector<int> &s, int N, int k_sq,
         }
     if (n == 0) return r;                       // no local noise estimate
     int min_side = T >> 2; if (min_side < 1) min_side = 1;
-    bool two_sided = (n_left >= (unsigned)min_side) && (n_right >= (unsigned)min_side);
+    // one-sided near-cutoff fallback + guard-span clearance (mirrors the DUT
+    // and the software replica): a short LEFT band may pass if no
+    // below-cutoff cell within the guard span is louder than the candidate.
+    bool clear_ok = true;
+    for (int j = 1; j <= G; j++) {
+        int b = pbin - j;
+        if (b >= 0 && b < lo && s[b] > pval) clear_ok = false;
+    }
+    bool two_sided = (n_right >= (unsigned)min_side) &&
+                     ((n_left >= (unsigned)min_side) || (onesided && clear_ok));
     long long Pn   = (long long)pval * (long long)n;
     long long diff = Pn - (long long)Sigma;
     unsigned __int128 diff_sq = (unsigned __int128)((__int128)diff * diff);
@@ -243,6 +253,57 @@ int main() {
         // hand-built expectation: the second candidate is the genuine peak
         ref_result ref{PB2, 1500, true};
         errors += check("[6] retry detects hidden peak", r, ref, /*expect*/true);
+    }
+
+    // ---- [7] one-sided fallback: target in the edge-guard DEAD ZONE ---------
+    // A genuine target 1 bin past the cutoff (left reference band entirely out
+    // of band, nl=0), quiet valley below it: classic two-sided REJECTS it
+    // structurally; onesided=1 tests it against the in-band cells and DETECTS.
+    {
+        const int CLO = (N * 200) / 1024;
+        const int TB  = CLO + 1;                 // deep inside the dead zone
+        std::vector<int> s(N, 50);
+        for (int k = 0; k < 8; k++) {            // reflection hump below cutoff,
+            int b = CLO - 14 + k;                // well outside the guard span
+            if (b >= 0) s[b] = 30000 - 3000*k;
+        }
+        s[TB] = 2000;                            // the near-cutoff target
+        frame_result r1 = run_frame(s, LOG2, 9, CLO, HI, 5, LOG2, G, T, 3, 1);
+        ref_result ref1 = ref_cfar(s, N, 9, CLO, HI, 5, G, T, true);
+        errors += check("[7] deadzone onesided detect", r1, ref1, /*expect*/true);
+        frame_result r0 = run_frame(s, LOG2, 9, CLO, HI, 5, LOG2, G, T, 3, 0);
+        // classic: the target fails the edge guard; retries only find floor
+        if (r0.valid) { std::cerr << "FAIL: [7] classic must NOT detect in the dead zone\n"; errors++; }
+        else std::cout << "[7b] classic dead-zone reject: valid=0 (expect 0)\n";
+    }
+
+    // ---- [8] clearance rejects the skirt shoulder under onesided ------------
+    // Cutoff ON the decaying skirt of a strong below-cutoff hump: the in-band
+    // argmax is the shoulder at the cutoff bin; its below-cutoff guard cells
+    // are LOUDER -> clearance must reject (else the one-sided fallback would
+    // re-introduce exactly the false alarm the two-sided guard fixed).
+    {
+        const int CLO = (N * 200) / 1024;
+        std::vector<int> s(N, 50);
+        for (int k = -5; k <= 6; k++) {          // hump peaking below cutoff at
+            int b = CLO + k;                     // CLO-5, skirt crossing the cutoff
+            if (b >= 0) s[b] = 30000 >> (k + 5);
+        }
+        // retry=0: on an all-fail frame the DUT reports the LAST tried
+        // candidate, which only matches the single-shot reference's argmax
+        // when no retries run; the clearance verdict is what's under test.
+        frame_result r = run_frame(s, LOG2, 9, CLO, HI, 5, LOG2, G, T, 0, 1);
+        ref_result ref = ref_cfar(s, N, 9, CLO, HI, 5, G, T, true);
+        errors += check("[8] shoulder clearance reject", r, ref, /*expect*/false);
+    }
+
+    // ---- [9] mid-band regression: onesided must not change test [1] ---------
+    {
+        std::vector<int> s(N, 50);
+        s[PBIN] = 4000; s[PBIN - 1] = 1200; s[PBIN + 1] = 800;
+        frame_result r = run_frame(s, LOG2, 9, LO, HI, 5, LOG2, G, T, 3, 1);
+        ref_result ref = ref_cfar(s, N, 9, LO, HI, 5, G, T, true);
+        errors += check("[9] midband onesided regress", r, ref, /*expect*/true);
     }
 
     std::cout << (errors == 0 ? "PASS\n" : "FAIL\n");

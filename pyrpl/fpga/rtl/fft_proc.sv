@@ -31,6 +31,7 @@ module fft_proc #(
   input logic  [ FSZ-1:0] fft_cfar_guard_in,
   input logic  [ FSZ-1:0] fft_cfar_train_in,
   input logic  [     3:0] fft_cfar_retry_in,
+  input logic             fft_cfar_onesided_in,
 
   input logic  [ FSZ-1:0] fft_acq_up_in,
   input logic  [ FSZ-1:0] fft_acq_down_in,
@@ -263,6 +264,7 @@ logic  [ DSZ-1:0] fft_peak_minimum_arg;
 logic  [ FSZ-1:0] fft_cfar_guard_arg;
 logic  [ FSZ-1:0] fft_cfar_train_arg;
 logic  [     3:0] fft_cfar_retry_arg;
+logic             fft_cfar_onesided_arg;
 
 logic  [ FSZ-1:0] fft_acq_up_i;
 logic  [ FSZ-1:0] fft_acq_down_i;
@@ -288,6 +290,7 @@ always @(posedge adc_clk_i) begin
     fft_cfar_guard_arg <= fft_cfar_guard_in;
     fft_cfar_train_arg <= fft_cfar_train_in;
     fft_cfar_retry_arg <= fft_cfar_retry_in;
+    fft_cfar_onesided_arg <= fft_cfar_onesided_in;
     fft_acq_up_i <= fft_acq_up_in;
     fft_acq_down_i <= fft_acq_down_in;
     sys_addr_i <= sys_addr_in;
@@ -1013,6 +1016,7 @@ peak_detector_bd_wrapper pd_i (
     ,.guard_cells    (fft_cfar_guard_arg)
     ,.train_cells    (fft_cfar_train_arg)
     ,.retry_count    (fft_cfar_retry_arg)
+    ,.onesided       (fft_cfar_onesided_arg)
 `endif
 );
 

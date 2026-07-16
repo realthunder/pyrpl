@@ -204,7 +204,7 @@ static void cfar_detect_stage(
     ap_uint<16> threshold_k_sq,
     count_t start_index, count_t end_index, data_t data_min,
     count_t guard_cells, count_t train_cells,
-    ap_uint<4> retry_count)
+    ap_uint<4> retry_count, ap_uint<1> onesided)
 {
     pk_info_t pk = pk_in.read();
     data_t  peak_val   = pk.val;
@@ -248,6 +248,23 @@ static void cfar_detect_stage(
         // consume its result; with retry_count==0 every attempt is EXACTLY
         // the classic single-shot detector — same work, same cycle count.
         bool want_next = (a < (int)retry_count) && (a + 1 < CFAR_NSLOT);
+
+        // Guard-span CLEARANCE for the one-sided edge fallback: any
+        // below-cutoff cell within the guard span (c-1 .. c-G) louder than
+        // the candidate marks it as the skirt shoulder of a stronger
+        // reflection -> the fallback must reject it (that shoulder false
+        // alarm is what the two-sided edge guard was added for). Runs before
+        // the fused walk, where mag2's ports are idle; <= CFAR_GUARD_MAX
+        // cycles per attempt, latency-tolerant. Only consulted when the left
+        // reference band is short (see edge_ok below).
+        bool clear_ok = true;
+        CLEAR: for (int j = 1; j <= CFAR_GUARD_MAX; j++) {
+#pragma HLS PIPELINE II=1
+            if (j > G) break;
+            int b = c - j;
+            if (b >= 0 && b < lo && MAG2_AT(b) > peak_val)
+                clear_ok = false;
+        }
 
         // Exclusion zones as PRECOMPUTED per-slot bounds: |bin - tried| <=
         // span  <=>  bin in [tried-span, tried+span]. Costs 2 narrow compares
@@ -430,10 +447,18 @@ static void cfar_detect_stage(
     // anyway indistinguishable from the skirt shoulder.
     int    min_side = T >> 2;               // train/4
     if (min_side < 1) min_side = 1;
-    bool two_sided = (n_left  >= (ncnt_t)min_side) &&
-                     (n_right >= (ncnt_t)min_side);
+    // One-sided near-cutoff fallback (`onesided` runtime register): a
+    // candidate whose LEFT band is short (inside the dead zone) may still
+    // pass, tested against the available in-band cells only, when the
+    // guard-span clearance found no louder below-cutoff cell (see CLEAR).
+    // The reference stays homogeneous in-band cells, so the false-alarm
+    // behavior stays at the classic baseline. The right band edge keeps the
+    // hard two-sided requirement.
+    bool edge_ok = (n_right >= (ncnt_t)min_side) &&
+                   ((n_left >= (ncnt_t)min_side) ||
+                    ((bool)onesided && clear_ok));
 
-    passes = peak_valid && (n > 0) && (diff > 0) && two_sided &&
+    passes = peak_valid && (n > 0) && (diff > 0) && edge_ok &&
              ((wthr_t)diff_sq > thr);
     if (passes) break;
     // advance to the next candidate found by the fused sweep; when it found
@@ -506,7 +531,8 @@ void peak_detector(
     ap_uint<4>  nfft,
     count_t     guard_cells,
     count_t     train_cells,
-    ap_uint<4>  retry_count
+    ap_uint<4>  retry_count,
+    ap_uint<1>  onesided
 ) {
 #pragma HLS INTERFACE axis         port=s_axis
 #pragma HLS INTERFACE axis         port=m_axis
@@ -519,6 +545,7 @@ void peak_detector(
 #pragma HLS INTERFACE ap_none      port=guard_cells
 #pragma HLS INTERFACE ap_none      port=train_cells
 #pragma HLS INTERFACE ap_none      port=retry_count
+#pragma HLS INTERFACE ap_none      port=onesided
 #pragma HLS DATAFLOW
 
     // Frame magnitude buffer, [FSSR banks][depth]. Declared LOCAL (not static) so
@@ -555,5 +582,5 @@ void peak_detector(
     cfar_stream_stage(s_axis, mag, mag2, pk_ch, start_index, end_index, data_min);
     cfar_detect_stage(mag, mag2, pk_ch, m_axis, threshold_k_sq,
                       start_index, end_index, data_min,
-                      guard_cells, train_cells, retry_count);
+                      guard_cells, train_cells, retry_count, onesided);
 }

@@ -148,7 +148,11 @@ void peak_detector(
     ,
     count_t     guard_cells,       // CFAR: guard cells each side of the CUT (<= CFAR_GUARD_MAX)
     count_t     train_cells,       // CFAR: training/reference cells each side (<= CFAR_TRAIN_MAX)
-    ap_uint<4>  retry_count        // CFAR: extra candidates tried when the argmax fails
+    ap_uint<4>  retry_count,       // CFAR: extra candidates tried when the argmax fails
                                    //       (<= CFAR_RETRY_MAX; 0 = classic single-shot)
+    ap_uint<1>  onesided           // CFAR: near-cutoff one-sided fallback — a candidate in
+                                   //       the edge-guard dead zone is tested against the
+                                   //       available in-band cells (guard-span clearance
+                                   //       gated) instead of rejected. 0 = classic guard.
 #endif
 );
