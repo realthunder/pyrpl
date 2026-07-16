@@ -187,13 +187,21 @@ class StringAttributeWidget(BaseAttributeWidget):
 
 class FileAttributeWidget(BaseAttributeWidget):
     """
-    Widget for file entry with browse button
+    Widget for file entry with browse button.
+
+    The full path is the actual value, but to keep the box compact only the
+    file NAME is shown when the box is idle (the complete path is in the box's
+    tooltip); the full path is revealed for editing while the box has focus.
+    The browse dialog offers the attribute's file-type filter (if any) plus an
+    always-present "All files" entry.
     """
     # last directory a file was picked from, shared by ALL file attributes for
     # the session (class attribute; deliberately not persisted as a setting)
     _last_dir = ''
 
     def _make_widget(self):
+        # the complete path (the box only DISPLAYS the basename when idle)
+        self._full_path = ''
         self.widget = QtWidgets.QWidget()
         layout = self.lay = QtWidgets.QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -205,30 +213,88 @@ class FileAttributeWidget(BaseAttributeWidget):
         button.setMaximumWidth(20)
         button.clicked.connect(self._on_browse)
         layout.addWidget(button, 0)
-        self.lineedit.textChanged.connect(self.write_widget_value_to_attribute)
+        # commit on Enter / focus-out (not per keystroke): the value is a full
+        # path and some setters act on write (e.g. an fpga image reflash)
+        self.lineedit.editingFinished.connect(self._on_edit_finished)
+        # reveal the full path on focus-in so the whole path stays editable
+        self.lineedit.installEventFilter(self)
+
+    def _refresh_display(self):
+        """Tooltip always the full path; box shows the basename unless the
+        user is actively editing it (then it keeps the full path)."""
+        self.lineedit.setToolTip(self._full_path)
+        if self.lineedit.hasFocus():
+            return
+        shown = os.path.basename(self._full_path) or self._full_path
+        if str(self.lineedit.text()) != shown:
+            self.lineedit.blockSignals(True)
+            self.lineedit.setText(shown)
+            self.lineedit.blockSignals(False)
+
+    def eventFilter(self, obj, event):
+        # on focus-in, swap the displayed basename for the full path so the
+        # user edits the complete path rather than just the file name
+        if obj is self.lineedit and event.type() == QtCore.QEvent.FocusIn:
+            if str(self.lineedit.text()) != self._full_path:
+                self.lineedit.blockSignals(True)
+                self.lineedit.setText(self._full_path)
+                self.lineedit.blockSignals(False)
+        return super().eventFilter(obj, event)
+
+    def _on_edit_finished(self):
+        text = str(self.lineedit.text()).strip()
+        # a bare file name (no directory typed) is resolved against the
+        # directory of the current value — the box shows only the basename, so
+        # editing it to a sibling file keeps it in the same folder
+        if text and not os.path.dirname(text):
+            base_dir = os.path.dirname(self._full_path)
+            if base_dir:
+                text = os.path.join(base_dir, text)
+        if text != self._full_path:
+            self._full_path = text
+            self.write_widget_value_to_attribute()
+        self._refresh_display()
+
+    def _dialog_filter(self):
+        """Build the QFileDialog filter string from the attribute's optional
+        ``file_filter`` (a Qt filter string or a list of them), always adding
+        an all-files entry so nothing is hidden."""
+        filters = getattr(self.attribute_descriptor, 'file_filter', None)
+        if not filters:
+            parts = []
+        elif isinstance(filters, str):
+            parts = [filters]
+        else:
+            parts = list(filters)
+        if not any(('(*)' in p) or ('(*.*)' in p) for p in parts):
+            parts.append('All files (*)')
+        return ';;'.join(parts)
 
     def _on_browse(self):
         # start at the session's last browsed directory; before any browse,
         # fall back to the directory of the attribute's current value
         start_dir = FileAttributeWidget._last_dir
         if not start_dir:
-            current = str(self.lineedit.text()).strip()
+            current = self._full_path.strip()
             if current:
                 d = current if os.path.isdir(current) \
                     else os.path.dirname(current)
                 if os.path.isdir(d):
                     start_dir = d
         filename = QtWidgets.QFileDialog.getOpenFileName(
-            self.widget, 'Select file', start_dir)
+            self.widget, 'Select file', start_dir, self._dialog_filter())
         if filename and filename[0]:
-            self.lineedit.setText(filename[0])
+            self._full_path = filename[0]
+            self.write_widget_value_to_attribute()
+            self._refresh_display()
             FileAttributeWidget._last_dir = os.path.dirname(filename[0])
 
     def _get_widget_value(self):
-        return str(self.lineedit.text())
+        return self._full_path
 
     def _set_widget_value(self, new_value):
-        self.lineedit.setText(new_value)
+        self._full_path = new_value or ''
+        self._refresh_display()
 
 
 class TextAttributeWidget(StringAttributeWidget):

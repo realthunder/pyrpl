@@ -1137,9 +1137,18 @@ class TextProperty(StringProperty):
 class FileProperty(StringProperty):
     """
     Same as StringProperty, but the gui displays it as a line edit plus a
-    '...' button that opens a file-browse dialog.
+    '...' button that opens a file-browse dialog. The box shows only the file
+    name (full path in its tooltip, and while it has focus).
+
+    file_filter: optional file-type filter for the browse dialog — a single Qt
+    filter string like 'CSV files (*.csv)' or a list of them. An 'All files
+    (*)' entry is always added, so nothing is ever hidden.
     """
     _widget_class = FileAttributeWidget
+
+    def __init__(self, default=None, file_filter=None, **kwargs):
+        self.file_filter = file_filter
+        super(FileProperty, self).__init__(default=default, **kwargs)
 
 
 class SelectProperty(BaseProperty):

@@ -414,7 +414,8 @@ def make_asg(channel=0):
 
         waveform = WaveformAttribute(waveforms)
 
-        waveform_file = WaveformFileProperty(doc="Path to custom waveform csv file")
+        waveform_file = WaveformFileProperty(doc="Path to custom waveform csv file",
+                                             file_filter='CSV files (*.csv)')
 
         def trig(self):
             self.start_phase = 0
