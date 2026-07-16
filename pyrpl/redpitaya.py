@@ -746,23 +746,23 @@ class RedPitaya(object):
         return need_flash
 
     def change_fpga_image(self, filename=None):
-        """Switch the board to a different FPGA bitstream at RUNTIME.
+        """Select the FPGA bitstream the board should run.
 
         `filename` is a local bitstream path (None/'' selects the bundled
         default fpga/red_pitaya.bin). The choice is persisted as 'filename' in
-        the 'redpitaya' branch of the config file, so the next session boots
-        straight into the same image.
+        the 'redpitaya' branch of the config file, so the NEXT connection (a
+        fresh Pyrpl start) flashes it — md5-gated, exactly like every startup
+        flash. Returns the recorded path (or None for the default).
 
-        Like the startup path this is md5/marker-gated: requesting the image
-        that is already flashed this boot is a cheap no-op (a few ssh checks,
-        the server and register link are left untouched). On an actual switch,
-        update_fpga() stops the monitor_server and drops the register client,
-        flashes, and this method then restarts the server, reconnects the SAME
-        MonitorClient object in place (cached module._client references stay
-        valid), and re-applies every hardware module's saved setup attributes,
-        because the fresh bitstream boots with default register values.
-
-        Returns True when a reflash actually happened."""
+        This only RECORDS the choice; it does NOT hot-swap the running fabric.
+        Runtime hot-switching used to snapshot every module's live registers,
+        reflash, reconnect, and replay them onto the fresh bitstream, but that
+        register re-sync was incomplete (only declared setup-attributes were
+        covered, so anything poked outside them reverted to the bitstream
+        default). Callers now record the choice with this method, save the
+        config, and restart the application; the normal startup path then
+        flashes the image and restores all modules from the config in one
+        well-tested step."""
         filename = filename or None
         if filename is not None:
             filename = os.path.expanduser(filename)
@@ -770,54 +770,12 @@ class RedPitaya(object):
                 raise ExpectedPyrplError(
                     "FPGA bitstream not found: %s" % filename)
         self.parameters['filename'] = filename
-        try:  # persist so the next startup flashes the same image
+        try:  # persist so the next startup flashes the selected image
             self.c._get_or_create('redpitaya')['filename'] = filename or ''
         except BaseException:
             self.logger.warning("Could not persist the FPGA image choice to "
                                 "the config file.", exc_info=True)
-        if not hasattr(self, 'ssh'):  # dummy / _NONE_ mode
-            self.logger.warning("change_fpga_image: no board connection; the "
-                                "image choice was recorded but not flashed.")
-            return False
-        client = self.client   # keep the object: modules cache it as ._client
-        # Snapshot the LIVE register-backed state of every hardware module
-        # BEFORE the flash: the fresh bitstream boots with default register
-        # values, and the config file can lag behind values that were poked at
-        # runtime (e.g. the lidar module driving scope.trigger_source), so
-        # restoring from the config file would clobber the running state.
-        live_state = {}
-        for name, module in self.modules.items():
-            try:
-                live_state[name] = module.setup_attributes
-            except BaseException:
-                self.logger.exception(
-                    "Could not snapshot the live state of module %s before "
-                    "the FPGA image switch.", name)
-        flashed = self.update_fpga()
-        self.client = client   # update_fpga's end() dropped the reference
-        if not flashed:
-            # already running this image: server + register link were never
-            # touched, nothing to restart
-            return False
-        port = self.startserver()
-        if self.client is None:
-            self.startclient()
-        elif not self.client.restart(hostname=self.parameters['hostname'],
-                                     port=port):
-            raise ExpectedPyrplError(
-                "Could not reconnect the register link after switching the "
-                "FPGA image.")
-        # restore the pre-flash live state onto the fresh fabric
-        for name, module in self.modules.items():
-            if name not in live_state:
-                continue
-            try:
-                module.setup_attributes = live_state[name]
-            except BaseException:
-                self.logger.exception(
-                    "Could not re-apply the setup attributes of module %s "
-                    "after the FPGA image switch.", name)
-        return True
+        return filename
 
     def fpgarecentlyflashed(self):
         self.ssh.ask()
