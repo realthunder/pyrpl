@@ -202,6 +202,12 @@ class FileAttributeWidget(BaseAttributeWidget):
     def _make_widget(self):
         # the complete path (the box only DISPLAYS the basename when idle)
         self._full_path = ''
+        # True once the user has TYPED into the box since the last programmatic
+        # set — distinguishes a real edit from a plain focus-out. Without it,
+        # editingFinished (which also fires on every focus-out) wrote the
+        # displayed text back, so an external value change while the box had
+        # focus was silently reverted and the display de-synced from the value.
+        self._editing = False
         self.widget = QtWidgets.QWidget()
         layout = self.lay = QtWidgets.QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -213,46 +219,53 @@ class FileAttributeWidget(BaseAttributeWidget):
         button.setMaximumWidth(20)
         button.clicked.connect(self._on_browse)
         layout.addWidget(button, 0)
-        # commit on Enter / focus-out (not per keystroke): the value is a full
-        # path and some setters act on write (e.g. an fpga image reflash)
+        # textEdited fires ONLY on user typing (not on programmatic setText);
+        # editingFinished commits on Enter / focus-out (not per keystroke: the
+        # value is a full path and some setters act on write, e.g. reflash).
+        self.lineedit.textEdited.connect(self._on_text_edited)
         self.lineedit.editingFinished.connect(self._on_edit_finished)
         # reveal the full path on focus-in so the whole path stays editable
         self.lineedit.installEventFilter(self)
 
+    def _on_text_edited(self, _text):
+        self._editing = True
+
     def _refresh_display(self):
-        """Tooltip always the full path; box shows the basename unless the
-        user is actively editing it (then it keeps the full path)."""
+        """Keep the box in sync with _full_path: tooltip is always the full
+        path, the box shows the full path while focused (fully editable) and
+        the basename when idle. Skipped only while the user has an uncommitted
+        edit in progress, so an external value change always re-syncs."""
         self.lineedit.setToolTip(self._full_path)
-        if self.lineedit.hasFocus():
+        if self._editing:
             return
-        shown = os.path.basename(self._full_path) or self._full_path
+        shown = self._full_path if self.lineedit.hasFocus() \
+            else (os.path.basename(self._full_path) or self._full_path)
         if str(self.lineedit.text()) != shown:
-            self.lineedit.blockSignals(True)
             self.lineedit.setText(shown)
-            self.lineedit.blockSignals(False)
 
     def eventFilter(self, obj, event):
-        # on focus-in, swap the displayed basename for the full path so the
-        # user edits the complete path rather than just the file name
+        # on focus-in, reveal the full path (not just the basename) for editing
         if obj is self.lineedit and event.type() == QtCore.QEvent.FocusIn:
-            if str(self.lineedit.text()) != self._full_path:
-                self.lineedit.blockSignals(True)
-                self.lineedit.setText(self._full_path)
-                self.lineedit.blockSignals(False)
+            self._refresh_display()
         return super().eventFilter(obj, event)
 
     def _on_edit_finished(self):
-        text = str(self.lineedit.text()).strip()
-        # a bare file name (no directory typed) is resolved against the
-        # directory of the current value — the box shows only the basename, so
-        # editing it to a sibling file keeps it in the same folder
-        if text and not os.path.dirname(text):
-            base_dir = os.path.dirname(self._full_path)
-            if base_dir:
-                text = os.path.join(base_dir, text)
-        if text != self._full_path:
-            self._full_path = text
-            self.write_widget_value_to_attribute()
+        # editingFinished also fires on a plain focus-out — commit ONLY a real
+        # user edit, else the revealed full path would be written back over an
+        # external update. Either way, re-sync the display to the actual value.
+        if self._editing:
+            self._editing = False
+            text = str(self.lineedit.text()).strip()
+            # a bare file name (no directory typed) is resolved against the
+            # directory of the current value — the box shows only the basename,
+            # so editing it to a sibling file keeps it in the same folder
+            if text and not os.path.dirname(text):
+                base_dir = os.path.dirname(self._full_path)
+                if base_dir:
+                    text = os.path.join(base_dir, text)
+            if text != self._full_path:
+                self._full_path = text
+                self.write_widget_value_to_attribute()
         self._refresh_display()
 
     def _dialog_filter(self):
@@ -284,6 +297,7 @@ class FileAttributeWidget(BaseAttributeWidget):
         filename = QtWidgets.QFileDialog.getOpenFileName(
             self.widget, 'Select file', start_dir, self._dialog_filter())
         if filename and filename[0]:
+            self._editing = False
             self._full_path = filename[0]
             self.write_widget_value_to_attribute()
             self._refresh_display()
@@ -293,6 +307,9 @@ class FileAttributeWidget(BaseAttributeWidget):
         return self._full_path
 
     def _set_widget_value(self, new_value):
+        # an external/authoritative value: drop any in-progress edit and
+        # re-sync the display so the box can never show a stale path
+        self._editing = False
         self._full_path = new_value or ''
         self._refresh_display()
 
