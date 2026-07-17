@@ -242,6 +242,8 @@ class DmaUdpClient:
         # the FPGA descriptor via configure(seq_bits=...).
         self._seq_bits = 0
         self._seq_mask = 0
+        self._seq_pend = None   # unconfirmed seq-discontinuity candidate (see _track_seq)
+        self._seq_resyncs = 0   # confirmed seq re-baselines (assembler resets etc.)
         # Bidirectional-scan (zigzag) slow-axis correction. The slow galvo
         # axis lags its command; with a ping-pong slow scan the lag's sign
         # flips with the sweep direction, so the descending-column raster
@@ -492,7 +494,9 @@ class DmaUdpClient:
         self._parse_count = 0
         self._bad_count = 0
         self._seq_last = None
+        self._seq_pend = None
         self._seq_drops = 0
+        self._seq_resyncs = 0
         self._recv_drops = 0
         self._stats_t0 = None
         self._stats_pkt0 = 0
@@ -646,6 +650,9 @@ class DmaUdpClient:
           seq_drops : cumulative datagram loss from the FPGA per-packet sequence gaps
                       (socket-buffer overflow, NIC, vSwitch). OS-independent (incl.
                       Windows). 0 unless the bitstream stamps a seq (seq_bits > 0).
+          seq_resyncs: confirmed seq-stream discontinuities (FPGA assembler reset
+                      on a scope re-arm, monitor_server restart) — re-baselines,
+                      not loss; kept out of seq_drops.
           recv_drops: datagrams the receiver dropped because the buffer ring was
                       exhausted (parser behind); newest data is kept (drop-oldest).
           bad       : malformed datagrams discarded by the parser
@@ -672,6 +679,7 @@ class DmaUdpClient:
         return {
             'pkt_per_s': self._stats_pps,
             'seq_drops': self._seq_drops,
+            'seq_resyncs': self._seq_resyncs,
             'recv_drops': self._recv_drops,   # ring-exhaustion drops (drop-oldest)
             'bad': self._bad_count,
             'packets': pkt,
@@ -1089,19 +1097,53 @@ class DmaUdpClient:
                 self._write_channel(c, int(fc_h[last_seg]), empty, empty, empty)
         return True
 
+    # Largest forward seq jump still believed to be real transport loss (~3.7 s
+    # of packets at the typical 1.1 kpkt/s). Anything bigger — and any backward
+    # jump — is a stream discontinuity (assembler reset, server restart), not
+    # countable loss.
+    _SEQ_GAP_MAX = 4096
+
     def _track_seq(self, seq):
         """Gap-count the per-packet FPGA sequence (wrap-safe within seq_bits). A
-        forward jump of d means d-1 datagrams were lost between this and the previous
-        packet; a backward jump (reorder, or a monitor_server/FPGA restart) just
-        resyncs without counting. Counts ALL transport loss (socket-buffer overflow,
-        NIC, vSwitch) on any OS — this is the receiver's sole drop metric."""
+        small forward jump of d means d-1 datagrams were lost between this and the
+        previous packet — real transport loss (socket-buffer overflow, NIC,
+        vSwitch), on any OS.
+
+        Any larger jump is a DISCONTINUITY and is accepted (resync, no count)
+        only when the NEXT header confirms it by continuing from the candidate.
+        An isolated outlier is dropped entirely: the board's monitor_server reads
+        the DMA ring right at the write pointer, and the PL-side wr_ptr can lead
+        the HP-port data's DRAM visibility by a few words — so a datagram's tail
+        words can be STALE (previous ring lap, exactly one lap = 89 packets old).
+        A stale old header used to resync the tracker backward silently, making
+        the next real packet count a phantom gap of exactly +ring_capacity (the
+        lag-correlated seq_drops of HANDOFF_fft_trig_delay.md). Genuine
+        discontinuities (assembler reset on scope re-arm, monitor_server restart)
+        are confirmed by the following packet and counted in _seq_resyncs, never
+        in seq_drops."""
         last = self._seq_last
-        self._seq_last = seq
         if last is None:
+            self._seq_last = seq
             return
         d = (seq - last) & self._seq_mask
-        if 0 < d <= (self._seq_mask >> 1):
-            self._seq_drops += d - 1
+        if d <= self._SEQ_GAP_MAX:
+            if d > 1:
+                self._seq_drops += d - 1
+            self._seq_last = seq
+            self._seq_pend = None
+            return
+        # Confirmation must be a strictly-forward continuation (d in [1, 2]):
+        # equal seqs don't confirm, so multiple stale headers of the SAME old
+        # packet inside one stale window can never self-confirm a false
+        # baseline; a genuine reset confirms on the next packet (seq 0 -> 1).
+        pend = self._seq_pend
+        pd = (seq - pend) & self._seq_mask if pend is not None else 0
+        if pend is not None and 0 < pd <= 2:
+            self._seq_last = seq          # confirmed new baseline
+            self._seq_pend = None
+            self._seq_resyncs += 1
+        else:
+            self._seq_pend = seq          # unconfirmed; keep the old baseline
 
     def _publish(self, ch):
         """Snapshot the live buffer into the published frame (caller holds lock).

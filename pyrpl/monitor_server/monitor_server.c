@@ -134,6 +134,15 @@ int newsockfd;
 #define DMA_REG_BASE         0x40a00000UL /* AXI-Lite slot 5: [0]=wr_ptr [1]=hist_block */
 #define DMA_PKT_WORDS_DEFAULT 184        /* fallback: 1 header + 183 data = 1472 B = one MTU */
 #define DMA_PAD_WORD         ((uint64_t)~0ULL)  /* all-ones idle/pad sentinel (bit63=1 but NOT a real header) */
+/* Fresh-edge guard (words). wr_ptr is a PL register read directly over the GP
+ * port, but the ring DATA goes PL -> HP2 -> AFI FIFO -> DDR controller: the
+ * pointer can lead the data's DRAM visibility by a few words, so reading a
+ * packet the moment avail >= pkt_words can pick up STALE tail words (previous
+ * ring lap — observed as an old header ~3 words from the edge, which made the
+ * host's seq tracker count phantom ring-capacity gaps). Only ship a packet once
+ * the writer is safely past it — or once the writer has gone idle for a poll
+ * cycle (100 us), after which any in-flight write has long since landed. */
+#define DMA_READ_GUARD_WORDS 64
 #define DMA_DEFAULT_MCAST "239.255.0.1"
 #define DMA_DEFAULT_PORT  12468
 #define DMA_DEFAULT_UNI_PORT 12466       /* unicast workaround for multicast-unfriendly hosts */
@@ -172,7 +181,7 @@ static uint32_t dma_align(volatile uint64_t *dma_buf, volatile uint32_t *dma_reg
     for (scans = 0; scans < 500; scans++) {
         uint32_t wr    = dma_reg[0] & (DMA_BUF_WORDS - 1);
         uint32_t avail = (wr - rd + DMA_BUF_WORDS) & (DMA_BUF_WORDS - 1);
-        if (avail < (uint32_t)(ALIGN_K + 1) * pkt_words) {
+        if (avail < (uint32_t)(ALIGN_K + 1) * pkt_words + DMA_READ_GUARD_WORDS) {
             nanosleep(poll_sleep, NULL);
             scans--;                     /* waiting for data is not a scan */
             continue;
@@ -306,6 +315,7 @@ static void *dma_poll_thread(void *arg)
      * in the send loop (self-healing across FPGA reconfigures). */
     rd_ptr = dma_align(dma_buf, dma_reg, pkt_words, &poll_sleep);
 
+    uint32_t wr_prev = (uint32_t)-1;   /* fresh-edge guard: writer-idle detector */
     while (1) {
         /* Pick up host registration datagrams (NAT hole-punch). Any datagram on
          * this port re-points the unicast stream at its post-NAT source — for a
@@ -326,9 +336,20 @@ static void *dma_poll_thread(void *arg)
         uint32_t avail  = (wr_ptr - rd_ptr + DMA_BUF_WORDS) & (DMA_BUF_WORDS - 1);
 
         if (avail < pkt_words) {
+            wr_prev = wr_ptr;
             nanosleep(&poll_sleep, NULL);
             continue;
         }
+
+        /* Fresh-edge guard (see DMA_READ_GUARD_WORDS): the packet at rd_ptr is
+         * only safe to read once the writer is DMA_READ_GUARD_WORDS past its
+         * end, or once the writer has been idle for a full poll cycle. */
+        if (avail < pkt_words + DMA_READ_GUARD_WORDS && wr_ptr != wr_prev) {
+            wr_prev = wr_ptr;
+            nanosleep(&poll_sleep, NULL);
+            continue;
+        }
+        wr_prev = wr_ptr;
 
         /* Self-healing framing check: every true packet starts with a bit63
          * word. A miss means the FPGA assembler was reset mid-packet (dma_nch
