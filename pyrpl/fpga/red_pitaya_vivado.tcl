@@ -138,6 +138,11 @@ set fft_frac [expr {[info exists env(PEAK_FRAC)] ? $env(PEAK_FRAC) : 8}]
 # connection in fft_proc.sv. Must match the PEAK_ALGO passed to the peak_detector
 # HLS build (make.sh).
 set peak_algo [expr {[info exists env(PEAK_ALGO)] ? $env(PEAK_ALGO) : "cfar"}]
+# PEAK_RAMP=0 builds the cfar detector WITHOUT the baseline ramp (capacity
+# fallback for n11): the HLS IP then has no ramp_d0/ramp_step ports, so the BD
+# script skips them and the PEAK_RAMP define gates their connection in
+# fft_proc.sv. Must match the PEAK_RAMP passed to the peak_detector HLS build.
+set peak_ramp [expr {[info exists env(PEAK_RAMP)] ? $env(PEAK_RAMP) : 1}]
 
 if {[llength $argv] > 1 && [lindex $argv 0] == "alinx"} {
     set clk_diff 0
@@ -290,6 +295,7 @@ if {$scope_fb_pipeline} { lappend verilog_defines -verilog_define SCOPE_FB_PIPEL
 if {$dma_per_chan_tag} { lappend verilog_defines -verilog_define DMA_PER_CHAN_TAG }
 if {$dma_intensity} { lappend verilog_defines -verilog_define DMA_INTENSITY }
 if {$peak_algo == "cfar"} { lappend verilog_defines -verilog_define PEAK_CFAR }
+if {$peak_algo == "cfar" && $peak_ramp} { lappend verilog_defines -verilog_define PEAK_RAMP }
 synth_design -top red_pitaya_top -flatten_hierarchy none -bufg 16 -keep_equivalent_registers \
     {*}$verilog_defines \
     -generic ADC_SZ=$adc_sz \

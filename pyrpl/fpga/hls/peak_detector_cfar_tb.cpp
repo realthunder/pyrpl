@@ -21,8 +21,11 @@ static frame_result run_frame(const std::vector<int> &spectrum, int n_fft_log2,
                               ap_uint<16> k_sq, count_t start_idx, count_t end_idx,
                               data_t data_min, ap_uint<4> nfft,
                               count_t guard, count_t train,
-                              ap_uint<1> onesided = 0, ap_uint<1> so_mode = 0,
-                              ramp_t ramp_d0 = 0, ramp_t ramp_step = 0) {
+                              ap_uint<1> onesided = 0, ap_uint<1> so_mode = 0
+#if PEAK_RAMP
+                              , ramp_t ramp_d0 = 0, ramp_t ramp_step = 0
+#endif
+                              ) {
     hls::stream<axis_in_pkt>  s_axis;
     hls::stream<axis_out_pkt> m_axis;
 
@@ -44,7 +47,11 @@ static frame_result run_frame(const std::vector<int> &spectrum, int n_fft_log2,
     }
 
     peak_detector(s_axis, m_axis, k_sq, start_idx, end_idx, data_min, nfft,
-                  guard, train, onesided, so_mode, ramp_d0, ramp_step);
+                  guard, train, onesided, so_mode
+#if PEAK_RAMP
+                  , ramp_d0, ramp_step
+#endif
+                  );
 
     frame_result r{-1, 0, false, 0};
     if (m_axis.empty()) { std::cerr << "FAIL: no output produced\n"; return r; }
@@ -124,8 +131,10 @@ static int check(const char *tag, const frame_result &r, const ref_result &ref,
     return e;
 }
 
+#if PEAK_RAMP
 // Q(RAMP_FRAC) fixed-point literal for the ramp registers.
 static ramp_t rq(double v) { return (ramp_t)(v * (double)(1u << RAMP_FRAC) + 0.5); }
+#endif
 
 int main() {
     int errors = 0;
@@ -238,6 +247,7 @@ int main() {
                   << "? " << (r.bin==CLO) << ", rejected by two-sided guard)\n";
     }
 
+#if PEAK_RAMP
     // ---- [6] RAMP lets the starved genuine peak win the argmax -------------
     // Same spectrum as [5]. The skirt shoulder at the cutoff is the global
     // argmax and the edge guard rightly rejects it, so single-shot detection is
@@ -279,6 +289,7 @@ int main() {
         ref_result ref = ref_cfar(s, N, 9, CLO, HI, 5, G, T);
         errors += check("[6b] ramp d0=0 == classic", r, ref, /*expect*/false);
     }
+#endif  // PEAK_RAMP
 
     // ---- [7] one-sided fallback: target in the edge-guard DEAD ZONE ---------
     // A genuine target 1 bin past the cutoff (left reference band entirely out

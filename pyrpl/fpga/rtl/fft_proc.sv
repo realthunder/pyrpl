@@ -1023,8 +1023,11 @@ peak_detector_bd_wrapper pd_i (
     ,.train_cells    (fft_cfar_train_arg)
     ,.onesided       (fft_cfar_onesided_arg)
     ,.so_mode        (fft_cfar_so_arg)
+`ifdef PEAK_RAMP
+    // Absent from the BD wrapper when the ramp is compiled out (PEAK_RAMP=0).
     ,.ramp_d0        (fft_ramp_d0_arg)
     ,.ramp_step      (fft_ramp_step_arg)
+`endif
 `endif
 );
 

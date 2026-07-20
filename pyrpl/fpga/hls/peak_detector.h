@@ -106,8 +106,22 @@ typedef ap_int<SSZ + SQ_BITS + 1>           sdiff_t;    // ap_int<32>
 // over 1000 bins is ~0.0033 log2/bin) so the accumulator needs far more
 // fractional bits than the gain lookup does. Only the top RAMP_LUT_BITS
 // fractional bits index the mantissa ROM.
+// PEAK_RAMP=0 compiles the ramp out entirely (no ramp ports, no corrected-copy
+// buffer, judge in the raw domain) — the capacity fallback for profiles that
+// cannot afford it (n11). The RTL/BD sides key off the same knob (verilog
+// define PEAK_RAMP / tcl $peak_ramp); keep them in lockstep via make.sh.
+#ifndef PEAK_RAMP
+#define PEAK_RAMP 1
+#endif
 #ifndef RAMP_INT
-#define RAMP_INT 6                  // 64 log2 units == ~385 dB of headroom
+#define RAMP_INT 6                  // 64 log2 units == ~385 dB of headroom. NOTE:
+                                    // the integer part is a barrel-shift amount on
+                                    // the II=1 stream path (RAMP_INT stages per
+                                    // lane); RAMP_INT=3 (~48 dB, still ~2x the
+                                    // measured pedestal) is the next capacity lever
+                                    // if a profile stops fitting — track the
+                                    // register width in red_pitaya_scope.sv /
+                                    // fft_proc.sv / peak_detector_bd.tcl / scope.py.
 #endif
 #ifndef RAMP_FRAC
 #define RAMP_FRAC 20                // accumulator resolution (per-bin step)
@@ -156,14 +170,17 @@ void peak_detector(
                                    //       the edge-guard dead zone is tested against the
                                    //       available in-band cells (guard-span clearance
                                    //       gated) instead of rejected. 0 = classic guard.
-    ap_uint<1>  so_mode,           // CFAR: SO-CFAR — judge against the QUIETER reference
+    ap_uint<1>  so_mode            // CFAR: SO-CFAR — judge against the QUIETER reference
                                    //       band alone instead of pooling both, so an
                                    //       interferer in ONE band cannot inflate the
                                    //       estimate. Biases the noise estimate low:
                                    //       raise threshold_k_sq with it. 0 = classic CA.
+#if PEAK_RAMP
+    ,
     ramp_t      ramp_d0,           // RAMP: attenuation at start_index, Q(RAMP_INT).(RAMP_FRAC)
                                    //       log2(magnitude) units. 0 = ramp disabled.
     ramp_t      ramp_step          // RAMP: attenuation decrement PER BIN, same units.
                                    //       d clamps at 0 -> hold-last is implicit.
+#endif
 #endif
 );
