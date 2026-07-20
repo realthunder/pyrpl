@@ -21,7 +21,8 @@ static frame_result run_frame(const std::vector<int> &spectrum, int n_fft_log2,
                               ap_uint<16> k_sq, count_t start_idx, count_t end_idx,
                               data_t data_min, ap_uint<4> nfft,
                               count_t guard, count_t train,
-                              ap_uint<4> retry = 0, ap_uint<1> onesided = 0) {
+                              ap_uint<1> onesided = 0, ap_uint<1> so_mode = 0,
+                              ramp_t ramp_d0 = 0, ramp_t ramp_step = 0) {
     hls::stream<axis_in_pkt>  s_axis;
     hls::stream<axis_out_pkt> m_axis;
 
@@ -43,7 +44,7 @@ static frame_result run_frame(const std::vector<int> &spectrum, int n_fft_log2,
     }
 
     peak_detector(s_axis, m_axis, k_sq, start_idx, end_idx, data_min, nfft,
-                  guard, train, retry, onesided);
+                  guard, train, onesided, so_mode, ramp_d0, ramp_step);
 
     frame_result r{-1, 0, false, 0};
     if (m_axis.empty()) { std::cerr << "FAIL: no output produced\n"; return r; }
@@ -122,6 +123,9 @@ static int check(const char *tag, const frame_result &r, const ref_result &ref,
     if (r.valid != expect_valid)   { std::cerr << "FAIL: " << tag << " valid vs expect\n"; e++; }
     return e;
 }
+
+// Q(RAMP_FRAC) fixed-point literal for the ramp registers.
+static ramp_t rq(double v) { return (ramp_t)(v * (double)(1u << RAMP_FRAC) + 0.5); }
 
 int main() {
     int errors = 0;
@@ -234,11 +238,14 @@ int main() {
                   << "? " << (r.bin==CLO) << ", rejected by two-sided guard)\n";
     }
 
-    // ---- [6] RETRY finds the genuine peak the rejected clutter edge hides ---
-    // Same spectrum as [5]: with retry_count > 0 the DUT must, after the edge
-    // guard rejects the skirt shoulder (attempt 0 = global argmax), test the
-    // next-highest candidate — the genuine in-band peak — and DETECT it. This
-    // starved single-shot detection (test [5] correctly reports nothing).
+    // ---- [6] RAMP lets the starved genuine peak win the argmax -------------
+    // Same spectrum as [5]. The skirt shoulder at the cutoff is the global
+    // argmax and the edge guard rightly rejects it, so single-shot detection is
+    // STARVED (test [5] correctly reports nothing). With the ramp flattening the
+    // skirt, the genuine in-band peak becomes the argmax and is detected.
+    // Ramp: 3.0 log2 (=8x) of attenuation at the cutoff, reaching 0 by CLO+60,
+    // which drops the 5000 skirt to ~625 while leaving the 1500 peak untouched
+    // (it sits at CLO+120, past the ramp end, where the gain is exactly 1).
     {
         const int CLO = (N * 200) / 1024;
         const int PB2 = CLO + 120;               // the genuine peak's bin
@@ -249,10 +256,28 @@ int main() {
         s[PB2] = 1500;
         for (int t=1;t<=T;t++){int v=(t&1)?70:40;for(int sd=-1;sd<=1;sd+=2){int b=PB2+sd*(G+t); if(b>=0&&b<N)s[b]=v;}}
         frame_result r = run_frame(s, LOG2, /*k_sq*/9, /*start*/CLO, HI,
-                                   /*data_min*/5, LOG2, G, T, /*retry*/3);
-        // hand-built expectation: the second candidate is the genuine peak
+                                   /*data_min*/5, LOG2, G, T, /*onesided*/1,
+                                   /*so*/0, rq(3.0), rq(3.0/60.0));
+        // the reported amplitude must be the RAW 1500, not the corrected value
         ref_result ref{PB2, 1500, true};
-        errors += check("[6] retry detects hidden peak", r, ref, /*expect*/true);
+        errors += check("[6] ramp detects starved peak", r, ref, /*expect*/true);
+    }
+
+    // ---- [6b] ramp OFF is bit-identical to the classic path -----------------
+    // ramp_d0 == 0 must disable the correction exactly: same spectrum as [5],
+    // same verdict (rejected clutter edge), same reported bin/value.
+    {
+        const int CLO = (N * 200) / 1024;
+        std::vector<int> s(N, 50);
+        for (int k = 0; k < 30; k++) {
+            int b = CLO + k; if (b < N) s[b] = 5000 - 150*k;
+        }
+        s[CLO + 120] = 1500;
+        for (int t=1;t<=T;t++){int v=(t&1)?70:40;for(int sd=-1;sd<=1;sd+=2){int b=CLO+120+sd*(G+t); if(b>=0&&b<N)s[b]=v;}}
+        frame_result r = run_frame(s, LOG2, 9, CLO, HI, 5, LOG2, G, T,
+                                   /*onesided*/0, /*so*/0, /*d0*/0, rq(0.05));
+        ref_result ref = ref_cfar(s, N, 9, CLO, HI, 5, G, T);
+        errors += check("[6b] ramp d0=0 == classic", r, ref, /*expect*/false);
     }
 
     // ---- [7] one-sided fallback: target in the edge-guard DEAD ZONE ---------
@@ -268,10 +293,10 @@ int main() {
             if (b >= 0) s[b] = 30000 - 3000*k;
         }
         s[TB] = 2000;                            // the near-cutoff target
-        frame_result r1 = run_frame(s, LOG2, 9, CLO, HI, 5, LOG2, G, T, 3, 1);
+        frame_result r1 = run_frame(s, LOG2, 9, CLO, HI, 5, LOG2, G, T, 1);
         ref_result ref1 = ref_cfar(s, N, 9, CLO, HI, 5, G, T, true);
         errors += check("[7] deadzone onesided detect", r1, ref1, /*expect*/true);
-        frame_result r0 = run_frame(s, LOG2, 9, CLO, HI, 5, LOG2, G, T, 3, 0);
+        frame_result r0 = run_frame(s, LOG2, 9, CLO, HI, 5, LOG2, G, T, 0);
         // classic: the target fails the edge guard; retries only find floor
         if (r0.valid) { std::cerr << "FAIL: [7] classic must NOT detect in the dead zone\n"; errors++; }
         else std::cout << "[7b] classic dead-zone reject: valid=0 (expect 0)\n";
@@ -289,10 +314,9 @@ int main() {
             int b = CLO + k;                     // CLO-5, skirt crossing the cutoff
             if (b >= 0) s[b] = 30000 >> (k + 5);
         }
-        // retry=0: on an all-fail frame the DUT reports the LAST tried
-        // candidate, which only matches the single-shot reference's argmax
-        // when no retries run; the clearance verdict is what's under test.
-        frame_result r = run_frame(s, LOG2, 9, CLO, HI, 5, LOG2, G, T, 0, 1);
+        // On an all-fail frame the DUT reports the tested candidate with
+        // valid=0; the clearance verdict is what's under test here.
+        frame_result r = run_frame(s, LOG2, 9, CLO, HI, 5, LOG2, G, T, 1);
         ref_result ref = ref_cfar(s, N, 9, CLO, HI, 5, G, T, true);
         errors += check("[8] shoulder clearance reject", r, ref, /*expect*/false);
     }
@@ -301,9 +325,48 @@ int main() {
     {
         std::vector<int> s(N, 50);
         s[PBIN] = 4000; s[PBIN - 1] = 1200; s[PBIN + 1] = 800;
-        frame_result r = run_frame(s, LOG2, 9, LO, HI, 5, LOG2, G, T, 3, 1);
+        frame_result r = run_frame(s, LOG2, 9, LO, HI, 5, LOG2, G, T, 1);
         ref_result ref = ref_cfar(s, N, 9, LO, HI, 5, G, T, true);
         errors += check("[9] midband onesided regress", r, ref, /*expect*/true);
+    }
+
+    // ---- [10] SO-CFAR: interferer in ONE reference band ---------------------
+    // A genuine peak whose LEFT band contains a second strong target (the
+    // classic multi-target case). Pooling both bands lets those cells inflate
+    // the reference VARIANCE, and z divides by that spread -> CA fails. SO
+    // judges against the quiet RIGHT band alone and detects.
+    {
+        std::vector<int> s(N, 50);
+        s[PBIN] = 4000;
+        // interferer occupying most of the left reference band, nearly as tall
+        // as the CUT: inflates Sigma and Q on that side only.
+        for (int t = 1; t <= T; t++) {
+            int b = PBIN - (G + t);
+            if (b >= 0 && t <= (T*3)/4) s[b] = 3400;
+        }
+        frame_result rca = run_frame(s, LOG2, 9, LO, HI, 5, LOG2, G, T,
+                                     /*onesided*/0, /*so*/0);
+        if (rca.valid) { std::cerr << "FAIL: [10] CA must be masked by the interferer\n"; errors++; }
+        else std::cout << "[10a] CA masked by interferer: valid=0 (expect 0)\n";
+        frame_result rso = run_frame(s, LOG2, 9, LO, HI, 5, LOG2, G, T,
+                                     /*onesided*/0, /*so*/1);
+        if (!rso.valid || rso.bin != PBIN) {
+            std::cerr << "FAIL: [10] SO must detect past the interferer\n"; errors++;
+        } else {
+            std::cout << "[10b] SO detects past interferer: bin " << rso.bin
+                      << " val " << rso.val << " (expect " << PBIN << " / 4000)\n";
+            if (rso.val != 4000) { std::cerr << "FAIL: [10] SO val mismatch\n"; errors++; }
+        }
+    }
+
+    // ---- [11] SO regression: must not change a clean mid-band frame ---------
+    {
+        std::vector<int> s(N, 50);
+        s[PBIN] = 4000; s[PBIN - 1] = 1200; s[PBIN + 1] = 800;
+        frame_result r = run_frame(s, LOG2, 9, LO, HI, 5, LOG2, G, T,
+                                   /*onesided*/1, /*so*/1);
+        ref_result ref = ref_cfar(s, N, 9, LO, HI, 5, G, T, true);
+        errors += check("[11] SO clean-frame regress", r, ref, /*expect*/true);
     }
 
     std::cout << (errors == 0 ? "PASS\n" : "FAIL\n");

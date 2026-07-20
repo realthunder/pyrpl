@@ -58,21 +58,59 @@ static const int SSR_BITS = (FSSR == 2) ? 1 : (FSSR == 4) ? 2 :
                             (FSSR == 8) ? 3 : (FSSR == 16) ? 4 : 0;
 // mag bank/address for a natural bin b: bank = b % FSSR, addr = b / FSSR.
 #define MAG_AT(b) mag[(b) & (FSSR - 1)][(b) >> SSR_BITS]
-// Second, identical magnitude copy: the CFAR window walk / interpolation read
-// THIS one, so their 2 scattered reads never collide with the re-sweep's
-// UF-beat group reads that already saturate mag's ports (the two run in the
-// same II=1 fused loop; see cfar_detect_stage).
-#define MAG2_AT(b) mag2[(b) & (FSSR - 1)][(b) >> SSR_BITS]
+// RAMP-CORRECTED magnitude copy. Everything that JUDGES reads this one (the
+// window statistics and the CUT), everything that REPORTS or measures shape
+// reads the raw `mag` (output value, sub-bin interpolation, guard-span
+// clearance). With the ramp disabled the two buffers hold identical data.
+#define MAGC_AT(b) magc[(b) & (FSSR - 1)][(b) >> SSR_BITS]
 
-// Candidate slots bound for the retry loop (1 + CFAR_RETRY_MAX attempts).
-#define CFAR_NSLOT (CFAR_RETRY_MAX + 1)
-
-// Argmax result handed from the STREAM stage to the CFAR stage.
+// Argmax result handed from the STREAM stage to the CFAR stage. Both the raw
+// and the corrected magnitude of the winner travel together: selection and the
+// z-test use `cor`, the reported amplitude and interpolation use `raw`.
 struct pk_info_t {
-    data_t  val;
+    data_t  raw;
+    data_t  cor;
     count_t bin;
     bool    valid;
 };
+
+// 2^-f mantissa ROM for the fractional part of the ramp attenuation, f in
+// [0,1) quantised to RAMP_LUT_BITS. Entries are round(2^-f * 2^RAMP_MANT_SH),
+// so they span [2^(SH-1), 2^SH] and fit ap_uint<RAMP_MANT_SH + 1>.
+static ap_uint<RAMP_MANT_SH + 1> ramp_mant(ap_uint<RAMP_LUT_BITS> f)
+{
+#pragma HLS INLINE
+    static const ap_uint<RAMP_MANT_SH + 1> LUT[1 << RAMP_LUT_BITS] = {
+#if RAMP_LUT_BITS == 4
+        32768, 31379, 30048, 28774, 27554, 26386, 25268, 24196,
+        23170, 22188, 21247, 20347, 19484, 18658, 17867, 17109
+#else
+#error "peak_detector_cfar: ramp mantissa ROM only tabulated for RAMP_LUT_BITS == 4"
+#endif
+    };
+#pragma HLS BIND_STORAGE variable=LUT type=rom_1p impl=lutram
+    return LUT[f];
+}
+
+// Apply the ramp gain g = 2^-d to a raw magnitude. d >= 0 (Q.RAMP_FRAC), so
+// g <= 1 and the result never overflows data_t. Feed-forward: one DSP multiply
+// plus a barrel shift, no loop-carried dependency, so HLS is free to spread it
+// over pipeline stages without touching II.
+static data_t ramp_apply(data_t s, ramp_t d)
+{
+#pragma HLS INLINE
+    ap_uint<RAMP_INT> di = (ap_uint<RAMP_INT>)(d >> RAMP_FRAC);
+    ap_uint<RAMP_LUT_BITS> df =
+        (ap_uint<RAMP_LUT_BITS>)(d >> (RAMP_FRAC - RAMP_LUT_BITS));
+    ap_uint<RAMP_MANT_SH + 1> m = ramp_mant(df);
+    ap_uint<DSZ + RAMP_MANT_SH + 1> prod;
+#pragma HLS BIND_OP variable=prod op=mul impl=dsp
+    prod = (ap_uint<DSZ + RAMP_MANT_SH + 1>)s * m;
+    // shifting past the width would wrap; a deep attenuation simply floors to 0
+    ap_uint<RAMP_INT + 8> sh = (ap_uint<RAMP_INT + 8>)di + RAMP_MANT_SH;
+    if (sh >= DSZ + RAMP_MANT_SH + 1) return (data_t)0;
+    return (data_t)(prod >> sh);
+}
 
 #if FRAC_BITS > 0
 // Sequential fractional divider (identical to peak_detector.cpp): returns
@@ -99,21 +137,40 @@ static ap_uint<QB> seq_frac_div(ap_uint<DW> n, ap_uint<DW> d) {
 static void cfar_stream_stage(
     hls::stream<axis_in_pkt> &s_axis,
     data_t                    mag[FSSR][PK_DEPTH],
-    data_t                    mag2[FSSR][PK_DEPTH],
+    data_t                    magc[FSSR][PK_DEPTH],
     hls::stream<pk_info_t>   &pk_out,
-    count_t start_b, count_t end_b, data_t data_min)
+    count_t start_b, count_t end_b, data_t data_min,
+    ramp_t ramp_d0, ramp_t ramp_step)
 {
-    // Argmax state (single strongest, raw DSZ magnitude).
-    data_t  peak_val   = 0;
+    // Argmax state. The COMPARE runs on the ramp-corrected magnitude (that is
+    // the whole point of the ramp: stop the sloped pedestal from winning), but
+    // the raw magnitude of the winner is carried alongside for reporting.
+    data_t  peak_raw   = 0;
+    data_t  peak_cor   = 0;
     count_t peak_bin   = 0;
     bool    peak_valid = false;
     // One-beat-delayed argmax merge: the FSSR-lane beat-local argmax tree and the
-    // carried peak_val compare are placed in separate cycles (merge the PREVIOUS
+    // carried peak compare are placed in separate cycles (merge the PREVIOUS
     // beat's result), so neither exceeds the II=1 budget.
-    data_t  d_beat_peak  = 0;
+    data_t  d_beat_raw   = 0;
+    data_t  d_beat_cor   = 0;
     count_t d_beat_bin   = 0;
     bool    d_beat_valid = false;
     count_t beat_idx = 0;
+
+    // Per-lane ramp attenuation accumulators. d(bin) is affine in the loop
+    // counter, and after the BEAT UNROLL each lane's bin advances by exactly
+    // FSSR per beat -- so the whole ramp costs ONE subtract per lane per cycle
+    // (no multiplier, no loop-carried multiply). Lane ch starts ramp_step*ch
+    // further down the slope; every lane then steps by FSSR*ramp_step.
+    ramp_t d_lane[FSSR];
+#pragma HLS ARRAY_PARTITION variable=d_lane complete
+    ramp_t d_beat_step = (ramp_t)(ramp_step * FSSR);
+    INIT_RAMP: for (int ch = 0; ch < FSSR; ch++) {
+#pragma HLS UNROLL
+        ramp_t off = (ramp_t)(ramp_step * ch);
+        d_lane[ch] = (ramp_d0 > off) ? (ramp_t)(ramp_d0 - off) : (ramp_t)0;
+    }
 
     bool last = false;
     STREAM: while (!last) {
@@ -122,7 +179,8 @@ static void cfar_stream_stage(
         axis_in_pkt pkt = s_axis.read();
         last = (bool)pkt.last;
 
-        data_t  beat_peak  = 0;
+        data_t  beat_raw   = 0;
+        data_t  beat_cor   = 0;
         count_t beat_bin   = 0;
         bool    beat_valid = false;
 
@@ -131,89 +189,98 @@ static void cfar_stream_stage(
             data_t  s   = pkt.data.range(ch*DSZ + DSZ - 1, ch*DSZ);
             count_t bin = (count_t)((ap_uint<FSZ+4>)beat_idx * FSSR + ch);
 
-            // Buffer the raw magnitude of every bin (band/guard/floor decisions
-            // are all deferred to the CFAR stage). ch is constant after UNROLL ->
-            // lane writes its own bank, no runtime write-crossbar. Written twice:
-            // mag feeds the re-sweep, mag2 the window walk (see MAG2_AT).
-            mag[ch][beat_idx]  = s;
-            mag2[ch][beat_idx] = s;
+            data_t sc = ramp_apply(s, d_lane[ch]);
 
+            // Buffer BOTH copies for every bin (band/guard/floor decisions are
+            // all deferred to the CFAR stage). ch is constant after UNROLL ->
+            // each lane writes its own bank, no runtime write-crossbar.
+            mag[ch][beat_idx]  = s;
+            magc[ch][beat_idx] = sc;
+
+            // The floor stays on the RAW magnitude: data_min is an absolute
+            // amplitude floor, not a relative one.
             bool cand = (bin >= start_b) && (bin <= end_b) && (s > data_min);
-            if (cand && s > beat_peak) {
-                beat_peak  = s;
+            if (cand && sc > beat_cor) {
+                beat_raw   = s;
+                beat_cor   = sc;
                 beat_bin   = bin;
                 beat_valid = true;
             }
+
+            // Advance this lane down the slope, clamping at zero (the clamp IS
+            // the hold-last: past the ramp end the gain is exactly 1 forever).
+            // Held at the start value until the lane's bin reaches start_index,
+            // so ramp_d0 means "attenuation AT THE CUTOFF" and the host never
+            // has to extrapolate the line back to bin 0.
+            if (bin >= start_b) {
+                d_lane[ch] = (d_lane[ch] > d_beat_step)
+                           ? (ramp_t)(d_lane[ch] - d_beat_step) : (ramp_t)0;
+            }
         }
 
-        if (d_beat_valid && d_beat_peak > peak_val) {
-            peak_val   = d_beat_peak;
+        if (d_beat_valid && d_beat_cor > peak_cor) {
+            peak_raw   = d_beat_raw;
+            peak_cor   = d_beat_cor;
             peak_bin   = d_beat_bin;
             peak_valid = true;
         }
-        d_beat_peak  = beat_peak;
+        d_beat_raw   = beat_raw;
+        d_beat_cor   = beat_cor;
         d_beat_bin   = beat_bin;
         d_beat_valid = beat_valid;
         beat_idx++;
     }
     // Flush the last beat's delayed argmax.
-    if (d_beat_valid && d_beat_peak > peak_val) {
-        peak_val   = d_beat_peak;
+    if (d_beat_valid && d_beat_cor > peak_cor) {
+        peak_raw   = d_beat_raw;
+        peak_cor   = d_beat_cor;
         peak_bin   = d_beat_bin;
         peak_valid = true;
     }
 
     pk_info_t pk;
-    pk.val = peak_val; pk.bin = peak_bin; pk.valid = peak_valid;
+    pk.raw = peak_raw; pk.cor = peak_cor;
+    pk.bin = peak_bin; pk.valid = peak_valid;
     pk_out.write(pk);
 }
 
 // ---- CFAR stage: window test at the argmax + interpolation + output --------
-// RETRY (Option A of the candidate-starvation fix): when the tested candidate
-// FAILS (edge guard / z-test — typically the shoulder of a strong reflection
-// just below start_index, pinned at the cutoff bin, which is also always the
-// global argmax and so starves the real target of a test), this stage
-// RE-SWEEPS the magnitude buffer for the next-highest candidate outside the
-// already-tried neighborhoods (> guard+train bins away) and tests again, up
-// to `retry_count` extra attempts (runtime register, 0 = classic single-shot,
-// bounded by CFAR_RETRY_MAX). The sweep runs HERE, in the latency-tolerant
-// stage, NOT in the II=1 STREAM loop: the exclusion list is constant during a
-// sweep, so it is a feed-forward compare with the same one-beat-deferred
-// argmax merge as the STREAM stage — no new loop-carried recurrence anywhere.
+// Reads the window around the STREAM stage's argmax and runs ONE CFAR test.
+// Latency-tolerant: it is hidden behind the next frame's streaming by the
+// DATAFLOW ping-pong, so widths here do not affect Fmax.
 //
-// WORST-CASE THROUGHPUT (300k points/s continuous, no data-dependent derate):
-// two measures bound the all-retries-firing frame inside one chirp period.
-//  1. The re-sweep processes CFAR_SWEEP_UF beats (UF*FSSR bins) per cycle
-//     (UF=2 = the two native BRAM ports; UF=4 needs the beat-dim partition
-//     but its 16-lane compare fabric does not fit xc7z020 — peak_detector.h).
-//  2. The re-sweep for the NEXT candidate runs FUSED, same II=1 loop, with the
-//     CURRENT candidate's window walk: the sweep's exclusion list only needs
-//     the candidate's BIN (known before its test resolves), never the test
-//     outcome. Per-attempt cost is max(N/(FSSR*UF), T) + the z-test tail
-//     instead of their sum. The window walk reads the mag2 copy so its 2
-//     scattered reads never fight the sweep's port-saturating group reads.
-// At N9/SSR4/UF2/T32 the worst frame is ~337 cycles at retry=2 — inside the
-// ~417-cycle 300 kHz frame budget, fully hidden by the ping-pong. retry=3 is
-// ~450: a ~8% point-rate derate that only occurs while EVERY frame fails all
-// four attempts; cap retries at 2 when a hard 300 kHz guarantee is needed.
+// TWO DOMAINS, deliberately kept apart:
+//   * JUDGE on the ramp-corrected buffer (magc) -- the CUT and its reference
+//     cells alike. An ideal ramp flattens the pedestal down to the level of the
+//     rest of the noise floor, so the reference cells become homogeneous, which
+//     is the regime CA-CFAR is optimal in. Without it a wide window (train=32
+//     spans ~+-2 MHz) draws its cells from a floor varying several dB across
+//     the span, inflating the reference VARIANCE for reasons unrelated to any
+//     target -- and z divides by that spread.
+//   * REPORT and measure shape on the raw buffer (mag) -- the output amplitude,
+//     the sub-bin interpolation, and the guard-span clearance test. A target
+//     inside the ramp region therefore needs a higher RAW amplitude to pass,
+//     which is expected and roughly self-compensating: beat frequency tracks
+//     range, so a nearer target returns proportionally more power.
 static void cfar_detect_stage(
     data_t                     mag[FSSR][PK_DEPTH],
-    data_t                     mag2[FSSR][PK_DEPTH],
+    data_t                     magc[FSSR][PK_DEPTH],
     hls::stream<pk_info_t>    &pk_in,
     hls::stream<axis_out_pkt> &m_axis,
     ap_uint<16> threshold_k_sq,
-    count_t start_index, count_t end_index, data_t data_min,
+    count_t start_index, count_t end_index,
     count_t guard_cells, count_t train_cells,
-    ap_uint<4> retry_count, ap_uint<1> onesided)
+    ap_uint<1> onesided, ap_uint<1> so_mode)
 {
     pk_info_t pk = pk_in.read();
-    data_t  peak_val   = pk.val;
+    data_t  peak_raw   = pk.raw;      // reported amplitude / interpolation
+    data_t  peak_cor   = pk.cor;      // the value actually judged
     count_t peak_bin   = pk.bin;
     bool    peak_valid = pk.valid;
 
-    // Sizing (this stage is sequential and latency-tolerant so widths don't
-    // affect Fmax). n <= 2*CFAR_TRAIN_MAX; size the count to its max so the
-    // downstream multipliers (n is a multiplicand in n*Q) stay small.
+    // Sizing (sequential and latency-tolerant, so widths don't affect Fmax).
+    // n <= 2*CFAR_TRAIN_MAX; size the count to its max so the downstream
+    // multipliers (n is a multiplicand in n*Q) stay small.
     const int NCNT_W = 8;                     // 2*CFAR_TRAIN_MAX <= 255 for TRAIN_MAX<=127
     typedef ap_uint<NCNT_W>        ncnt_t;    // training-cell count
     typedef ap_uint<DSZ + NCNT_W>  wsum_t;    // Sum of training magnitudes  (<= 2T * 2^DSZ)
@@ -227,209 +294,128 @@ static void cfar_detect_stage(
     int T = (int)train_cells;
     int lo = (int)start_index;
     int hi = (int)end_index;
-    count_t span = (count_t)(guard_cells + train_cells);
+    int c  = (int)peak_bin;
 
-    // Attempt loop: attempt 0 tests the STREAM stage's argmax (with
-    // retry_count == 0 this is EXACTLY the classic single-shot detector);
-    // each further attempt re-sweeps for the next-highest candidate outside
-    // the tried neighborhoods and re-runs the unchanged classic test.
-    count_t tried_bin[CFAR_NSLOT];
-#pragma HLS ARRAY_PARTITION variable=tried_bin complete
-    bool passes = false;
-    int  c      = 0;
-    const int SWP_GRPS = PK_DEPTH / CFAR_SWEEP_UF;
-    TRY: for (int a = 0; a < CFAR_NSLOT; a++) {
-#pragma HLS LOOP_TRIPCOUNT min=1 max=4
-        if (a > (int)retry_count) break;
-        if (!peak_valid) break;               // empty frame: nothing to test
-        tried_bin[a] = peak_bin;
-        c = (int)peak_bin;
-        // The fused re-sweep (below) only runs when a further attempt could
-        // consume its result; with retry_count==0 every attempt is EXACTLY
-        // the classic single-shot detector — same work, same cycle count.
-        bool want_next = (a < (int)retry_count) && (a + 1 < CFAR_NSLOT);
-
-        // Guard-span CLEARANCE for the one-sided edge fallback: any
-        // below-cutoff cell within the guard span (c-1 .. c-G) louder than
-        // the candidate marks it as the skirt shoulder of a stronger
-        // reflection -> the fallback must reject it (that shoulder false
-        // alarm is what the two-sided edge guard was added for). Runs before
-        // the fused walk, where mag2's ports are idle; <= CFAR_GUARD_MAX
-        // cycles per attempt, latency-tolerant. Only consulted when the left
-        // reference band is short (see edge_ok below).
-        bool clear_ok = true;
-        CLEAR: for (int j = 1; j <= CFAR_GUARD_MAX; j++) {
+    // Guard-span CLEARANCE for the one-sided edge fallback: any below-cutoff
+    // cell within the guard span (c-1 .. c-G) louder than the candidate marks
+    // it as the skirt shoulder of a stronger reflection -> the fallback must
+    // reject it (that shoulder false alarm is what the two-sided edge guard was
+    // added for). RAW domain: it is a physical "is something louder sitting
+    // just below the cutoff" question, not a statistical one. Only consulted
+    // when the left reference band is short (see edge_ok below).
+    bool clear_ok = true;
+    CLEAR: for (int j = 1; j <= CFAR_GUARD_MAX; j++) {
 #pragma HLS PIPELINE II=1
-            if (j > G) break;
-            int b = c - j;
-            if (b >= 0 && b < lo && MAG2_AT(b) > peak_val)
-                clear_ok = false;
-        }
+        if (j > G) break;
+        int b = c - j;
+        if (b >= 0 && b < lo && MAG_AT(b) > peak_raw)
+            clear_ok = false;
+    }
 
-        // Exclusion zones as PRECOMPUTED per-slot bounds: |bin - tried| <=
-        // span  <=>  bin in [tried-span, tried+span]. Costs 2 narrow compares
-        // per slot-lane in the sweep instead of subtract+abs+compare, and
-        // unused slots (> a) get an impossible range so no per-lane `k <= a`
-        // gating logic is synthesized at all.
-        typedef ap_int<FSZ + 2> ebnd_t;
-        ebnd_t e_lo[CFAR_NSLOT], e_hi[CFAR_NSLOT];
-#pragma HLS ARRAY_PARTITION variable=e_lo complete
-#pragma HLS ARRAY_PARTITION variable=e_hi complete
-        EBND: for (int k = 0; k < CFAR_NSLOT; k++) {
-#pragma HLS UNROLL
-            if (k <= a) {
-                e_lo[k] = (ebnd_t)tried_bin[k] - (ebnd_t)span;
-                e_hi[k] = (ebnd_t)tried_bin[k] + (ebnd_t)span;
-            } else {
-                e_lo[k] = ebnd_t(1) << FSZ;   // > any bin: never excludes
-                e_hi[k] = -1;
-            }
-        }
-
-    ncnt_t n      = 0;
     ncnt_t n_left = 0;   // valid (in-band) reference cells on the low-freq side
     ncnt_t n_right= 0;   // ... and the high-freq side, for the two-sided edge guard
-    wsum_t Sigma = 0;
-    wsq_t  Q     = 0;
     // SEPARATE left/right accumulators: each is a single independent loop-carried
     // add per iteration (the two run in PARALLEL, not chained), so the critical
-    // loop-carry path is ONE wide add — chaining Sig/Q for both sides in one
-    // iteration would double it and drop Fmax (~86 MHz). Combined once after loop.
+    // loop-carry path is ONE wide add -- chaining Sig/Q for both sides in one
+    // iteration would double it and drop Fmax (~86 MHz). Combined after the loop
+    // -- and kept separate when SO-CFAR picks one side.
     wsum_t Sig_l = 0, Sig_r = 0;
     wsq_t  Q_l   = 0, Q_r   = 0;
 
     // Walk both reference bands: offsets G+1 .. G+T on each side of the CUT.
-    // The runtime T gates via `wact` (the fused loop may run longer than T
-    // when the re-sweep has more beat-groups than training cells).
     //
     // PIPELINE II=1 with a ONE-ITERATION DEFERRED accumulate: the DSP square is
     // computed this iteration but its result (dl_sq/dr_sq) is accumulated on the
     // NEXT iteration, so the multiply is registered OUT of the loop-carried
-    // accumulate path (the loop carry is then a single add per side). Same deferral
-    // idiom as the STREAM stage's argmax merge — it is what makes II=1 safe here
-    // (the reason the original ran un-pipelined: a naive II=1 fuses x*x
-    // combinationally into the accumulate and blows the clock). Latency drops from
-    // ~3T to ~T cycles, so even the widened window fits inside one FFT frame's
-    // stream time (N/FSSR beats) -> the CFAR ping-pong hides it again and the point
-    // rate no longer stalls at high chirp rate (train=32 recovers 300k @ N9/300kHz).
+    // accumulate path (the loop carry is then a single add per side). Same
+    // deferral idiom as the STREAM stage's argmax merge -- it is what makes II=1
+    // safe here (a naive II=1 fuses x*x combinationally into the accumulate and
+    // blows the clock). Latency ~T rather than ~3T cycles, so the widened window
+    // still fits inside one FFT frame's stream time and the ping-pong hides it.
     wsq_t  dl_sq = 0, dr_sq = 0;   // deferred registered squares (left/right)
     wsum_t dl_x  = 0, dr_x  = 0;   // deferred magnitudes for Sigma
     bool   dl_v  = false, dr_v = false;
 
-    // Next-candidate argmax state for the FUSED re-sweep (deferred-merge, same
-    // idiom as the STREAM stage: per-group winners are REGISTERED and merged
-    // one iteration later, so the only loop-carried compare is the single
-    // running-max merge; the exclusion list is CONSTANT during the sweep).
-    data_t  sv = 0;  count_t sb = 0;  bool s_found = false;
-    data_t  d_p[CFAR_SWEEP_UF]; count_t d_b[CFAR_SWEEP_UF];
-    bool    d_v[CFAR_SWEEP_UF];
-#pragma HLS ARRAY_PARTITION variable=d_p complete
-#pragma HLS ARRAY_PARTITION variable=d_b complete
-#pragma HLS ARRAY_PARTITION variable=d_v complete
-    INIT_D: for (int g = 0; g < CFAR_SWEEP_UF; g++) {
-#pragma HLS UNROLL
-        d_p[g] = 0; d_b[g] = 0; d_v[g] = false;
-    }
-
-    // One II=1 loop drives BOTH walks: iteration t is training offset t+1 of
-    // the window (reads mag2) AND sweep beat-group t (reads mag). Inactive
-    // halves contribute zeros/invalids, so trip count = max of the two.
-    int iters = T;
-    if (want_next && SWP_GRPS > iters) iters = SWP_GRPS;
-
-    FUSED: for (int t = 0; t < iters; t++) {
-#pragma HLS LOOP_TRIPCOUNT min=8 max=256 avg=32
+    WIN: for (int t = 0; t < T; t++) {
+#pragma HLS LOOP_TRIPCOUNT min=8 max=64 avg=32
 #pragma HLS PIPELINE II=1
-        // ---- CFAR window walk (candidate a, reads mag2) --------------------
         // accumulate the PREVIOUS iteration's registered products/values. Invalid
-        // cells carry 0 (xl/xr forced to 0 below), so we ALWAYS add — no guard mux
-        // in front of the wide 56-bit add (that select was the Fmax limiter). Left
-        // and right chains are independent -> two parallel single adds. Only the
+        // cells carry 0 (xl/xr forced to 0 below), so we ALWAYS add -- no guard mux
+        // in front of the wide add (that select was the Fmax limiter). Left and
+        // right chains are independent -> two parallel single adds. Only the
         // (narrow) valid-cell counts are conditionally incremented.
         Sig_l += dl_x; Q_l += dl_sq; if (dl_v) n_left  += 1;
         Sig_r += dr_x; Q_r += dr_sq; if (dr_v) n_right += 1;
 
-        bool wact = (t < T);              // runtime training-cell count
         int off = G + t + 1;              // distance from CUT to this reference cell
         int bl = c - off;                 // left reference cell
-        bool   vl = wact && (bl >= lo) && (bl <= hi) && (bl >= 0) && (bl < PK_NMAX);
-        data_t xl = vl ? MAG2_AT(bl) : (data_t)0;
+        bool   vl = (bl >= lo) && (bl <= hi) && (bl >= 0) && (bl < PK_NMAX);
+        data_t xl = vl ? MAGC_AT(bl) : (data_t)0;
         wsq_t  xl_sq;
 #pragma HLS BIND_OP variable=xl_sq op=mul impl=dsp
         xl_sq = (wsq_t)((ap_uint<2*DSZ>)xl * xl);
 
         int br = c + off;                 // right reference cell
-        bool   vr = wact && (br >= lo) && (br <= hi) && (br >= 0) && (br < PK_NMAX);
-        data_t xr = vr ? MAG2_AT(br) : (data_t)0;
+        bool   vr = (br >= lo) && (br <= hi) && (br >= 0) && (br < PK_NMAX);
+        data_t xr = vr ? MAGC_AT(br) : (data_t)0;
         wsq_t  xr_sq;
 #pragma HLS BIND_OP variable=xr_sq op=mul impl=dsp
         xr_sq = (wsq_t)((ap_uint<2*DSZ>)xr * xr);
 
         dl_sq = xl_sq; dl_x = (wsum_t)xl; dl_v = vl;
         dr_sq = xr_sq; dr_x = (wsum_t)xr; dr_v = vr;
-
-        // ---- re-sweep for the NEXT candidate (reads mag) -------------------
-        // merge the PREVIOUS group's registered winners: fold them into a
-        // feed-forward temp (NOT loop-carried — free to pipeline), then ONE
-        // compare against the running max, so the recurrence stays a single
-        // compare-select. Earliest bin wins ties (strict >), matching the
-        // sequential-scan semantics of the software replica.
-        {
-            data_t tp = 0; count_t tb = 0; bool tv = false;
-            MRG: for (int g = 0; g < CFAR_SWEEP_UF; g++) {
-#pragma HLS UNROLL
-                if (d_v[g] && d_p[g] > tp) {
-                    tp = d_p[g]; tb = d_b[g]; tv = true;
-                }
-            }
-            if (tv && tp > sv) { sv = tp; sb = tb; s_found = true; }
-        }
-        bool sact = want_next && (t < SWP_GRPS);
-        GRP: for (int g = 0; g < CFAR_SWEEP_UF; g++) {
-#pragma HLS UNROLL
-            int bt = t * CFAR_SWEEP_UF + g;
-            data_t  bp = 0;
-            count_t bb = 0;
-            bool    bv = false;
-            LANE: for (int ch = 0; ch < FSSR; ch++) {
-#pragma HLS UNROLL
-                count_t bin = (count_t)((ap_uint<FSZ+4>)bt * FSSR + ch);
-                data_t  s   = mag[ch][bt & (PK_DEPTH - 1)];
-                ebnd_t  sbin = (ebnd_t)bin;   // zero-extended, always >= 0
-                bool excl = false;
-                EXCL: for (int k = 0; k < CFAR_NSLOT; k++) {
-#pragma HLS UNROLL
-                    if (sbin >= e_lo[k] && sbin <= e_hi[k]) excl = true;
-                }
-                bool cand = sact && (bin >= (count_t)lo) && (bin <= (count_t)hi)
-                            && (s > data_min) && !excl;
-                if (cand && s > bp) {
-                    bp = s; bb = bin; bv = true;
-                }
-            }
-            d_p[g] = bp; d_b[g] = bb; d_v[g] = bv;
-        }
     }
     // flush the last processed iteration's deferred products (invalid carry 0)
     Sig_l += dl_x; Q_l += dl_sq; if (dl_v) n_left  += 1;
     Sig_r += dr_x; Q_r += dr_sq; if (dr_v) n_right += 1;
-    // combine the two sides once (off the loop-carried critical path)
-    Sigma = Sig_l + Sig_r;
-    Q     = Q_l + Q_r;
-    n     = (ncnt_t)(n_left + n_right);
-    // flush the last sweep group's registered winners (post-loop, off any
-    // II=1 path, so the plain sequential fold is fine here)
-    FLUSH_D: for (int g = 0; g < CFAR_SWEEP_UF; g++) {
-#pragma HLS UNROLL
-        if (d_v[g] && d_p[g] > sv) {
-            sv = d_p[g]; sb = d_b[g]; s_found = true;
-        }
+
+    // Two-sided edge guard: require a valid noise estimate on BOTH sides. Near a
+    // band edge (e.g. the DC-skirt tail just above start_index) the reference
+    // cells on the clutter side fall out of band and are dropped, leaving a
+    // one-sided estimate taken from the quiet side -- so the skirt shoulder towers
+    // over it and CFAR false-alarms. Requiring at least train/4 cells each side
+    // makes a ~(guard + train/4)-bin dead zone at each edge where a target is
+    // anyway indistinguishable from the skirt shoulder.
+    int    min_side = T >> 2;               // train/4
+    if (min_side < 1) min_side = 1;
+
+    // SO-CFAR (Smallest-Of): judge against the QUIETER reference band ALONE
+    // instead of pooling both, so a second target inside one band cannot
+    // inflate the reference variance and mask a genuine peak. Selection is by
+    // MEAN (classic SO); the means are compared by CROSS-MULTIPLY --
+    // Sig_l/n_left <= Sig_r/n_right  <=>  Sig_l*n_right <= Sig_r*n_left -- so
+    // no divider is needed. Two narrow multiplies, off any II=1 path.
+    //
+    // Engaged only when BOTH bands are independently usable: otherwise the
+    // one-sided fallback below already governs, and picking the quieter of an
+    // unequal pair would re-derive it while bypassing its clearance guard.
+    // NOTE SO biases the noise estimate LOW, so it raises the false-alarm rate
+    // at a given threshold_k_sq (measured ~3.6x in the software replica at
+    // k^2=30); raise threshold_k_sq alongside it.
+    bool so_ok = ((bool)so_mode) && (n_left  >= (ncnt_t)min_side)
+                                 && (n_right >= (ncnt_t)min_side);
+    ap_uint<DSZ + 2*NCNT_W> ml = Sig_l * n_right;
+    ap_uint<DSZ + 2*NCNT_W> mr = Sig_r * n_left;
+    bool take_left = (ml <= mr);
+
+    wsum_t Sigma;
+    wsq_t  Q;
+    ncnt_t n;
+    if (so_ok) {
+        Sigma = take_left ? Sig_l  : Sig_r;
+        Q     = take_left ? Q_l    : Q_r;
+        n     = take_left ? n_left : n_right;
+    } else {
+        Sigma = (wsum_t)(Sig_l + Sig_r);
+        Q     = (wsq_t)(Q_l + Q_r);
+        n     = (ncnt_t)(n_left + n_right);
     }
 
     // Local z-score test: (P*n - Sigma)^2 > k^2 * (n*Q - Sigma^2), requiring
     // n>0 and P above the local mean (P*n > Sigma). No divide or sqrt. Multiply
     // at natural operand widths and cast the RESULT (don't widen an operand).
-    pn_t    Pn      = peak_val * n;                     // DSZ x NCNT_W
+    // P is the CORRECTED peak: it must live in the same domain as the window.
+    pn_t    Pn      = peak_cor * n;                     // DSZ x NCNT_W
     sdiff_w diff    = (sdiff_w)Pn - (sdiff_w)Sigma;     // signed
     ap_int<2*(DSZ + NCNT_W + 1)> diff_s = diff * diff;  // (DSZ+NCNT+1)^2, >= 0
     wprod_t diff_sq = (wprod_t)diff_s;
@@ -438,39 +424,21 @@ static void cfar_detect_stage(
     wprod_t V       = (nQ >= S_sq) ? (wprod_t)(nQ - S_sq) : (wprod_t)0;  // n^2 * variance >= 0
     wthr_t  thr     = (wthr_t)(threshold_k_sq * V);     // 16b x wprod
 
-    // Two-sided edge guard: require a valid noise estimate on BOTH sides. Near a
-    // band edge (e.g. the DC-skirt tail just above start_index) the reference
-    // cells on the clutter side fall out of band and are dropped, leaving a
-    // one-sided estimate taken from the quiet side — so the skirt shoulder towers
-    // over it and CFAR false-alarms. Requiring at least train/4 cells each side
-    // makes a ~(guard + train/4)-bin dead zone at each edge where a target is
-    // anyway indistinguishable from the skirt shoulder.
-    int    min_side = T >> 2;               // train/4
-    if (min_side < 1) min_side = 1;
     // One-sided near-cutoff fallback (`onesided` runtime register): a
     // candidate whose LEFT band is short (inside the dead zone) may still
     // pass, tested against the available in-band cells only, when the
     // guard-span clearance found no louder below-cutoff cell (see CLEAR).
-    // The reference stays homogeneous in-band cells, so the false-alarm
-    // behavior stays at the classic baseline. The right band edge keeps the
-    // hard two-sided requirement.
+    // The right band edge keeps the hard two-sided requirement.
     bool edge_ok = (n_right >= (ncnt_t)min_side) &&
                    ((n_left >= (ncnt_t)min_side) ||
                     ((bool)onesided && clear_ok));
 
-    passes = peak_valid && (n > 0) && (diff > 0) && edge_ok &&
-             ((wthr_t)diff_sq > thr);
-    if (passes) break;
-    // advance to the next candidate found by the fused sweep; when it found
-    // nothing (or no further attempt is allowed) the frame reports the last
-    // TESTED candidate with valid=0, exactly like the pre-fused code.
-    if (!want_next || !s_found) break;
-    peak_val   = sv;
-    peak_bin   = sb;
-    peak_valid = true;
-    }   // TRY attempt loop
+    bool passes = peak_valid && (n > 0) && (diff > 0) && edge_ok &&
+                  ((wthr_t)diff_sq > thr);
 
     // --- Sub-bin parabolic interpolation (natural order), neighbors from buffer
+    // RAW domain: this measures the SHAPE of the peak, and the ramp gain varies
+    // negligibly across +-1 bin anyway.
     count_t actual_peak_bin = peak_bin;   // natural order: already the bin
     kinterp_t k_interp;
 #if FRAC_BITS > 0
@@ -478,16 +446,16 @@ static void cfar_detect_stage(
         // delta = 0.5*(L-R)/(L-2P+R). Read mag[peak-1], mag[peak+1] from the buffer.
         bool have_L = (c - 1) >= lo && (c - 1) >= 0;
         bool have_R = (c + 1) <= hi && (c + 1) < PK_NMAX;
-        data_t peak_L = have_L ? MAG2_AT(c - 1) : (data_t)0;
-        data_t peak_R = have_R ? MAG2_AT(c + 1) : (data_t)0;
+        data_t peak_L = have_L ? MAG_AT(c - 1) : (data_t)0;
+        data_t peak_R = have_R ? MAG_AT(c + 1) : (data_t)0;
 
         bool interp_ok = peak_valid && have_L && have_R && (c != 0)
-                         && (peak_L <= peak_val) && (peak_R <= peak_val);
+                         && (peak_L <= peak_raw) && (peak_R <= peak_raw);
 
         ap_int<FRAC_BITS + 1> frac = 0;
         if (interp_ok) {
-            ap_uint<DSZ + 1> den_mag = (ap_uint<DSZ + 1>)(peak_val - peak_L)
-                                     + (ap_uint<DSZ + 1>)(peak_val - peak_R);
+            ap_uint<DSZ + 1> den_mag = (ap_uint<DSZ + 1>)(peak_raw - peak_L)
+                                     + (ap_uint<DSZ + 1>)(peak_raw - peak_R);
             bool         num_neg = (peak_R > peak_L);
             ap_uint<DSZ> num_mag = num_neg ? (ap_uint<DSZ>)(peak_R - peak_L)
                                            : (ap_uint<DSZ>)(peak_L - peak_R);
@@ -508,8 +476,10 @@ static void cfar_detect_stage(
 #endif
 
     // Pack output: [DSZ-1:0]=value, [DSZ]=valid, [DSZ+IDX_BITS:DSZ+1]=k_interp
+    // The reported value is the RAW magnitude -- the host derives reflectivity
+    // from it, so it must not carry the ramp correction.
     ap_uint<OUT_WIDTH> out_data = 0;
-    out_data.range(DSZ - 1, 0)              = peak_val;
+    out_data.range(DSZ - 1, 0)              = peak_raw;
     out_data[DSZ]                           = (ap_uint<1>)(passes ? 1 : 0);
     out_data.range(DSZ + IDX_BITS, DSZ + 1) = k_interp;
 
@@ -521,6 +491,7 @@ static void cfar_detect_stage(
     m_axis.write(out_pkt);
 }
 
+
 void peak_detector(
     hls::stream<axis_in_pkt>  &s_axis,
     hls::stream<axis_out_pkt> &m_axis,
@@ -531,8 +502,10 @@ void peak_detector(
     ap_uint<4>  nfft,
     count_t     guard_cells,
     count_t     train_cells,
-    ap_uint<4>  retry_count,
-    ap_uint<1>  onesided
+    ap_uint<1>  onesided,
+    ap_uint<1>  so_mode,
+    ramp_t      ramp_d0,
+    ramp_t      ramp_step
 ) {
 #pragma HLS INTERFACE axis         port=s_axis
 #pragma HLS INTERFACE axis         port=m_axis
@@ -544,8 +517,10 @@ void peak_detector(
 #pragma HLS INTERFACE ap_none      port=nfft
 #pragma HLS INTERFACE ap_none      port=guard_cells
 #pragma HLS INTERFACE ap_none      port=train_cells
-#pragma HLS INTERFACE ap_none      port=retry_count
 #pragma HLS INTERFACE ap_none      port=onesided
+#pragma HLS INTERFACE ap_none      port=so_mode
+#pragma HLS INTERFACE ap_none      port=ramp_d0
+#pragma HLS INTERFACE ap_none      port=ramp_step
 #pragma HLS DATAFLOW
 
     // Frame magnitude buffer, [FSSR banks][depth]. Declared LOCAL (not static) so
@@ -554,24 +529,15 @@ void peak_detector(
     // stage reads the other for frame N -> the CFAR pass overlaps the next frame.
     data_t mag[FSSR][PK_DEPTH];
 #pragma HLS ARRAY_PARTITION variable=mag complete dim=1
-    // Beat-dimension cyclic split: with dual-port BRAM this supplies the
-    // CFAR_SWEEP_UF consecutive-beat reads per bank per cycle the re-sweep
-    // needs (UF/2 subarrays x 2 ports; UF=2 uses the two native ports, no
-    // split). Writes (1/bank/cycle) and the CFAR window's 2 scattered reads
-    // are unaffected. _Pragma stringization because #pragma HLS does not
-    // macro-expand its arguments.
-#if CFAR_SWEEP_PART > 1
-#define PD_STR_(x) #x
-#define PD_PRAGMA_(x) _Pragma(PD_STR_(x))
-    PD_PRAGMA_(HLS ARRAY_PARTITION variable=mag cyclic factor=CFAR_SWEEP_PART dim=2)
-#endif
 
-    // Second identical copy for the window walk / interpolation reads (their 2
-    // scattered accesses must not fight the sweep's port-saturating group
-    // reads inside the fused loop). Written in lockstep by the STREAM stage;
-    // no beat-dim split needed (<= 2 reads/bank/cycle).
-    data_t mag2[FSSR][PK_DEPTH];
-#pragma HLS ARRAY_PARTITION variable=mag2 complete dim=1
+    // RAMP-CORRECTED copy, written in lockstep by the STREAM stage. The two
+    // buffers are what let the detector JUDGE in the corrected domain while
+    // REPORTING in the raw one. (This copy is not extra cost versus the
+    // retry-capable version it replaces: that also carried a second buffer,
+    // there only to keep the re-sweep's port-saturating group reads away from
+    // the window walk's scattered ones.)
+    data_t magc[FSSR][PK_DEPTH];
+#pragma HLS ARRAY_PARTITION variable=magc complete dim=1
 
     // Argmax handoff between the two stages (small ping-pong FIFO).
     hls::stream<pk_info_t> pk_ch;
@@ -579,8 +545,11 @@ void peak_detector(
 
     // Natural order: streaming position already equals the natural bin, so the
     // band bounds are compared directly (nfft unused — kept for interface parity).
-    cfar_stream_stage(s_axis, mag, mag2, pk_ch, start_index, end_index, data_min);
-    cfar_detect_stage(mag, mag2, pk_ch, m_axis, threshold_k_sq,
-                      start_index, end_index, data_min,
-                      guard_cells, train_cells, retry_count, onesided);
+    cfar_stream_stage(s_axis, mag, magc, pk_ch, start_index, end_index, data_min,
+                      ramp_d0, ramp_step);
+    // data_min is applied in the STREAM stage's candidate gate (raw domain);
+    // the detect stage no longer needs it now the re-sweep is gone.
+    cfar_detect_stage(mag, magc, pk_ch, m_axis, threshold_k_sq,
+                      start_index, end_index,
+                      guard_cells, train_cells, onesided, so_mode);
 }

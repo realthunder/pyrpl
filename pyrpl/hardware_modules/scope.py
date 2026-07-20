@@ -515,12 +515,6 @@ class Scope(HardwareModule, AcquisitionModule):
     fft_cfar_train = IntRegister(0x54, doc="CA-CFAR: training/reference cells each "
                                  "side used to estimate the local noise floor")
 
-    fft_cfar_retries = IntRegister(0xA0, doc="CA-CFAR: extra candidates tried when "
-                                   "the argmax fails its window test (0 = classic "
-                                   "single-shot; each retry re-sweeps for the "
-                                   "next-highest candidate > guard+train bins "
-                                   "away from the already-tried ones)")
-
     fft_cfar_onesided = BoolRegister(0xA4, 0, doc="CA-CFAR: near-cutoff one-sided "
                                      "fallback — a candidate inside the edge-guard "
                                      "dead zone (left reference band out of band) "
@@ -529,6 +523,31 @@ class Scope(HardwareModule, AcquisitionModule):
                                      "below-cutoff cell within the guard span "
                                      "rejects it as a skirt shoulder). Reset 1; "
                                      "0 = classic hard two-sided guard")
+
+    fft_cfar_so = BoolRegister(0xA8, 0, doc="CA-CFAR -> SO-CFAR (Smallest-Of): "
+                               "judge the candidate against the QUIETER of the two "
+                               "reference bands alone instead of pooling both, so an "
+                               "interferer in ONE band cannot inflate the reference "
+                               "variance and mask a genuine peak. Biases the noise "
+                               "estimate low, so raise fft_peak_threshold with it "
+                               "(~3.6x more false alarms at k^2=30 otherwise). "
+                               "Reset 0 = classic CA")
+
+    # Baseline ramp: a magnitude is scaled by g(bin) = 2^-d(bin), where
+    #     d(bin) = max(0, ramp_d0 - ramp_step * (bin - fft_peak_start))
+    # in Q(6).(20) log2-of-magnitude units. The clamp at zero IS the hold-last,
+    # so there is no ramp-end register. ramp_d0 = 0 disables the ramp exactly.
+    # The correction applies to candidate SELECTION and to the CFAR window
+    # statistics; the reported peak amplitude stays raw.
+    FFT_RAMP_FRAC = 20              # fractional bits in both ramp registers
+
+    fft_ramp_d0 = IntRegister(0xAC, doc="Baseline ramp: attenuation at the cutoff "
+                              "bin (fft_peak_start), Q6.20 log2(magnitude) units. "
+                              "0 = ramp disabled")
+
+    fft_ramp_step = IntRegister(0xB0, doc="Baseline ramp: attenuation decrement per "
+                                "bin, Q6.20 log2(magnitude) units. d clamps at 0, "
+                                "which holds the correction flat past the ramp end")
 
     fft_wait1_cnt = IntRegister(0x58, doc="FFT first stage wait time counter")
 
@@ -594,6 +613,18 @@ class Scope(HardwareModule, AcquisitionModule):
     scan_pos = IntRegister(0x188, doc='scanning position')
 
     start_sig_delay = IntRegister(0x18C, doc='start signal delay, for triggering asg')
+
+    fft_trig_delay = IntRegister(0x1A0,
+                                 doc='Delay, in decimated samples, from the '
+                                     'trigger to the start of the hardware fft '
+                                     'acquisition window sequence. Compensates '
+                                     'a laser driver lag (chirp answers the '
+                                     'modulation trigger late). Set it to '
+                                     'trigger_delay in samples and the fft '
+                                     'trigger lands on the middle of the '
+                                     'captured trace. MUST be less than one '
+                                     'chirp period: a delay still in flight '
+                                     'swallows the next chirp trigger.')
 
     nfft = IntRegister(0x88, doc="FFT point size configuration. Implies a transform length of 2^nfft",
                        min=3, max=16, call_setup=True)

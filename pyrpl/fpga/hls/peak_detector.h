@@ -82,37 +82,41 @@ typedef ap_int<SSZ + SQ_BITS + 1>           sdiff_t;    // ap_int<32>
 #ifndef CFAR_TRAIN_MAX
 #define CFAR_TRAIN_MAX 64
 #endif
-// Retry budget: when the tested candidate FAILS (edge guard / z-test), the
-// next-highest candidate at least guard+train bins away is tried, up to
-// `retry_count` extra attempts (runtime register, 0 = classic single-shot).
-// CFAR_RETRY_MAX bounds the candidate slots tracked in the stream pass.
-#ifndef CFAR_RETRY_MAX
-#define CFAR_RETRY_MAX 3
+// --- Baseline RAMP (slanted-shoulder flattening) ---------------------------
+// The internal reflection leaves a sloped pedestal just above the cutoff. Its
+// shoulder wins the argmax every frame, so the single candidate per frame is
+// spent on a bin the edge guard rightly rejects. The ramp subtracts a straight
+// line (in dB, i.e. a GEOMETRIC gain in magnitude) so the pedestal is flattened
+// down to the level of the rest of the noise floor.
+//
+// A magnitude is corrected by a gain  g(bin) = 2^-d(bin),  where d is a
+// non-negative "attenuation in log2(magnitude) units" that falls LINEARLY with
+// bin and CLAMPS AT ZERO:
+//
+//     d(bin) = max(0, ramp_d0 - ramp_step * (bin - start_index))
+//
+// Anchoring at the far (zero) end means g <= 1 everywhere, so a corrected
+// magnitude never overflows data_t, and the clamp at zero gives the HOLD-LAST
+// behaviour for free -- no separate ramp-end register, and no step in the
+// correction that would create a fresh argmax attractor. ramp_d0 == 0 disables
+// the ramp exactly (g == 1 for every bin, bit-identical to the classic path).
+//
+// The ramp starts at start_index (== the host's cutoff), so no extra register.
+// d is carried in Q(RAMP_INT).(RAMP_FRAC): the per-bin step is tiny (e.g. 20 dB
+// over 1000 bins is ~0.0033 log2/bin) so the accumulator needs far more
+// fractional bits than the gain lookup does. Only the top RAMP_LUT_BITS
+// fractional bits index the mantissa ROM.
+#ifndef RAMP_INT
+#define RAMP_INT 6                  // 64 log2 units == ~385 dB of headroom
 #endif
-// Retry re-sweep unroll: beats processed per cycle in the detect-stage re-sweep
-// (UF*FSSR bins/cycle), which also runs FUSED with the window walk (see
-// cfar_detect_stage). Sizes the worst-case retry cost against the chirp
-// period: at N9/SSR4/125MHz/300kHz the frame budget is ~417 cycles; UF=2
-// fused puts the T=32 worst frame at ~337 (retry=2, guaranteed continuous)
-// or ~450 (retry=3: ~8% derate ONLY while every frame fails all attempts).
-// UF=2 reads the two native BRAM ports — no partition, no extra BRAM. UF=4
-// (needs CFAR_SWEEP_PART=2) fits retry=3 in-budget but its 16-lane compare
-// fabric costs ~7k LUT/channel and does NOT fit xc7z020 alongside the rest
-// of the design (placer overflow) — only use it on a larger part.
-// Must be a power of two, <= PK_NMAX/FSSR.
-#ifndef CFAR_SWEEP_UF
-#define CFAR_SWEEP_UF 2
+#ifndef RAMP_FRAC
+#define RAMP_FRAC 20                // accumulator resolution (per-bin step)
 #endif
-// Cyclic partition factor for the beat dimension of the magnitude buffer =
-// CFAR_SWEEP_UF/2 (2 BRAM ports per subarray; 1 = no partition needed). Kept
-// as a literal because HLS pragmas do not evaluate expressions; consistency
-// checked below.
-#ifndef CFAR_SWEEP_PART
-#define CFAR_SWEEP_PART 1
+#ifndef RAMP_LUT_BITS
+#define RAMP_LUT_BITS 4             // 2^-frac mantissa ROM: 16 entries
 #endif
-#if (CFAR_SWEEP_PART * 2) != CFAR_SWEEP_UF
-#error "peak_detector: CFAR_SWEEP_PART must equal CFAR_SWEEP_UF/2."
-#endif
+#define RAMP_MANT_SH 15             // mantissa scale: 2^-f * 2^15 fits ap_uint<16>
+typedef ap_uint<RAMP_INT + RAMP_FRAC> ramp_t;   // Q6.20 attenuation accumulator
 
 #define IN_WIDTH  (FSSR * DSZ)
 #define OUT_WIDTH 64
@@ -148,11 +152,18 @@ void peak_detector(
     ,
     count_t     guard_cells,       // CFAR: guard cells each side of the CUT (<= CFAR_GUARD_MAX)
     count_t     train_cells,       // CFAR: training/reference cells each side (<= CFAR_TRAIN_MAX)
-    ap_uint<4>  retry_count,       // CFAR: extra candidates tried when the argmax fails
-                                   //       (<= CFAR_RETRY_MAX; 0 = classic single-shot)
-    ap_uint<1>  onesided           // CFAR: near-cutoff one-sided fallback — a candidate in
+    ap_uint<1>  onesided,          // CFAR: near-cutoff one-sided fallback — a candidate in
                                    //       the edge-guard dead zone is tested against the
                                    //       available in-band cells (guard-span clearance
                                    //       gated) instead of rejected. 0 = classic guard.
+    ap_uint<1>  so_mode,           // CFAR: SO-CFAR — judge against the QUIETER reference
+                                   //       band alone instead of pooling both, so an
+                                   //       interferer in ONE band cannot inflate the
+                                   //       estimate. Biases the noise estimate low:
+                                   //       raise threshold_k_sq with it. 0 = classic CA.
+    ramp_t      ramp_d0,           // RAMP: attenuation at start_index, Q(RAMP_INT).(RAMP_FRAC)
+                                   //       log2(magnitude) units. 0 = ramp disabled.
+    ramp_t      ramp_step          // RAMP: attenuation decrement PER BIN, same units.
+                                   //       d clamps at 0 -> hold-last is implicit.
 #endif
 );

@@ -54,10 +54,14 @@ if {[info exists peak_algo] && $peak_algo == "cfar"} {
     create_bd_port -dir I -from 13 -to 0 train_cells
     connect_bd_net [get_bd_ports guard_cells] [get_bd_pins peak_detector_0/guard_cells]
     connect_bd_net [get_bd_ports train_cells] [get_bd_pins peak_detector_0/train_cells]
-    create_bd_port -dir I -from 3 -to 0 retry_count
-    connect_bd_net [get_bd_ports retry_count] [get_bd_pins peak_detector_0/retry_count]
     create_bd_port -dir I onesided
     connect_bd_net [get_bd_ports onesided] [get_bd_pins peak_detector_0/onesided]
+    create_bd_port -dir I so_mode
+    connect_bd_net [get_bd_ports so_mode] [get_bd_pins peak_detector_0/so_mode]
+    create_bd_port -dir I -from 25 -to 0 ramp_d0
+    connect_bd_net [get_bd_ports ramp_d0] [get_bd_pins peak_detector_0/ramp_d0]
+    create_bd_port -dir I -from 25 -to 0 ramp_step
+    connect_bd_net [get_bd_ports ramp_step] [get_bd_pins peak_detector_0/ramp_step]
 
     # The cfar detector uses DATAFLOW + ap_ctrl_chain (to overlap the CFAR pass with
     # the next frame's streaming). Unlike ap_ctrl_hs, ap_ctrl_chain does NOT

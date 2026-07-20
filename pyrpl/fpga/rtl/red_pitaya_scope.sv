@@ -618,8 +618,10 @@ logic [ DSZ-1: 0]   fft_peak_minimum, fft_a_peak_minimum, fft_b_peak_minimum;
 // harmlessly unconnected otherwise). guard/train cells each side of the peak.
 logic [ FSZ-1:0]    fft_cfar_guard, fft_a_cfar_guard, fft_b_cfar_guard;
 logic [ FSZ-1:0]    fft_cfar_train, fft_a_cfar_train, fft_b_cfar_train;
-logic [     3:0]    fft_cfar_retry, fft_a_cfar_retry, fft_b_cfar_retry;
 logic               fft_cfar_onesided, fft_a_cfar_onesided, fft_b_cfar_onesided;
+logic               fft_cfar_so, fft_a_cfar_so, fft_b_cfar_so;
+logic [25:0]    fft_ramp_d0, fft_a_ramp_d0, fft_b_ramp_d0;
+logic [25:0]    fft_ramp_step, fft_a_ramp_step, fft_b_ramp_step;
 
 logic [ 6-1 :  0]   fft_status[0:1];
 logic [ 2-1 :  0]   fft_done;
@@ -704,11 +706,64 @@ end
 // assign fft_rstn_i = adc_rstn_i && ~|fft_rst_i;
 assign fft_rstn_i = fft_rstn[1];
 
+// ---- fft trigger delay (0x1A0, decimated samples) -------------------------
+// The fft engine and the scope capture are started by the SAME edge (a write to
+// 0x4 loads both source muxes), but the optical chirp answers the modulation
+// trigger some us late (laser driver lag), so the acq windows -- counted from
+// the trigger -- would sample ahead of the real chirp.
+//
+// Delay the TRIGGER rather than padding fft_wait1_cnt: wait1 is counted inside
+// S_WAIT1, a busy state, so padding it stretches the busy window (trig ->
+// trig+lag+span) while the next chirp still arrives at trig+period, and any lag
+// past the slack drops that chirp whole (the FSM only samples the one-cycle
+// trigger pulse in S_IDLE). Delaying instead keeps the engine IDLE through the
+// lag: busy becomes [trig+dly, trig+dly+span], and since every trigger shifts
+// equally the spacing stays exactly one period. The lag then costs nothing --
+// the constraint is span <= period regardless of it.
+//
+// Software writes trigger_delay in samples here. The capture keeps
+// 2**(RSZ-1)+trigger_delay post-trigger samples, so the trigger sits at trace
+// index 2**(RSZ-1)-trigger_delay and this delay lands the fft trigger exactly on
+// the trace MIDDLE for any trigger_delay >= 0 -- which is what lets the gui
+// anchor the acq windows at the middle and always agree with the hardware.
+// Counting fft_dvalid (not adc_clk) keeps the unit the same decimated sample the
+// window counters and the trace index use.
+logic [ 32-1: 0] fft_trig_dly;
+logic [ 32-1: 0] fft_trig_dly_cnt;
+logic            fft_trig_dly_do;
+
 logic fft_trig;
-logic fft_trig_i = fft_trig_sync ? (adc_trig && !adc_dly_do && pretrig_ok) : fft_trig;
+logic fft_trig_raw = fft_trig_sync ? (adc_trig && !adc_dly_do && pretrig_ok) : fft_trig;
+logic fft_trig_dlyd;    // fft_trig_raw delayed by fft_trig_dly (see below)
+// dly==0 bypasses the delay register entirely, so with the feature off this is
+// the exact pre-existing trigger path -- no added cycle, no re-timing.
+logic fft_trig_i = (fft_trig_dly == 32'h0) ? fft_trig_raw : fft_trig_dlyd;
 
 // (* mark_debug = "true" *)
-logic fft_dvalid = (!fft_trig_sync || adc_we) && adc_dv; 
+logic fft_dvalid = (!fft_trig_sync || adc_we) && adc_dv;
+
+always @(posedge adc_clk_i)
+if (adc_rstn_i == 1'b0) begin
+   fft_trig_dly_do  <= 1'b0;
+   fft_trig_dly_cnt <= 32'h0;
+   fft_trig_dlyd    <= 1'b0;
+end else begin
+   fft_trig_dlyd <= 1'b0;                    // one-cycle pulse, like fft_trig_raw
+   // A trigger arriving while a delay is still in flight is IGNORED (it would
+   // otherwise restart the count and smear the frame): software keeps
+   // fft_trig_dly below one chirp period so this cannot happen in steady state.
+   if (fft_trig_raw && !fft_trig_dly_do && (fft_trig_dly != 32'h0)) begin
+      fft_trig_dly_do  <= 1'b1;
+      fft_trig_dly_cnt <= fft_trig_dly;
+   end else if (fft_trig_dly_do && fft_dvalid) begin
+      if (fft_trig_dly_cnt <= 32'h1) begin
+         fft_trig_dly_do <= 1'b0;
+         fft_trig_dlyd   <= 1'b1;            // delay elapsed -> fire the frame
+      end else
+         fft_trig_dly_cnt <= fft_trig_dly_cnt - 1'b1;
+   end
+end
+
 logic fft_up = fft_state == S_FFT_UP;
 logic fft_down = fft_state == S_FFT_DOWN;
 
@@ -915,10 +970,14 @@ always @(posedge adc_clk_i) begin
     fft_b_cfar_guard <= fft_cfar_guard;
     fft_a_cfar_train <= fft_cfar_train;
     fft_b_cfar_train <= fft_cfar_train;
-    fft_a_cfar_retry <= fft_cfar_retry;
-    fft_b_cfar_retry <= fft_cfar_retry;
     fft_a_cfar_onesided <= fft_cfar_onesided;
     fft_b_cfar_onesided <= fft_cfar_onesided;
+    fft_a_cfar_so <= fft_cfar_so;
+    fft_b_cfar_so <= fft_cfar_so;
+    fft_a_ramp_d0 <= fft_ramp_d0;
+    fft_b_ramp_d0 <= fft_ramp_d0;
+    fft_a_ramp_step <= fft_ramp_step;
+    fft_b_ramp_step <= fft_ramp_step;
 end
 
 fft_proc #(.ASZ(ASZ),
@@ -953,8 +1012,10 @@ fft_a (
    .fft_peak_minimum_in (fft_a_peak_minimum),
    .fft_cfar_guard_in (fft_a_cfar_guard),
    .fft_cfar_train_in (fft_a_cfar_train),
-   .fft_cfar_retry_in (fft_a_cfar_retry),
    .fft_cfar_onesided_in (fft_a_cfar_onesided),
+   .fft_cfar_so_in (fft_a_cfar_so),
+   .fft_ramp_d0_in (fft_a_ramp_d0),
+   .fft_ramp_step_in (fft_a_ramp_step),
 
    .fft_acq_up_in (fft_a_acq1_cnt),
    .fft_acq_down_in (fft_a_acq2_cnt),
@@ -1055,8 +1116,10 @@ fft_proc #(.ASZ(ASZ),
    .fft_peak_minimum_in (fft_b_peak_minimum),
    .fft_cfar_guard_in (fft_b_cfar_guard),
    .fft_cfar_train_in (fft_b_cfar_train),
-   .fft_cfar_retry_in (fft_b_cfar_retry),
    .fft_cfar_onesided_in (fft_b_cfar_onesided),
+   .fft_cfar_so_in (fft_b_cfar_so),
+   .fft_ramp_d0_in (fft_b_ramp_d0),
+   .fft_ramp_step_in (fft_b_ramp_step),
 
    .fft_acq_up_in (fft_parallel ? fft_b_acq2_cnt : fft_b_acq1_cnt),
    .fft_acq_down_in (fft_b_acq2_cnt),
@@ -1380,8 +1443,10 @@ if (adc_rstn_i == 1'b0) begin
     fft_peak_minimum <= 1;
     fft_cfar_guard <= 8;    // CA-CFAR: guard cells each side of the peak (~main-lobe half-width)
     fft_cfar_train <= 32;   // CA-CFAR: training/reference cells each side (on the noise floor)
-    fft_cfar_retry <= 0;    // CA-CFAR: extra candidates tried when the argmax fails (0 = classic single-shot)
     fft_cfar_onesided <= 1; // CA-CFAR: near-cutoff one-sided fallback (clearance-gated); 1 matches the sw default
+    fft_cfar_so <= 0;       // CA-CFAR -> SO-CFAR (quieter band only); raise fft_threshold_k with it
+    fft_ramp_d0 <= 0;       // baseline ramp: attenuation at the cutoff, Q6.20 log2 units (0 = ramp off)
+    fft_ramp_step <= 0;     // baseline ramp: per-bin decrement, same units (d clamps at 0 = hold-last)
     fft_wait1_cnt <= 100;
     fft_wait2_cnt <= 200;
     fft_acq1_cnt <= (2**(FSZ-1) - 200) & ~(FSSR-1);
@@ -1411,8 +1476,10 @@ end else if (sys_wen) begin
     // 0x50/0x54 are the genuinely-free slots (see readback comment below).
     if (sys_addr[19:0]==20'h50) fft_cfar_guard <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h54) fft_cfar_train <= sys_wdata[FSZ-1:0];
-    if (sys_addr[19:0]==20'hA0) fft_cfar_retry <= sys_wdata[3:0];
     if (sys_addr[19:0]==20'hA4) fft_cfar_onesided <= sys_wdata[0];
+    if (sys_addr[19:0]==20'hA8) fft_cfar_so <= sys_wdata[0];
+    if (sys_addr[19:0]==20'hAC) fft_ramp_d0 <= sys_wdata[25:0];
+    if (sys_addr[19:0]==20'hB0) fft_ramp_step <= sys_wdata[25:0];
     if (sys_addr[19:0]==20'h58) fft_wait1_cnt <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h5C) fft_wait2_cnt <= sys_wdata[FSZ-1:0];
     // Force acq counts to whole SSR beats: fin packs FSSR samples/beat and the FFT
@@ -2003,6 +2070,7 @@ if (adc_rstn_i == 1'b0) begin
    set_a_tresh   <=   0      ;
    //set_b_tresh   <=  ASZ'd0000   ;
    set_dly       <=  2**(RSZ-1);
+   fft_trig_dly  <=  32'h0    ; // no laser lag compensation by default
    set_dec       <=  17'h2000; // corresponds to 1s duration, formerly at minimum: 17'd1
    set_a_hyst    <=  20     ;
    //set_b_hyst    <=  ASZ'd20     ;
@@ -2057,6 +2125,10 @@ end else begin
       if (sys_addr[19:0]==20'h90)   set_deb_len <= sys_wdata[20-1:0] ;
       if (sys_addr[19:0]==20'h94)   set_deb_len2<= sys_wdata[20-1:0] ;
       if (sys_addr[19:0]==20'h18C)  scope_sig_dly <= sys_wdata[32-1:0];
+      // fft trigger delay: software must keep this BELOW one chirp period --
+      // a delay still in flight swallows the next chirp's trigger. The chirp
+      // train is periodic, so software wraps it modulo the period.
+      if (sys_addr[19:0]==20'h1A0)  fft_trig_dly  <= sys_wdata[32-1:0];
    end
 end
 
@@ -2152,8 +2224,10 @@ end else begin
      20'h00050 : begin sys_ack <= sys_en;          sys_rdata <= {{32-FSZ{1'b0}}, fft_cfar_guard}    ; end
      20'h00054 : begin sys_ack <= sys_en;          sys_rdata <= {{32-FSZ{1'b0}}, fft_cfar_train}    ; end
      20'h00058 : begin sys_ack <= sys_en;          sys_rdata <= fft_wait1_cnt                       ; end
-     20'h000A0 : begin sys_ack <= sys_en;          sys_rdata <= {28'h0, fft_cfar_retry}             ; end
      20'h000A4 : begin sys_ack <= sys_en;          sys_rdata <= {31'h0, fft_cfar_onesided}          ; end
+     20'h000A8 : begin sys_ack <= sys_en;          sys_rdata <= {31'h0, fft_cfar_so}                 ; end
+     20'h000AC : begin sys_ack <= sys_en;          sys_rdata <= {{32-26{1'b0}}, fft_ramp_d0}         ; end
+     20'h000B0 : begin sys_ack <= sys_en;          sys_rdata <= {{32-26{1'b0}}, fft_ramp_step}       ; end
      20'h0005C : begin sys_ack <= sys_en;          sys_rdata <= fft_wait2_cnt                       ; end
      20'h00060 : begin sys_ack <= sys_en;          sys_rdata <= fft_acq1_cnt                        ; end
      20'h00064 : begin sys_ack <= sys_en;          sys_rdata <= fft_acq2_cnt                        ; end
@@ -2228,6 +2302,7 @@ end else begin
 
      20'h00188 : begin sys_ack <= sys_en;          sys_rdata <= {{16-RSZ{1'b0}}, y_step, {16-RSZ{1'b0}}, x_step}; end
      20'h0018C : begin sys_ack <= sys_en;          sys_rdata <= scope_sig_dly                     ; end
+     20'h001A0 : begin sys_ack <= sys_en;          sys_rdata <= fft_trig_dly                      ; end
      20'h00190 : begin sys_ack <= sys_en;          sys_rdata <= fft_overflow_cnt                    ; end
      // DMA packet geometry (read-only): data words per packet + channel field width
      //   + per-packet seq width. 0x194 [15:0]=HIST_BLOCK_SIZE [19:16]=channel width

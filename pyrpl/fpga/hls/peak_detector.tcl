@@ -39,7 +39,6 @@ if {$peak_algo == "cfar"} {
     if {[info exists env(CFAR_TRAIN_MAX)]} { append cflags " -DCFAR_TRAIN_MAX=$env(CFAR_TRAIN_MAX)" }
     # Retry re-sweep beats/cycle (and its beat-dim partition = UF/2); sizes the
     # worst-case all-retries frame cost. Both must be set together (UF, UF/2).
-    if {[info exists env(CFAR_SWEEP_UF)]}  { append cflags " -DCFAR_SWEEP_UF=$env(CFAR_SWEEP_UF) -DCFAR_SWEEP_PART=[expr {$env(CFAR_SWEEP_UF) / 2}]" }
 }
 
 # FFT_IMPL==4 is the native-SSR xfft, whose output is NATURAL order (PG109: SSR>1
