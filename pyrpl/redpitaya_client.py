@@ -39,7 +39,8 @@ CLIENT_NUMBER = 0
 class MonitorClient(object):
     def __init__(self, hostname="192.168.1.0", port=2222, restartserver=None,
                  reconnect_retries=-1, on_connection_lost=None,
-                 on_reconnected=None, connect_timeout=2.0):
+                 on_reconnected=None, connect_timeout=2.0,
+                 connect_attempts=20):
         """initiates a client connected to monitor_server
 
         hostname: server address, e.g. "localhost" or "192.168.1.0"
@@ -55,6 +56,10 @@ class MonitorClient(object):
             socket reconnect succeeds, so a GUI can clear a "reconnecting" state.
         connect_timeout: bounded timeout (s) for socket.connect, so connecting to
             an unreachable board fails fast instead of blocking on the TCP SYN.
+        connect_attempts: how many times the initial connect probes for a serviced
+            link before giving up. Each attempt does a TCP connect AND a round-trip
+            probe read, retrying with backoff — this is what tolerates monitor_server
+            still coming up right after an FPGA reflash (see the connect loop).
         """
         self.logger = logging.getLogger(name=__name__)
         # update global client counter and assign a number to this client
@@ -66,6 +71,7 @@ class MonitorClient(object):
         self._on_connection_lost = on_connection_lost
         self._on_reconnected = on_reconnected
         self._connect_timeout = connect_timeout
+        self._connect_attempts = max(int(connect_attempts), 1)
         self._connected = False
         # set once the reconnection budget is exhausted, so read/write calls
         # stop hammering a dead link and surface the failure instead.
@@ -96,8 +102,18 @@ class MonitorClient(object):
         # blocks on the TCP SYN timeout (tens of seconds). Reset to the normal
         # 1 s I/O timeout after the connect loop below.
         self.socket.settimeout(self._connect_timeout)
-        # try to connect at least 5 times
-        for i in range(5):
+        # Establish the link AND confirm the server is really servicing this
+        # socket before declaring it up. A bare TCP connect can succeed while the
+        # board's monitor_server is still coming up (notably right after an FPGA
+        # reflash, which tears the server down) or is still stuck on a previous
+        # half-open connection. In that window reads/writes silently return None
+        # (see reads/writes / try_n_times), so the startup config-restore
+        # (Pyrpl._load_setup_attributes) writes into a not-yet-live link and the
+        # saved register values are lost. Mirror the reconnect path
+        # (_try_socket_reconnect): require a round-trip _probe_link() and retry
+        # with backoff while the server finishes accepting us.
+        last_reason = None
+        for i in range(self._connect_attempts):
             if not self._port > 0:
                 if self._port is None:
                     # likely means that _restartserver failed.
@@ -109,9 +125,20 @@ class MonitorClient(object):
                                      "hostname %s on invalid port %s. Please "
                                      "check your connection parameters!"
                                      % (self._hostname, self._port))
+            if i > 0:
+                # A socket that has attempted connect() cannot be reused, and a
+                # probe may have left the previous one half-consumed: use a fresh
+                # one for every retry.
+                try:
+                    self.socket.close()
+                except socket.error:
+                    pass
+                self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.socket.settimeout(self._connect_timeout)
             try:
                 self.socket.connect((self._hostname, self._port))
             except socket.error:  # mostly because port is still closed
+                last_reason = "TCP connect failed (port still closed?)"
                 self.logger.warning("Socket error during connection "
                                     "attempt %s.", i)
                 # could try a different port here by putting port=-1. Restarting
@@ -123,9 +150,30 @@ class MonitorClient(object):
                 except BaseException as e:
                     self.logger.warning("Server restart during connect failed: "
                                         "%s", e)
-            else:
+                sleep(min(0.5 * (i + 1), 3.0))
+                continue
+            # TCP is up; confirm the server round-trips before trusting the link.
+            self.socket.settimeout(1.0)
+            if self._probe_link():
                 self._connected = True
                 break
+            # Connected but not being serviced yet (server still starting, or
+            # still holding a stale connection): drop this socket, back off, retry.
+            last_reason = ("connected but monitor_server did not respond "
+                           "(still starting after a reflash?)")
+            self.logger.warning("Connected to %s:%s but monitor_server not yet "
+                                "responding (attempt %s); retrying.",
+                                self._hostname, self._port, i)
+            sleep(min(0.5 * (i + 1), 3.0))
+        else:
+            # Exhausted every attempt without a serviced link. Leave _connected
+            # False so I/O fail-fasts and the reconnect machinery can take over,
+            # but log loudly: startup config-restore would otherwise be silently
+            # incomplete, which is exactly the failure this loop guards against.
+            self.logger.error("Could not establish a serviced register link to "
+                              "%s:%s after %s attempt(s): %s",
+                              self._hostname, self._port,
+                              self._connect_attempts, last_reason)
         self.socket.settimeout(1.0)  # 1 second timeout for socket operations
 
     def close(self):
