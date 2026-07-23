@@ -290,9 +290,34 @@ case "${PROFILE:-}" in
         export FFT_USE_APPROX=${FFT_USE_APPROX:-1}
         export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
         export DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-1}
-        export DETERMINISTIC=${DETERMINISTIC:-7}
+        # MODULE_FB_PIPELINE closes the sum2 -> iq/pid inputfilter pll_adc_clk path
+        # that binds n11 once the CFAR detector fills the die (force-replication is
+        # counterproductive here). +1 adc_clk cycle of module input latency.
+        export MODULE_FB_PIPELINE=${MODULE_FB_PIPELINE:-1}
+        # DSP_LEAN=1 would strip PID0+IQ0 (~2.7k LUT + the recurring pll_adc_clk
+        # module-sum feedback endpoints), but the product needs both (EO-PLL leg,
+        # iq0 window-tuning probe) — keep it an emergency opt-in, default OFF.
+        # CFAR_TRAIN_MAX=63 (not 64) keeps the training-count field at 7 bits
+        # (NCNT_W in peak_detector_cfar.cpp), narrowing the whole z-test
+        # datapath by a bit; runtime train_cells used is 32.
+        export CFAR_TRAIN_MAX=${CFAR_TRAIN_MAX:-63}
+        # CFAR_GUARD_MAX=8 (product uses cfar_guard<=8): shorter CLEAR loop +
+        # narrower window offsets.
+        export CFAR_GUARD_MAX=${CFAR_GUARD_MAX:-8}
+        # ExploreSequentialArea: area + control-set-aware opt — the n11 die
+        # fails DETAIL PLACEMENT on slice packing, which control sets fragment.
+        export OPT_DIRECTIVE=${OPT_DIRECTIVE:-ExploreSequentialArea}
+        # Strip the alpha ASG advanced-trigger blocks (~600 LUT, behavior-
+        # neutral: they reset to the transparent state and the product never
+        # arms them).
+        export ASG_ADVTRIG=${ASG_ADVTRIG:-0}
+        # DET=2 (ExtraNetDelay_high) won the 2026-07-22 ramp-slim 4-seed sweep
+        # (7/2/8/5 all PLACED; DET=2 closed at adc +0.023/+0.020 with the
+        # steping->scope multicycle now in sdc/red_pitaya.xdc). Re-sweep after
+        # RTL edits — the winner is netlist-sensitive.
+        export DETERMINISTIC=${DETERMINISTIC:-2}
         export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
-        echo "==> PROFILE=ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe, place AltSpreadLogic_medium (DETERMINISTIC=7), phys_opt AggressiveExplore"
+        echo "==> PROFILE=ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe+modpipe+lean(advtrig/pidfilt2/guard8/train63), place ExtraNetDelay_high (DETERMINISTIC=2), phys_opt AggressiveExplore"
         ;;
     ssr4n11-impl5)
         # LOWER-DR experiment — NOT the product N11 image (use ssr4n11 / IMPL=4 for that).
@@ -486,7 +511,7 @@ else
 fi
 if [[ $_ssr -ge 8 ]]; then _single_def=1; else _single_def=0; fi
 echo "==> Build config: IMPL=${FFT_IMPL} SSR=${_ssr} NFFT=${FFT_NFFT:-12} SCALED=${FFT_SCALED:-2} WIDTH=${FFT_WIDTH:-auto} SINGLE=${FFT_SINGLE:-$_single_def} HSZ=${HSZ:-24}"
-echo "                  FFT_CLK=${_fftclk} | DET=${DETERMINISTIC} PHYS_OPT=${PHYS_OPT:-AggressiveExplore} DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-0} SCOPE_FB_PIPELINE=${SCOPE_FB_PIPELINE:-0}"
+echo "                  FFT_CLK=${_fftclk} | DET=${DETERMINISTIC} PHYS_OPT=${PHYS_OPT:-AggressiveExplore} DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-0} SCOPE_FB_PIPELINE=${SCOPE_FB_PIPELINE:-0} MODULE_FB_PIPELINE=${MODULE_FB_PIPELINE:-0} DSP_LEAN=${DSP_LEAN:-0}"
 unset _ssr _fftclk _single_def
 
 mkdir -p "$ROOT/.hls"
@@ -648,15 +673,27 @@ manifest="$WORKROOT/out/BUILD_INFO.txt"
     echo "# and derived module parameters are appended below by red_pitaya_vivado.tcl):"
     for v in FPGA_PART ADC_SZ CLK_MULT CLK_ADC_DIV FFT_IMPL FFT_SSR FFT_NFFT \
              FFT_WIDTH PEAK_FRAC PEAK_ALGO CFAR_GUARD_MAX CFAR_TRAIN_MAX PEAK_RAMP FFT_SCALED FFT_INTERNAL_W FFT_CLK_PERIOD FFT_CLK_SEL FFT_CLK_200 FFT_CLK_178 \
-             FFT_MULT_LUT FFT_USE_APPROX FFT_UNSCALED FFT_CORDIC_ITER HIST_BLOCK_SIZE HSZ PHYS_OPT OPT_DIRECTIVE FFT_SINGLE DSP_FB_PIPELINE SCOPE_FB_PIPELINE \
-             DMA_PER_CHAN_TAG DMA_INTENSITY; do
+             FFT_MULT_LUT FFT_USE_APPROX FFT_UNSCALED FFT_CORDIC_ITER HIST_BLOCK_SIZE HSZ PHYS_OPT OPT_DIRECTIVE FFT_SINGLE DSP_FB_PIPELINE SCOPE_FB_PIPELINE MODULE_FB_PIPELINE \
+             DSP_LEAN ASG_ADVTRIG PID_FILTERSTAGES DMA_PER_CHAN_TAG DMA_INTENSITY; do
         printf '%-14s= %s\n' "$v" "${!v:-}"
     done
 } > "$manifest"
 
 vivado_start=$SECONDS
+vivado_epoch=$(date +%s)
 (cd "$WORKROOT" && $VIVADO -nolog -nojournal -mode tcl -source "$script" -tclargs "$@")
 echo "==> Vivado done in $(fmt_elapsed $((SECONDS - vivado_start)))."
+
+# Vivado returns 0 even when place_design/route_design FAIL (bit us on the n11
+# ramp build — see HANDOFF_n11_ramp_nofit.md). A bitstream written by THIS run
+# is the ground truth; anything else is a failed implementation.
+if [[ " $* " != *" hls "* ]]; then
+    bit="$WORKROOT/out/red_pitaya.bit"
+    if [[ ! -f "$bit" || $(stat -c %Y "$bit") -lt $vivado_epoch ]]; then
+        echo "ERROR: $bit missing or predates this run — place/route/bitgen FAILED; check the log above." >&2
+        exit 1
+    fi
+fi
 
 # Append the post-route WNS so the manifest captures the build's actual result.
 if [[ -f "$WORKROOT/out/post_route_timing_summary.rpt" ]]; then

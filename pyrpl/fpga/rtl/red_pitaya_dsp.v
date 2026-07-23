@@ -386,15 +386,29 @@ assign diff_input_signal[0] = diff_output_signal[1]; // difference input of PID0
 assign diff_input_signal[1] = diff_output_signal[0]; // difference input of PID1 is PID0
 assign diff_input_signal[2] = {14{1'b0}};      // difference input of PID2 is zero
 
-// PID0 is always present. PID1/PID2 are restored by defining ENABLE_PID_EXTRA
-// (off by default to relieve DSP/LUT congestion). Mirrors the ENABLE_IIR guard.
+// PID0 is always present unless DSP_LEAN strips it (lean images: pid0 only
+// served the abandoned EO-PLL leg, and its module-sum feedback endpoint
+// pid_out_reg is one of the recurring pll_adc_clk walls). PID1/PID2 are
+// restored by defining ENABLE_PID_EXTRA (off by default to relieve DSP/LUT
+// congestion). Mirrors the ENABLE_IIR guard.
 `ifdef ENABLE_PID_EXTRA
 localparam PID_LAST = PID2;
 `else
 localparam PID_LAST = PID0;
 `endif
-generate for (j = PID0; j <= PID_LAST; j = j+1) begin
-   red_pitaya_pid_block i_pid (
+`ifdef DSP_LEAN
+localparam PID_FIRST = PID1;
+`else
+localparam PID_FIRST = PID0;
+`endif
+// PID_FILTERSTAGES trims the pid input-filter chain (4 cascaded first-order
+// stages by default, ~530 LUT; 2 halves that). pyrpl reads the stage count
+// back from the module (reg 0x220), so the host adapts automatically.
+`ifndef PID_FILTERSTAGES
+`define PID_FILTERSTAGES 4
+`endif
+generate for (j = PID_FIRST; j <= PID_LAST; j = j+1) begin
+   red_pitaya_pid_block #(.FILTERSTAGES(`PID_FILTERSTAGES)) i_pid (
      // data
      .clk_i        (  clk_i          ),  // clock
      .rstn_i       (  rstn_i         ),  // reset - active low
@@ -428,6 +442,15 @@ assign output_signal[PID2]      = 14'h0;
 assign diff_output_signal[PID2] = 14'h0;
 assign module_ack[PID2]         = 1'b0;
 assign module_rdata[PID2]       = 32'h0;
+`endif
+`ifdef DSP_LEAN
+// PID0 stripped — tie off output, diff link and bus (reads land on the
+// axi_slave timeout ack, same as the other disabled modules).
+assign output_direct[PID0]      = 14'h0;
+assign output_signal[PID0]      = 14'h0;
+assign diff_output_signal[PID0] = 14'h0;
+assign module_ack[PID0]         = 1'b0;
+assign module_rdata[PID0]       = 32'h0;
 `endif
 
 wire trig_signal;
@@ -484,13 +507,21 @@ assign module_rdata[IIR]  = 32'h0;
 
 
 //IQ modules iq0, iq1
-// IQ0 is always present. IQ1 is restored by defining ENABLE_IQ1 (off by default).
+// IQ0 is always present unless DSP_LEAN strips it (lean images: iq0 only serves
+// the offline tune_fft_window iq-probe — use a full image for that — and its
+// inputfilter delta_reg is the other recurring pll_adc_clk feedback endpoint).
+// IQ1 is restored by defining ENABLE_IQ1 (off by default).
 `ifdef ENABLE_IQ1
 localparam IQ_LAST = IQ1;
 `else
 localparam IQ_LAST = IQ0;
 `endif
-generate for (j = IQ0; j <= IQ_LAST; j = j+1) begin
+`ifdef DSP_LEAN
+localparam IQ_FIRST = IQ1;
+`else
+localparam IQ_FIRST = IQ0;
+`endif
+generate for (j = IQ_FIRST; j <= IQ_LAST; j = j+1) begin
     red_pitaya_iq_block
       iq
       (
@@ -521,6 +552,13 @@ assign output_direct[IQ1] = 14'h0;
 assign output_signal[IQ1] = 14'h0;
 assign module_ack[IQ1]    = 1'b0;
 assign module_rdata[IQ1]  = 32'h0;
+`endif
+`ifdef DSP_LEAN
+// IQ0 stripped — tie off outputs and bus.
+assign output_direct[IQ0] = 14'h0;
+assign output_signal[IQ0] = 14'h0;
+assign module_ack[IQ0]    = 1'b0;
+assign module_rdata[IQ0]  = 32'h0;
 `endif
 
 // IQ with two outputs iq2 — restored by defining ENABLE_IQ2 (off by default).

@@ -104,6 +104,32 @@ set dsp_fb_pipeline [expr {[info exists env(DSP_FB_PIPELINE)] ? $env(DSP_FB_PIPE
 # large NFFT. Symmetric on both channels (uniform +1 adc_clk latency on the scope/FFT
 # view; CH1/CH2 stay aligned). Separate from DSP_FB_PIPELINE (loopback arm). Default 0.
 set scope_fb_pipeline [expr {[info exists env(SCOPE_FB_PIPELINE)] ? $env(SCOPE_FB_PIPELINE) : 0}]
+
+# MODULE_FB_PIPELINE: register dat_i inside the pyrpl module input filters (PID and
+# IQ blocks) before their filter chain. Breaks the binding pll_adc_clk path
+# sum2_reg -> saturate -> dac -> i_dsp input mux -> inputfilter/lpf -> delta_reg
+# (8 ns / 125 MHz budget) on the near-full SSR=4/N11 die, where force-replication of
+# the high-fanout sum nets is counterproductive (competes for slices). The PID block
+# already carried this register unconditionally; this gates PID and IQ on one flag so
+# non-pipelined builds stay bit-identical. +1 adc_clk cycle of module input latency
+# (constant demod phase offset for IQ; matches the PID trade). Default 0.
+set module_fb_pipeline [expr {[info exists env(MODULE_FB_PIPELINE)] ? $env(MODULE_FB_PIPELINE) : 0}]
+# DSP_LEAN: strip the always-instantiated PID0 and IQ0 dsp modules (tie-offs, bus
+# reads fall to the axi_slave timeout ack). Frees ~2.7k LUT on the n11 die AND
+# removes the recurring pll_adc_clk module-sum feedback endpoints (iq inputfilter
+# delta_reg / pid_out_reg) that MODULE_FB_PIPELINE was chasing. The FMCW image
+# needs neither at runtime: pid0 is the abandoned EO-PLL leg, iq0 only serves the
+# offline tune_fft_window iq-probe (use an n9/full image for that). Default 0.
+set dsp_lean [expr {[info exists env(DSP_LEAN)] ? $env(DSP_LEAN) : 0}]
+# ASG_ADVTRIG=0 strips the four alpha advanced-trigger blocks in red_pitaya_asg
+# (~600 LUT). Their registers reset to the TRANSPARENT state (trig_o = trig_i),
+# so the plain-wire replacement is bit-identical unless software arms the alpha
+# feature (nothing in the FMCW product does). Default 1 (blocks present).
+set asg_advtrig [expr {[info exists env(ASG_ADVTRIG)] ? $env(ASG_ADVTRIG) : 1}]
+# PID_FILTERSTAGES trims the pid input-filter chain (default 4 stages, ~530
+# LUT; 2 halves it). pyrpl reads the stage count back from reg 0x220, so the
+# host adapts automatically.
+set pid_filterstages [expr {[info exists env(PID_FILTERSTAGES)] ? $env(PID_FILTERSTAGES) : 4}]
 # DMA_PER_CHAN_TAG: select the DMA point-cloud packet format in red_pitaya_scope.sv.
 #   0 (default) = v3 combined  — one shared header per scan index, NCH-interleaved
 #                 data, shared position. Lowest wire overhead (~2.4%).
@@ -292,6 +318,10 @@ if {$fft_clk_200} { lappend verilog_defines -verilog_define FFT_CLK_200 }
 if {$fft_clk_178} { lappend verilog_defines -verilog_define FFT_CLK_178 }
 if {$dsp_fb_pipeline} { lappend verilog_defines -verilog_define DSP_FB_PIPELINE }
 if {$scope_fb_pipeline} { lappend verilog_defines -verilog_define SCOPE_FB_PIPELINE }
+if {$module_fb_pipeline} { lappend verilog_defines -verilog_define MODULE_FB_PIPELINE }
+if {$dsp_lean} { lappend verilog_defines -verilog_define DSP_LEAN }
+if {!$asg_advtrig} { lappend verilog_defines -verilog_define DISABLE_ASG_ADVTRIG }
+if {$pid_filterstages != 4} { lappend verilog_defines -verilog_define PID_FILTERSTAGES=$pid_filterstages }
 if {$dma_per_chan_tag} { lappend verilog_defines -verilog_define DMA_PER_CHAN_TAG }
 if {$dma_intensity} { lappend verilog_defines -verilog_define DMA_INTENSITY }
 if {$peak_algo == "cfar"} { lappend verilog_defines -verilog_define PEAK_CFAR }
@@ -554,7 +584,8 @@ if {![catch {open $path_out/BUILD_INFO.txt a} bi]} {
             fft_use_approx $fft_use_approx  fft_runtime_nfft $fft_runtime_nfft \
             fft_clk_period $fft_clk_period  fft_clk_sel $fft_clk_sel \
             fft_clk_200 $fft_clk_200  fft_clk_178 $fft_clk_178 \
-            hist_block_size $hist_block_size \
+            hist_block_size $hist_block_size  dsp_lean $dsp_lean \
+            asg_advtrig $asg_advtrig  pid_filterstages $pid_filterstages \
             phys_opt_dir $phys_opt_dir  opt_dir $opt_dir] {
         puts $bi [format "%-17s= %s" $k $v]
     }

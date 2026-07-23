@@ -37,7 +37,7 @@ if {$peak_algo == "cfar"} {
     append cflags " -DPEAK_CFAR=1"
     if {[info exists env(CFAR_GUARD_MAX)]} { append cflags " -DCFAR_GUARD_MAX=$env(CFAR_GUARD_MAX)" }
     if {[info exists env(CFAR_TRAIN_MAX)]} { append cflags " -DCFAR_TRAIN_MAX=$env(CFAR_TRAIN_MAX)" }
-    # PEAK_RAMP=0 compiles the baseline ramp out (no ramp ports/magc buffer) —
+    # PEAK_RAMP=0 compiles the baseline ramp out (no ramp ports/correction) —
     # the capacity fallback for n11. Must match red_pitaya_vivado.tcl's
     # $peak_ramp (BD ports + fft_proc PEAK_RAMP define). Default on.
     if {[info exists env(PEAK_RAMP)] && !$env(PEAK_RAMP)} { append cflags " -DPEAK_RAMP=0" }

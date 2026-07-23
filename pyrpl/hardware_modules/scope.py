@@ -513,7 +513,10 @@ class Scope(HardwareModule, AcquisitionModule):
                                  "peak (excluded from the local noise estimate)")
 
     fft_cfar_train = IntRegister(0x54, doc="CA-CFAR: training/reference cells each "
-                                 "side used to estimate the local noise floor")
+                                 "side used to estimate the local noise floor. "
+                                 "Must not exceed the image's CFAR_TRAIN_MAX "
+                                 "(63 on n11 builds, 64 otherwise) — beyond it "
+                                 "the window loop and count fields overflow")
 
     fft_cfar_onesided = BoolRegister(0xA4, 0, doc="CA-CFAR: near-cutoff one-sided "
                                      "fallback — a candidate inside the edge-guard "
@@ -542,11 +545,11 @@ class Scope(HardwareModule, AcquisitionModule):
     FFT_RAMP_FRAC = 20              # fractional bits in both ramp registers
 
     fft_ramp_d0 = IntRegister(0xAC, doc="Baseline ramp: attenuation at the cutoff "
-                              "bin (fft_peak_start), Q6.20 log2(magnitude) units. "
+                              "bin (fft_peak_start), Q3.20 log2(magnitude) units. "
                               "0 = ramp disabled")
 
     fft_ramp_step = IntRegister(0xB0, doc="Baseline ramp: attenuation decrement per "
-                                "bin, Q6.20 log2(magnitude) units. d clamps at 0, "
+                                "bin, Q3.20 log2(magnitude) units. d clamps at 0, "
                                 "which holds the correction flat past the ramp end")
 
     fft_wait1_cnt = IntRegister(0x58, doc="FFT first stage wait time counter")

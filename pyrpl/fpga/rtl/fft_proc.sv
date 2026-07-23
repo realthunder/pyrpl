@@ -32,8 +32,8 @@ module fft_proc #(
   input logic  [ FSZ-1:0] fft_cfar_train_in,
   input logic             fft_cfar_onesided_in,
   input logic             fft_cfar_so_in,
-  input logic  [25:0] fft_ramp_d0_in,
-  input logic  [25:0] fft_ramp_step_in,
+  input logic  [22:0] fft_ramp_d0_in,   // Q(RAMP_INT=3).20 — width tracks ramp_t in peak_detector.h
+  input logic  [22:0] fft_ramp_step_in,
 
   input logic  [ FSZ-1:0] fft_acq_up_in,
   input logic  [ FSZ-1:0] fft_acq_down_in,
@@ -267,8 +267,8 @@ logic  [ FSZ-1:0] fft_cfar_guard_arg;
 logic  [ FSZ-1:0] fft_cfar_train_arg;
 logic             fft_cfar_onesided_arg;
 logic             fft_cfar_so_arg;
-logic  [25:0] fft_ramp_d0_arg;
-logic  [25:0] fft_ramp_step_arg;
+logic  [22:0] fft_ramp_d0_arg;
+logic  [22:0] fft_ramp_step_arg;
 
 logic  [ FSZ-1:0] fft_acq_up_i;
 logic  [ FSZ-1:0] fft_acq_down_i;

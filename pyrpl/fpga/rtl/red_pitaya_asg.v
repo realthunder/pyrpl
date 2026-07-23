@@ -177,60 +177,82 @@ reg          at_reset_a;
 reg          at_invert_a;
 reg          at_autorearm_a;
 wire         at_trig_a;
+// DISABLE_ASG_ADVTRIG strips the four advanced-trigger blocks (~600 LUT on the
+// full n11 die). The feature is pyrpl alpha functionality unused by the FMCW
+// product; its registers reset to at_reset=1, in which state the block is
+// combinationally TRANSPARENT (trig_o = trig_i) — so the plain-wire replacement
+// is bit-identical to the untouched default. The at_* registers stay (readback
+// intact); only the counters/FSMs go.
+`ifdef DISABLE_ASG_ADVTRIG
+assign at_trig_a = trig_a_i;
+`else
 red_pitaya_adv_trigger adv_trig_a (
     .dac_clk_i (dac_clk_i) ,
-    .reset_i   (at_reset_a),  
+    .reset_i   (at_reset_a),
     .trig_i    (trig_a_i)  ,
-    .trig_o    (at_trig_a) ,    
+    .trig_o    (at_trig_a) ,
     .invert_i  (at_invert_a),
     .rearm_i   (at_autorearm_a),
     .hysteresis_i (at_counts_a)//stay on for hysteresis_i cycles
     );
+`endif
 
 reg [64-1:0] at_counts_b;
 reg          at_reset_b;
 reg          at_invert_b;
 reg          at_autorearm_b;
 wire         at_trig_b;
+`ifdef DISABLE_ASG_ADVTRIG
+assign at_trig_b = trig_b_i;
+`else
 red_pitaya_adv_trigger adv_trig_b (
     .dac_clk_i (dac_clk_i) ,
-    .reset_i   (at_reset_b),  
+    .reset_i   (at_reset_b),
     .trig_i    (trig_b_i)  ,
-    .trig_o    (at_trig_b)   ,    
+    .trig_o    (at_trig_b)   ,
     .invert_i  (at_invert_b),
     .rearm_i   (at_autorearm_b),
     .hysteresis_i (at_counts_b)//stay on for hysteresis_i cycles
     );
+`endif
 
 reg [64-1:0] at_counts_c;
 reg          at_reset_c;
 reg          at_invert_c;
 reg          at_autorearm_c;
 wire         at_trig_c;
+`ifdef DISABLE_ASG_ADVTRIG
+assign at_trig_c = trig_c_i;
+`else
 red_pitaya_adv_trigger adv_trig_c (
     .dac_clk_i (dac_clk_i) ,
-    .reset_i   (at_reset_c),  
+    .reset_i   (at_reset_c),
     .trig_i    (trig_c_i)  ,
-    .trig_o    (at_trig_c)   ,    
+    .trig_o    (at_trig_c)   ,
     .invert_i  (at_invert_c),
     .rearm_i   (at_autorearm_c),
     .hysteresis_i (at_counts_c)//stay on for hysteresis_i cycles
     );
+`endif
 
 reg [64-1:0] at_counts_d;
 reg          at_reset_d;
 reg          at_invert_d;
 reg          at_autorearm_d;
 wire         at_trig_d;
+`ifdef DISABLE_ASG_ADVTRIG
+assign at_trig_d = trig_d_i;
+`else
 red_pitaya_adv_trigger adv_trig_d (
     .dac_clk_i (dac_clk_i) ,
-    .reset_i   (at_reset_d),  
+    .reset_i   (at_reset_d),
     .trig_i    (trig_d_i)  ,
-    .trig_o    (at_trig_d)   ,    
+    .trig_o    (at_trig_d)   ,
     .invert_i  (at_invert_d),
     .rearm_i   (at_autorearm_d),
     .hysteresis_i (at_counts_d)//stay on for hysteresis_i cycles
     );
+`endif
 
 
 red_pitaya_asg_ch  #(.RSZ (RSZ)) ch [4-1:0] (

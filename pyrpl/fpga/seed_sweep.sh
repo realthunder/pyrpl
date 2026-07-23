@@ -16,7 +16,7 @@ MIN_FREE_GB=${MIN_FREE_GB:-8}
 FFTENV="${SWEEP_FFT:-FFT_SSR=2 FFT_NFFT=13 FFT_CLK_200=1 FFT_CLK_SEL=1}"
 LABEL="${SWEEP_LABEL:-ssr2n13-200}"
 # must match red_pitaya_vivado.tcl det_place_dirs (1-indexed by DETERMINISTIC)
-DIRS=(Explore ExtraNetDelay_high AltSpreadLogic_high WLDrivenBlockPlacement ExtraPostPlacementOpt EarlyBlockPlacement)
+DIRS=(Explore ExtraNetDelay_high AltSpreadLogic_high WLDrivenBlockPlacement ExtraPostPlacementOpt EarlyBlockPlacement AltSpreadLogic_medium Default ExtraTimingOpt ExtraNetDelay_low AltSpreadLogic_low)
 
 RESULTS=sweep_results.txt
 : > "$RESULTS"
@@ -46,7 +46,10 @@ run_one() {  # $1=n
     BUILD_DIR="$wd" DETERMINISTIC="$n" env $FFTENV ./make.sh > "build_det${n}.log" 2>&1
 }
 
-for n in $(seq 1 ${#DIRS[@]}); do
+# SWEEP_SEEDS: space-separated DETERMINISTIC values to sweep (default: all 11).
+SEEDS=(${SWEEP_SEEDS:-$(seq 1 ${#DIRS[@]})})
+
+for n in "${SEEDS[@]}"; do
     wait_slot
     log "== launch DET=$n (${DIRS[$((n-1))]}) at $(date '+%T')  avail=$(avail_gb)GB running=$(running) =="
     run_one "$n" &
@@ -56,7 +59,7 @@ wait
 log "==== all builds done $(date '+%T') — collecting =="
 
 extract() { awk -v c="$1" '$1==c && $2 ~ /^-?[0-9]+\.[0-9]+$/{print $2; exit}' "$2" 2>/dev/null; }
-for n in $(seq 1 ${#DIRS[@]}); do
+for n in "${SEEDS[@]}"; do
     dir=${DIRS[$((n-1))]}; rpt="$ROOT/.sweep/det${n}/out/post_route_timing_summary.rpt"
     if [[ -f "$rpt" ]]; then
         adc=$(extract pll_adc_clk "$rpt"); ser=$(extract pll_ser_clk "$rpt")

@@ -180,6 +180,24 @@ end
 
 
 //input pre-filter (typically AC filter)
+//-----------------------------
+// Pipeline register on dat_i before the input filter (MODULE_FB_PIPELINE).
+// Mirrors the PID block: breaks the sum2_reg → saturate → dac → i_dsp input
+// mux → inputfilter/lpf → delta_reg pll_adc_clk path (8 ns / 125 MHz budget),
+// the binding path on the near-full SSR=4/N11 die where force-replication is
+// counterproductive.  +1 adc_clk cycle of IQ input latency (constant demod
+// phase offset ω/fs — magnitude unaffected).  Gated so the non-pipelined build
+// is bit-identical (the else branch is a plain wire); same gate as the PID block.
+`ifdef MODULE_FB_PIPELINE
+reg signed [14-1:0] dat_i_r;
+always @(posedge clk_i) begin
+   if (rstn_i == 1'b0) dat_i_r <= 14'b0;
+   else                dat_i_r <= dat_i;
+end
+`else
+wire signed [14-1:0] dat_i_r = dat_i;
+`endif
+
 wire signed [14-1:0] dat_i_filtered;
 red_pitaya_filter_block #(
      .STAGES(INPUTFILTERSTAGES),
@@ -192,7 +210,7 @@ red_pitaya_filter_block #(
   .clk_i(clk_i),
   .rstn_i(rstn_i),
   .set_filter(input_filter),
-  .dat_i(dat_i),
+  .dat_i(dat_i_r),
   .dat_o(dat_i_filtered)
   );
 

@@ -163,6 +163,24 @@ always @(posedge clk_i) begin
 end
 
 //-----------------------------
+// Pipeline register on dat_i before the datapath (MODULE_FB_PIPELINE).
+// Same gate as red_pitaya_pid_block.v / red_pitaya_iq_block.v. Registered at the
+// source and fed to BOTH raw-dat_i consumers (the input filter and the dat_i_offset
+// normalizer term) so their relative timing is preserved. +1 adc_clk cycle of input
+// latency; the else branch is a plain wire so ungated builds stay bit-identical.
+// (This variant is an alternate red_pitaya_pid_block implementation, not currently in
+// the synth file list; gated for parity so a file swap never silently drops it.)
+`ifdef MODULE_FB_PIPELINE
+reg signed [14-1:0] dat_i_r;
+always @(posedge clk_i) begin
+   if (rstn_i == 1'b0) dat_i_r <= 14'b0;
+   else                dat_i_r <= dat_i;
+end
+`else
+wire signed [14-1:0] dat_i_r = dat_i;
+`endif
+
+//-----------------------------
 // cascaded set of FILTERSTAGES low- or high-pass filters
 wire signed [14-1:0] dat_i_filtered;
 red_pitaya_filter_block #(
@@ -175,8 +193,8 @@ red_pitaya_filter_block #(
   (
   .clk_i(clk_i),
   .rstn_i(rstn_i),
-  .set_filter(set_filter), 
-  .dat_i(dat_i),
+  .set_filter(set_filter),
+  .dat_i(dat_i_r),
   .dat_o(dat_i_filtered)
   );
 
@@ -216,7 +234,7 @@ assign kp_mult = normalization_on ? ($signed(dat_i_offset) * $signed(set_kp)) : 
 reg signed [14-1:0] dat_i_offset;
 reg signed [15-1:0] normalized_product;
 always @(posedge clk_i) begin
-    dat_i_offset <= $signed(dat_i) - $signed(set_kd[DSR+14-1:DSR]);
+    dat_i_offset <= $signed(dat_i_r) - $signed(set_kd[DSR+14-1:DSR]);
     if ({(|kp_reg[15+GAINBITS-PSR-1:15]),kp_reg[15-1]} == 2'b01)
         normalized_product <= {1'b0, {15-1{1'b1}}};
     else if ({(|kp_reg[15+GAINBITS-PSR-1:15]),kp_reg[15-1]} == 2'b11)
@@ -307,17 +325,30 @@ localparam MAXBW = 17; //maximum possible bitwidth for pid_sum
 wire        [   MAXBW-1: 0] pid_sum;
 reg signed  [   14-1: 0] pid_out;
 
+// Pipeline register on pid_sum before the output saturation (MODULE_FB_PIPELINE).
+// Parity with red_pitaya_pid_block.v: splits the P+I+D add from the overflow/clamp.
+// +1 adc_clk cycle of PID output latency; else branch is a plain wire (bit-identical).
+`ifdef MODULE_FB_PIPELINE
+reg signed [MAXBW-1:0] pid_sum_r;
+always @(posedge clk_i) begin
+   if (rstn_i == 1'b0) pid_sum_r <= {MAXBW{1'b0}};
+   else                pid_sum_r <= pid_sum;
+end
+`else
+wire [MAXBW-1:0] pid_sum_r = pid_sum;
+`endif
+
 		always @(posedge clk_i) begin
 		   if (rstn_i == 1'b0) begin
 		      pid_out    <= 14'b0;
 		   end
 		   else begin
-		      if ({pid_sum[MAXBW-1],|pid_sum[MAXBW-2:13]} == 2'b01) //positive overflow
+		      if ({pid_sum_r[MAXBW-1],|pid_sum_r[MAXBW-2:13]} == 2'b01) //positive overflow
 		         pid_out <= 14'h1FFF;
-		      else if ({pid_sum[MAXBW-1],&pid_sum[MAXBW-2:13]} == 2'b10) //negative overflow
+		      else if ({pid_sum_r[MAXBW-1],&pid_sum_r[MAXBW-2:13]} == 2'b10) //negative overflow
 		         pid_out <= 14'h2000;
 		      else
-		         pid_out <= pid_sum[14-1:0];
+		         pid_out <= pid_sum_r[14-1:0];
 		   end
 		end
 assign pid_sum = (normalization_on) ? ($signed(error)): ($signed(kp_reg) + $signed(int_shr) + $signed(kd_reg_s));

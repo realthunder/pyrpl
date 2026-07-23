@@ -58,13 +58,13 @@ if {[info exists peak_algo] && $peak_algo == "cfar"} {
     connect_bd_net [get_bd_ports onesided] [get_bd_pins peak_detector_0/onesided]
     create_bd_port -dir I so_mode
     connect_bd_net [get_bd_ports so_mode] [get_bd_pins peak_detector_0/so_mode]
-    # Baseline ramp registers, Q(RAMP_INT=6).(RAMP_FRAC=20) — width must track
-    # ramp_t in peak_detector.h and the 26-bit registers in red_pitaya_scope.sv /
+    # Baseline ramp registers, Q(RAMP_INT=3).(RAMP_FRAC=20) — width must track
+    # ramp_t in peak_detector.h and the 23-bit registers in red_pitaya_scope.sv /
     # fft_proc.sv. Absent entirely when the ramp is compiled out (PEAK_RAMP=0).
     if {![info exists peak_ramp] || $peak_ramp} {
-        create_bd_port -dir I -from 25 -to 0 ramp_d0
+        create_bd_port -dir I -from 22 -to 0 ramp_d0
         connect_bd_net [get_bd_ports ramp_d0] [get_bd_pins peak_detector_0/ramp_d0]
-        create_bd_port -dir I -from 25 -to 0 ramp_step
+        create_bd_port -dir I -from 22 -to 0 ramp_step
         connect_bd_net [get_bd_ports ramp_step] [get_bd_pins peak_detector_0/ramp_step]
     }
 

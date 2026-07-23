@@ -58,18 +58,12 @@ static const int SSR_BITS = (FSSR == 2) ? 1 : (FSSR == 4) ? 2 :
                             (FSSR == 8) ? 3 : (FSSR == 16) ? 4 : 0;
 // mag bank/address for a natural bin b: bank = b % FSSR, addr = b / FSSR.
 #define MAG_AT(b) mag[(b) & (FSSR - 1)][(b) >> SSR_BITS]
-#if PEAK_RAMP
-// RAMP-CORRECTED magnitude copy. Everything that JUDGES reads this one (the
-// window statistics and the CUT), everything that REPORTS or measures shape
-// reads the raw `mag` (output value, sub-bin interpolation, guard-span
-// clearance). With the ramp disabled the two buffers hold identical data.
-#define MAGC_AT(b) magc[(b) & (FSSR - 1)][(b) >> SSR_BITS]
-// What the CFAR window statistics read: the corrected copy when the ramp is
-// built, the raw buffer when it is compiled out (PEAK_RAMP=0).
-#define JUDGE_AT(b) MAGC_AT(b)
-#else
-#define JUDGE_AT(b) MAG_AT(b)
-#endif
+// There is deliberately NO corrected-magnitude copy of the buffer: the ramp
+// attenuation d(b) is an affine function of the bin, so the detect stage
+// RECOMPUTES the correction for the ~2T window cells it actually reads
+// (see judge_at below) instead of the stream stage storing a corrected value
+// for every bin. That removes the second ping-pong buffer and its FSSR-lane
+// write datapath — the bulk of the ramp's capacity cost on the n11 die.
 
 // Argmax result handed from the STREAM stage to the CFAR stage. Only the
 // ramp-corrected magnitude travels (selection and the z-test use it); the raw
@@ -104,7 +98,9 @@ static ap_uint<RAMP_MANT_SH + 1> ramp_mant(ap_uint<RAMP_LUT_BITS> f)
 // Apply the ramp gain g = 2^-d to a raw magnitude. d >= 0 (Q.RAMP_FRAC), so
 // g <= 1 and the result never overflows data_t. Feed-forward: one DSP multiply
 // plus a barrel shift, no loop-carried dependency, so HLS is free to spread it
-// over pipeline stages without touching II.
+// over pipeline stages without touching II. Instantiated 3x per channel (one on
+// the stream path for the beat winner, two in the detect stage's window walk) —
+// down from FSSR per channel when every lane was corrected individually.
 static data_t ramp_apply(data_t s, ramp_t d)
 {
 #pragma HLS INLINE
@@ -127,6 +123,23 @@ static data_t ramp_apply(data_t s, ramp_t d)
     // RAMP_INT <= 4 the guard is constant-false and synthesizes away.
     if (di > DSZ) return (data_t)0;
     return (data_t)(base >> di);
+}
+
+// Recompute the ramp attenuation at bin b: the affine line
+//     d(b) = clamp(ramp_d0 - ramp_step*(b - start_b), 0)
+// (b < start_b never occurs — only in-band cells are judged). Used by the
+// detect stage to correct its ~2T window reads on demand; the multiply is a
+// DSP off the stream stage's II=1 path. This recompute is what lets the
+// per-bin corrected-magnitude buffer (magc) be deleted.
+static ramp_t ramp_at(count_t b, count_t start_b, ramp_t ramp_d0, ramp_t ramp_step)
+{
+#pragma HLS INLINE
+    ap_uint<FSZ> off = (b > start_b) ? (ap_uint<FSZ>)(b - start_b) : (ap_uint<FSZ>)0;
+    ap_uint<RAMP_INT + RAMP_FRAC + FSZ> dec;
+#pragma HLS BIND_OP variable=dec op=mul impl=dsp
+    dec = (ap_uint<RAMP_INT + RAMP_FRAC + FSZ>)ramp_step * off;
+    return (dec < (ap_uint<RAMP_INT + RAMP_FRAC + FSZ>)ramp_d0)
+           ? (ramp_t)(ramp_d0 - (ramp_t)dec) : (ramp_t)0;
 }
 #endif  // PEAK_RAMP
 
@@ -158,15 +171,15 @@ static void cfar_stream_stage(
     hls::stream<pk_info_t>   &pk_out,
     count_t start_b, count_t end_b, data_t data_min
 #if PEAK_RAMP
-    , data_t magc[FSSR][PK_DEPTH]
     , ramp_t ramp_d0, ramp_t ramp_step
 #endif
     )
 {
-    // Argmax state. The COMPARE runs on the ramp-corrected magnitude (that is
-    // the whole point of the ramp: stop the sloped pedestal from winning); the
-    // winner's RAW magnitude is NOT carried — the detect stage re-reads it
-    // from the mag buffer by bin, so the argmax tree stays one payload wide.
+    // Argmax state. The cross-beat COMPARE runs on the ramp-corrected
+    // magnitude (that is the whole point of the ramp: stop the sloped pedestal
+    // from winning); the winner's RAW magnitude is NOT carried — the detect
+    // stage re-reads it from the mag buffer by bin, so the argmax tree stays
+    // one payload wide.
     data_t  peak_cor   = 0;
     count_t peak_bin   = 0;
     bool    peak_valid = false;
@@ -179,19 +192,16 @@ static void cfar_stream_stage(
     count_t beat_idx = 0;
 
 #if PEAK_RAMP
-    // Per-lane ramp attenuation accumulators. d(bin) is affine in the loop
-    // counter, and after the BEAT UNROLL each lane's bin advances by exactly
-    // FSSR per beat -- so the whole ramp costs ONE subtract per lane per cycle
-    // (no multiplier, no loop-carried multiply). Lane ch starts ramp_step*ch
-    // further down the slope; every lane then steps by FSSR*ramp_step.
-    ramp_t d_lane[FSSR];
-#pragma HLS ARRAY_PARTITION variable=d_lane complete
+    // BEAT-LEVEL ramp attenuation: ONE accumulator per channel, applied once to
+    // the beat-local argmax winner, instead of one accumulator + multiplier +
+    // shifter per LANE. Within a beat the exact per-bin correction differs by
+    // at most (FSSR-1)*ramp_step (~0.01 log2 = 0.04 dB at realistic slopes), so
+    // selecting the within-beat winner on the RAW magnitude and correcting only
+    // the winner is a beat-quantized ramp — a staircase with steps far below the
+    // noise floor, no fresh argmax attractor. Cross-beat comparisons (where the
+    // pedestal slope actually accumulates) stay in the corrected domain.
+    ramp_t d_beat = ramp_d0;
     ramp_t d_beat_step = (ramp_t)(ramp_step * FSSR);
-    INIT_RAMP: for (int ch = 0; ch < FSSR; ch++) {
-#pragma HLS UNROLL
-        ramp_t off = (ramp_t)(ramp_step * ch);
-        d_lane[ch] = (ramp_d0 > off) ? (ramp_t)(ramp_d0 - off) : (ramp_t)0;
-    }
 #endif
 
     bool last = false;
@@ -201,7 +211,7 @@ static void cfar_stream_stage(
         axis_in_pkt pkt = s_axis.read();
         last = (bool)pkt.last;
 
-        data_t  beat_cor   = 0;
+        data_t  beat_raw   = 0;
         count_t beat_bin   = 0;
         bool    beat_valid = false;
 
@@ -214,34 +224,31 @@ static void cfar_stream_stage(
             // the CFAR stage). ch is constant after UNROLL -> each lane writes
             // its own bank, no runtime write-crossbar.
             mag[ch][beat_idx]  = s;
-#if PEAK_RAMP
-            data_t sc = ramp_apply(s, d_lane[ch]);
-            magc[ch][beat_idx] = sc;
-#else
-            data_t sc = s;
-#endif
 
             // The floor stays on the RAW magnitude: data_min is an absolute
-            // amplitude floor, not a relative one.
+            // amplitude floor, not a relative one. Within-beat selection is raw
+            // as well — the beat-quantized ramp corrects the winner below.
             bool cand = (bin >= start_b) && (bin <= end_b) && (s > data_min);
-            if (cand && sc > beat_cor) {
-                beat_cor   = sc;
+            if (cand && s > beat_raw) {
+                beat_raw   = s;
                 beat_bin   = bin;
                 beat_valid = true;
             }
+        }
 
 #if PEAK_RAMP
-            // Advance this lane down the slope, clamping at zero (the clamp IS
-            // the hold-last: past the ramp end the gain is exactly 1 forever).
-            // Held at the start value until the lane's bin reaches start_index,
-            // so ramp_d0 means "attenuation AT THE CUTOFF" and the host never
-            // has to extrapolate the line back to bin 0.
-            if (bin >= start_b) {
-                d_lane[ch] = (d_lane[ch] > d_beat_step)
-                           ? (ramp_t)(d_lane[ch] - d_beat_step) : (ramp_t)0;
-            }
+        // Correct only the beat winner (feed-forward, not on any loop carry),
+        // then advance the accumulator once per beat. The clamp at zero IS the
+        // hold-last (gain exactly 1 past the ramp end); holding at d0 until the
+        // beat reaches start_index keeps ramp_d0 = "attenuation AT THE CUTOFF",
+        // so the host never extrapolates the line back to bin 0.
+        data_t beat_cor = ramp_apply(beat_raw, d_beat);
+        if ((count_t)((ap_uint<FSZ+4>)beat_idx * FSSR) >= start_b)
+            d_beat = (d_beat > d_beat_step)
+                   ? (ramp_t)(d_beat - d_beat_step) : (ramp_t)0;
+#else
+        data_t beat_cor = beat_raw;
 #endif
-        }
 
         if (d_beat_valid && d_beat_cor > peak_cor) {
             peak_cor   = d_beat_cor;
@@ -272,8 +279,9 @@ static void cfar_stream_stage(
 // DATAFLOW ping-pong, so widths here do not affect Fmax.
 //
 // TWO DOMAINS, deliberately kept apart:
-//   * JUDGE on the ramp-corrected buffer (magc) -- the CUT and its reference
-//     cells alike. An ideal ramp flattens the pedestal down to the level of the
+//   * JUDGE in the ramp-corrected domain (raw reads corrected on the fly by
+//     JUDGE_AT) -- the CUT and its reference cells alike. An ideal ramp
+//     flattens the pedestal down to the level of the
 //     rest of the noise floor, so the reference cells become homogeneous, which
 //     is the regime CA-CFAR is optimal in. Without it a wide window (train=32
 //     spans ~+-2 MHz) draws its cells from a floor varying several dB across
@@ -293,10 +301,21 @@ static void cfar_detect_stage(
     count_t guard_cells, count_t train_cells,
     ap_uint<1> onesided, ap_uint<1> so_mode
 #if PEAK_RAMP
-    , data_t magc[FSSR][PK_DEPTH]
+    , ramp_t ramp_d0, ramp_t ramp_step
 #endif
     )
 {
+// What the CFAR window statistics read: the raw buffer corrected ON DEMAND via
+// the affine ramp recompute (see ramp_at) when the ramp is built, the raw
+// buffer directly when it is compiled out (PEAK_RAMP=0). Everything that
+// REPORTS or measures shape (output value, sub-bin interpolation, guard-span
+// clearance) keeps reading MAG_AT.
+#if PEAK_RAMP
+#define JUDGE_AT(b) ramp_apply(MAG_AT(b), \
+                               ramp_at((count_t)(b), start_index, ramp_d0, ramp_step))
+#else
+#define JUDGE_AT(b) MAG_AT(b)
+#endif
     pk_info_t pk = pk_in.read();
     data_t  peak_cor   = pk.cor;      // the value actually judged
     count_t peak_bin   = pk.bin;
@@ -305,7 +324,11 @@ static void cfar_detect_stage(
     // Sizing (sequential and latency-tolerant, so widths don't affect Fmax).
     // n <= 2*CFAR_TRAIN_MAX; size the count to its max so the downstream
     // multipliers (n is a multiplicand in n*Q) stay small.
-    const int NCNT_W = 8;                     // 2*CFAR_TRAIN_MAX <= 255 for TRAIN_MAX<=127
+    // Sized from the compile-time training maximum: n <= 2*CFAR_TRAIN_MAX must
+    // fit. Every wide multiply below carries n as an operand, so one bit here
+    // ripples through wsum/wsq/wprod/thr — build with CFAR_TRAIN_MAX <= 63
+    // (e.g. the n11 profile) to shave the whole z-test datapath by a bit.
+    const int NCNT_W = (2 * CFAR_TRAIN_MAX <= 127) ? 7 : 8;
     typedef ap_uint<NCNT_W>        ncnt_t;    // training-cell count
     typedef ap_uint<DSZ + NCNT_W>  wsum_t;    // Sum of training magnitudes  (<= 2T * 2^DSZ)
     typedef ap_uint<2*DSZ + NCNT_W> wsq_t;    // Sum of training squares     (<= 2T * 2^2DSZ)
@@ -352,48 +375,49 @@ static void cfar_detect_stage(
     wsum_t Sig_l = 0, Sig_r = 0;
     wsq_t  Q_l   = 0, Q_r   = 0;
 
-    // Walk both reference bands: offsets G+1 .. G+T on each side of the CUT.
+    // Walk both reference bands with ONE read/correct/square datapath,
+    // alternating sides per iteration (left on even t, right on odd) over the
+    // offsets G+1 .. G+T. Halving the per-iteration datapath (one buffer read,
+    // one ramp correction, one DSP square instead of two of each) is what pays
+    // for the ramp's on-demand recompute; the loop runs 2T iterations instead
+    // of T, still far inside the frame time the ping-pong hides (~2T+e cycles
+    // vs N/FSSR beats of streaming).
     //
     // PIPELINE II=1 with a ONE-ITERATION DEFERRED accumulate: the DSP square is
-    // computed this iteration but its result (dl_sq/dr_sq) is accumulated on the
-    // NEXT iteration, so the multiply is registered OUT of the loop-carried
-    // accumulate path (the loop carry is then a single add per side). Same
-    // deferral idiom as the STREAM stage's argmax merge -- it is what makes II=1
-    // safe here (a naive II=1 fuses x*x combinationally into the accumulate and
-    // blows the clock). Latency ~T rather than ~3T cycles, so the widened window
-    // still fits inside one FFT frame's stream time and the ping-pong hides it.
+    // computed this iteration but its result is accumulated on the NEXT one, so
+    // the multiply is registered OUT of the loop-carried accumulate path. The
+    // INACTIVE side's deferred regs carry 0, so BOTH sides still accumulate
+    // unconditionally every iteration -- the loop carries stay two independent
+    // single adds, with no guard mux in front of the wide adds (that select was
+    // the Fmax limiter). Same deferral idiom as the STREAM stage's argmax
+    // merge; a naive II=1 would fuse x*x combinationally into the accumulate
+    // and blow the clock. Only the (narrow) valid-cell counts are conditional.
     wsq_t  dl_sq = 0, dr_sq = 0;   // deferred registered squares (left/right)
     wsum_t dl_x  = 0, dr_x  = 0;   // deferred magnitudes for Sigma
     bool   dl_v  = false, dr_v = false;
 
-    WIN: for (int t = 0; t < T; t++) {
-#pragma HLS LOOP_TRIPCOUNT min=8 max=64 avg=32
+    WIN: for (int t = 0; t < 2*T; t++) {
+#pragma HLS LOOP_TRIPCOUNT min=16 max=128 avg=64
 #pragma HLS PIPELINE II=1
-        // accumulate the PREVIOUS iteration's registered products/values. Invalid
-        // cells carry 0 (xl/xr forced to 0 below), so we ALWAYS add -- no guard mux
-        // in front of the wide add (that select was the Fmax limiter). Left and
-        // right chains are independent -> two parallel single adds. Only the
-        // (narrow) valid-cell counts are conditionally incremented.
+        // accumulate the PREVIOUS iteration's registered product/value.
         Sig_l += dl_x; Q_l += dl_sq; if (dl_v) n_left  += 1;
         Sig_r += dr_x; Q_r += dr_sq; if (dr_v) n_right += 1;
 
-        int off = G + t + 1;              // distance from CUT to this reference cell
-        int bl = c - off;                 // left reference cell
-        bool   vl = (bl >= lo) && (bl <= hi) && (bl >= 0) && (bl < PK_NMAX);
-        data_t xl = vl ? JUDGE_AT(bl) : (data_t)0;
-        wsq_t  xl_sq;
-#pragma HLS BIND_OP variable=xl_sq op=mul impl=dsp
-        xl_sq = (wsq_t)((ap_uint<2*DSZ>)xl * xl);
+        bool right = t & 1;
+        int off = G + (t >> 1) + 1;       // distance from CUT to this reference cell
+        int b   = right ? c + off : c - off;
+        bool   v = (b >= lo) && (b <= hi) && (b >= 0) && (b < PK_NMAX);
+        data_t x = v ? JUDGE_AT(b) : (data_t)0;
+        wsq_t  x_sq;
+#pragma HLS BIND_OP variable=x_sq op=mul impl=dsp
+        x_sq = (wsq_t)((ap_uint<2*DSZ>)x * x);
 
-        int br = c + off;                 // right reference cell
-        bool   vr = (br >= lo) && (br <= hi) && (br >= 0) && (br < PK_NMAX);
-        data_t xr = vr ? JUDGE_AT(br) : (data_t)0;
-        wsq_t  xr_sq;
-#pragma HLS BIND_OP variable=xr_sq op=mul impl=dsp
-        xr_sq = (wsq_t)((ap_uint<2*DSZ>)xr * xr);
-
-        dl_sq = xl_sq; dl_x = (wsum_t)xl; dl_v = vl;
-        dr_sq = xr_sq; dr_x = (wsum_t)xr; dr_v = vr;
+        dl_sq = right ? (wsq_t)0 : x_sq;
+        dl_x  = right ? (wsum_t)0 : (wsum_t)x;
+        dl_v  = right ? false : v;
+        dr_sq = right ? x_sq : (wsq_t)0;
+        dr_x  = right ? (wsum_t)x : (wsum_t)0;
+        dr_v  = right ? v : false;
     }
     // flush the last processed iteration's deferred products (invalid carry 0)
     Sig_l += dl_x; Q_l += dl_sq; if (dl_v) n_left  += 1;
@@ -565,17 +589,6 @@ void peak_detector(
     data_t mag[FSSR][PK_DEPTH];
 #pragma HLS ARRAY_PARTITION variable=mag complete dim=1
 
-#if PEAK_RAMP
-    // RAMP-CORRECTED copy, written in lockstep by the STREAM stage. The two
-    // buffers are what let the detector JUDGE in the corrected domain while
-    // REPORTING in the raw one. (This copy is not extra cost versus the
-    // retry-capable version it replaces: that also carried a second buffer,
-    // there only to keep the re-sweep's port-saturating group reads away from
-    // the window walk's scattered ones.)
-    data_t magc[FSSR][PK_DEPTH];
-#pragma HLS ARRAY_PARTITION variable=magc complete dim=1
-#endif
-
     // Argmax handoff between the two stages (small ping-pong FIFO).
     hls::stream<pk_info_t> pk_ch;
 #pragma HLS STREAM variable=pk_ch depth=2
@@ -584,16 +597,18 @@ void peak_detector(
     // band bounds are compared directly (nfft unused — kept for interface parity).
     cfar_stream_stage(s_axis, mag, pk_ch, start_index, end_index, data_min
 #if PEAK_RAMP
-                      , magc, ramp_d0, ramp_step
+                      , ramp_d0, ramp_step
 #endif
                       );
     // data_min is applied in the STREAM stage's candidate gate (raw domain);
-    // the detect stage no longer needs it now the re-sweep is gone.
+    // the detect stage no longer needs it now the re-sweep is gone. The ramp
+    // registers go to BOTH stages: the stream stage corrects its argmax
+    // carry, the detect stage recomputes the window cells' correction.
     cfar_detect_stage(mag, pk_ch, m_axis, threshold_k_sq,
                       start_index, end_index,
                       guard_cells, train_cells, onesided, so_mode
 #if PEAK_RAMP
-                      , magc
+                      , ramp_d0, ramp_step
 #endif
                       );
 }

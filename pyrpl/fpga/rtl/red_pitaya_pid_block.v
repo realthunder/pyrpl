@@ -183,16 +183,21 @@ end
 
 
 //-----------------------------
-// Pipeline register on dat_i before the filter chain.
+// Pipeline register on dat_i before the filter chain (MODULE_FB_PIPELINE).
 // The mux tree selecting dat_i from DAC/ADC output signals is 7 LUT levels
 // deep; without this register the path sum2_reg → mux → 4×LPF bypass → CARRY4
 // exceeds 8 ns (125 MHz budget).  One extra cycle of PID input latency is
-// acceptable.
+// acceptable.  Gated so the non-pipelined build is bit-identical (the else
+// branch is a plain wire); the IQ block carries the same gate.
+`ifdef MODULE_FB_PIPELINE
 reg signed [14-1:0] dat_i_r;
 always @(posedge clk_i) begin
    if (rstn_i == 1'b0) dat_i_r <= 14'b0;
    else                dat_i_r <= dat_i;
 end
+`else
+wire signed [14-1:0] dat_i_r = dat_i;
+`endif
 
 //-----------------------------
 // cascaded set of FILTERSTAGES low- or high-pass filters
@@ -327,17 +332,33 @@ localparam MAXBW = 28; //17
 wire signed [   MAXBW-1: 0] pid_sum;
 reg signed  [   14-1: 0] pid_out;
 
+// Pipeline register on pid_sum before the output saturation (MODULE_FB_PIPELINE).
+// Splits the pll_adc_clk path kp_mult(DSP) -> 28-bit P+I+D add -> overflow reduce
+// -> pid_out_reg into two cycles: the wide add registers into pid_sum_r, then the
+// overflow-detect/clamp registers into pid_out. Same gate as the dat_i input
+// register above; +1 more adc_clk cycle of PID OUTPUT latency (total +2 gated).
+// The else branch is a plain wire so ungated builds stay bit-identical.
+`ifdef MODULE_FB_PIPELINE
+reg signed [MAXBW-1:0] pid_sum_r;
+always @(posedge clk_i) begin
+   if (rstn_i == 1'b0) pid_sum_r <= {MAXBW{1'b0}};
+   else                pid_sum_r <= pid_sum;
+end
+`else
+wire signed [MAXBW-1:0] pid_sum_r = pid_sum;
+`endif
+
 always @(posedge clk_i) begin
    if (rstn_i == 1'b0) begin
       pid_out    <= 14'b0;
    end
    else begin
-      if ({pid_sum[MAXBW-1],|pid_sum[MAXBW-2:13]} == 2'b01) //positive overflow
+      if ({pid_sum_r[MAXBW-1],|pid_sum_r[MAXBW-2:13]} == 2'b01) //positive overflow
          pid_out <= 14'h1FFF;
-      else if ({pid_sum[MAXBW-1],&pid_sum[MAXBW-2:13]} == 2'b10) //negative overflow
+      else if ({pid_sum_r[MAXBW-1],&pid_sum_r[MAXBW-2:13]} == 2'b10) //negative overflow
          pid_out <= 14'h2000;
       else
-         pid_out <= pid_sum[14-1:0];
+         pid_out <= pid_sum_r[14-1:0];
    end
 end
 

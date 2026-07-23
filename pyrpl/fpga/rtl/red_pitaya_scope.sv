@@ -620,8 +620,8 @@ logic [ FSZ-1:0]    fft_cfar_guard, fft_a_cfar_guard, fft_b_cfar_guard;
 logic [ FSZ-1:0]    fft_cfar_train, fft_a_cfar_train, fft_b_cfar_train;
 logic               fft_cfar_onesided, fft_a_cfar_onesided, fft_b_cfar_onesided;
 logic               fft_cfar_so, fft_a_cfar_so, fft_b_cfar_so;
-logic [25:0]    fft_ramp_d0, fft_a_ramp_d0, fft_b_ramp_d0;
-logic [25:0]    fft_ramp_step, fft_a_ramp_step, fft_b_ramp_step;
+logic [22:0]    fft_ramp_d0, fft_a_ramp_d0, fft_b_ramp_d0;   // Q(RAMP_INT=3).20 — width tracks ramp_t in peak_detector.h
+logic [22:0]    fft_ramp_step, fft_a_ramp_step, fft_b_ramp_step;
 
 logic [ 6-1 :  0]   fft_status[0:1];
 logic [ 2-1 :  0]   fft_done;
@@ -1445,7 +1445,7 @@ if (adc_rstn_i == 1'b0) begin
     fft_cfar_train <= 32;   // CA-CFAR: training/reference cells each side (on the noise floor)
     fft_cfar_onesided <= 1; // CA-CFAR: near-cutoff one-sided fallback (clearance-gated); 1 matches the sw default
     fft_cfar_so <= 0;       // CA-CFAR -> SO-CFAR (quieter band only); raise fft_threshold_k with it
-    fft_ramp_d0 <= 0;       // baseline ramp: attenuation at the cutoff, Q6.20 log2 units (0 = ramp off)
+    fft_ramp_d0 <= 0;       // baseline ramp: attenuation at the cutoff, Q3.20 log2 units (0 = ramp off)
     fft_ramp_step <= 0;     // baseline ramp: per-bin decrement, same units (d clamps at 0 = hold-last)
     fft_wait1_cnt <= 100;
     fft_wait2_cnt <= 200;
@@ -1478,8 +1478,8 @@ end else if (sys_wen) begin
     if (sys_addr[19:0]==20'h54) fft_cfar_train <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'hA4) fft_cfar_onesided <= sys_wdata[0];
     if (sys_addr[19:0]==20'hA8) fft_cfar_so <= sys_wdata[0];
-    if (sys_addr[19:0]==20'hAC) fft_ramp_d0 <= sys_wdata[25:0];
-    if (sys_addr[19:0]==20'hB0) fft_ramp_step <= sys_wdata[25:0];
+    if (sys_addr[19:0]==20'hAC) fft_ramp_d0 <= sys_wdata[22:0];
+    if (sys_addr[19:0]==20'hB0) fft_ramp_step <= sys_wdata[22:0];
     if (sys_addr[19:0]==20'h58) fft_wait1_cnt <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h5C) fft_wait2_cnt <= sys_wdata[FSZ-1:0];
     // Force acq counts to whole SSR beats: fin packs FSSR samples/beat and the FFT
@@ -2226,8 +2226,8 @@ end else begin
      20'h00058 : begin sys_ack <= sys_en;          sys_rdata <= fft_wait1_cnt                       ; end
      20'h000A4 : begin sys_ack <= sys_en;          sys_rdata <= {31'h0, fft_cfar_onesided}          ; end
      20'h000A8 : begin sys_ack <= sys_en;          sys_rdata <= {31'h0, fft_cfar_so}                 ; end
-     20'h000AC : begin sys_ack <= sys_en;          sys_rdata <= {{32-26{1'b0}}, fft_ramp_d0}         ; end
-     20'h000B0 : begin sys_ack <= sys_en;          sys_rdata <= {{32-26{1'b0}}, fft_ramp_step}       ; end
+     20'h000AC : begin sys_ack <= sys_en;          sys_rdata <= {{32-23{1'b0}}, fft_ramp_d0}         ; end
+     20'h000B0 : begin sys_ack <= sys_en;          sys_rdata <= {{32-23{1'b0}}, fft_ramp_step}       ; end
      20'h0005C : begin sys_ack <= sys_en;          sys_rdata <= fft_wait2_cnt                       ; end
      20'h00060 : begin sys_ack <= sys_en;          sys_rdata <= fft_acq1_cnt                        ; end
      20'h00064 : begin sys_ack <= sys_en;          sys_rdata <= fft_acq2_cnt                        ; end

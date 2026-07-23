@@ -301,6 +301,16 @@ set asg_cfg [get_cells {
 set_multicycle_path 2 -setup -from $asg_cfg
 set_multicycle_path 1 -hold  -from $asg_cfg
 
+# set_*_steping is excluded from the strobe carve-out above ONLY for its cross-
+# module fan-in to the scope (step_o gating -> i_scope hist/zigzag index): it is
+# a mode bit written once at scan configuration, static while scanning, and an
+# 8 ns-late enable of the position stepping is sub-point. It became the binding
+# pll_adc_clk path (-0.037, i_scope fft_hist_index DSP CE) on the 100%-full
+# ramp-enabled n11 die. Kept tight INSIDE the asg (waveform-start gating).
+set asg_steping [get_cells {i_asg/set_*_steping_reg}]
+set_multicycle_path 2 -setup -from $asg_steping -to [get_cells i_scope/*]
+set_multicycle_path 1 -hold  -from $asg_steping -to [get_cells i_scope/*]
+
 # PID (i_dsp/<genblk>*.i_pid). set_sp, set_kp, set_ki, set_kd, set_filter,
 # out_min, out_max  (-> pid_out).
 set pid_cfg [get_cells {

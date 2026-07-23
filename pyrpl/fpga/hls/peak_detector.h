@@ -114,14 +114,17 @@ typedef ap_int<SSZ + SQ_BITS + 1>           sdiff_t;    // ap_int<32>
 #define PEAK_RAMP 1
 #endif
 #ifndef RAMP_INT
-#define RAMP_INT 6                  // 64 log2 units == ~385 dB of headroom. NOTE:
-                                    // the integer part is a barrel-shift amount on
-                                    // the II=1 stream path (RAMP_INT stages per
-                                    // lane); RAMP_INT=3 (~48 dB, still ~2x the
-                                    // measured pedestal) is the next capacity lever
-                                    // if a profile stops fitting — track the
-                                    // register width in red_pitaya_scope.sv /
-                                    // fft_proc.sv / peak_detector_bd.tcl / scope.py.
+#define RAMP_INT 3                  // 8 log2 units == ~48 dB of attenuation cap,
+                                    // still ~2x the measured ~24 dB pedestal. The
+                                    // integer part is a barrel-shift amount in
+                                    // ramp_apply (2 instances per channel: stream
+                                    // winner + detect window walk), so this width
+                                    // is a direct capacity lever (was 6 before the
+                                    // n11 fit crunch). MUST track the register
+                                    // width (RAMP_INT + RAMP_FRAC = 23) in
+                                    // red_pitaya_scope.sv / fft_proc.sv /
+                                    // peak_detector_bd.tcl; the host (scope.py)
+                                    // only fixes FFT_RAMP_FRAC and is unaffected.
 #endif
 #ifndef RAMP_FRAC
 #define RAMP_FRAC 20                // accumulator resolution (per-bin step)
@@ -130,7 +133,7 @@ typedef ap_int<SSZ + SQ_BITS + 1>           sdiff_t;    // ap_int<32>
 #define RAMP_LUT_BITS 4             // 2^-frac mantissa ROM: 16 entries
 #endif
 #define RAMP_MANT_SH 15             // mantissa scale: 2^-f * 2^15 fits ap_uint<16>
-typedef ap_uint<RAMP_INT + RAMP_FRAC> ramp_t;   // Q6.20 attenuation accumulator
+typedef ap_uint<RAMP_INT + RAMP_FRAC> ramp_t;   // Q3.20 attenuation accumulator
 
 #define IN_WIDTH  (FSSR * DSZ)
 #define OUT_WIDTH 64
