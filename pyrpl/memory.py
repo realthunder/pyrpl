@@ -573,7 +573,7 @@ class MemoryTree(MemoryBranch):
         """
         # stop save timer
         if hasattr(self, '_savetimer') and self._savetimer.isActive():
-            self._savetimer.stop()
+            self._invoke_savetimer('stop')
         self._lastsave = time()
         self._write_to_file_counter += 1
         logger.debug("Saving config file %s", self._filename)
@@ -628,7 +628,22 @@ class MemoryTree(MemoryBranch):
         else:
             # make sure saving will eventually occur by launching a timer
             if not self._savetimer.isActive():
-                self._savetimer.start()
+                self._invoke_savetimer('start')
+
+    def _invoke_savetimer(self, method):
+        """start/stop _savetimer from ANY thread. The timer lives on the
+        thread that built the MemoryTree (normally the GUI thread); calling
+        start()/stop() directly from another thread is a Qt error ("Timers
+        cannot be started from another thread") and the deferred save is
+        silently lost. Background writers do exist (e.g. register writes
+        issued from a device-polling worker), so route the call through a
+        queued invokeMethod when we are not on the timer's own thread."""
+        timer = self._savetimer
+        if timer.thread() == QtCore.QThread.currentThread():
+            getattr(timer, method)()
+        else:
+            QtCore.QMetaObject.invokeMethod(timer, method,
+                                            QtCore.Qt.QueuedConnection)
 
     @property
     def _filename_stripped(self):
