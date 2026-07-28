@@ -39,6 +39,17 @@ from collections import OrderedDict
 from qtpy import QtCore
 
 
+class FpgaFlashError(RuntimeError):
+    """The FPGA bitstream could not be loaded onto the board.
+
+    Raised from update_fpga() during RedPitaya construction, so the GUI's
+    connect-with-retry dialog shows the reason instead of the session
+    continuing against whatever design happens to be in the PL (which only
+    surfaces later as garbage register reads).
+    """
+    pass
+
+
 class RedPitayaSignalLauncher(QtCore.QObject):
     """Carries board-level Qt signals. RedPitaya itself is a plain object (not a
     QObject), so cross-thread board events are routed through this QObject, which
@@ -483,16 +494,22 @@ class RedPitaya(object):
     # a PRE-BUILT /boot/u-boot.scr bundled with pyrpl (pyrpl/uboot/), one per
     # supported board revision. Nothing is built or patched at runtime — the
     # host (which may be Windows, no u-boot-tools) just uploads the matching
-    # script; an unknown hw_rev (e.g. a future Gen 2 board) only warns.
+    # script; an unknown hw_rev only warns.
     _DMA_BUF_BASE  = 0x1E000000   # DMA ring base = 480 MiB
     _DMA_MEM_TOKEN = 'mem=480M'   # kernel RAM cap that frees 0x1E000000+
     _RAM_512M_TOP  = 0x1FFFFFFF   # unreserved 512 MiB board (the only layout
                                   # the fixed 480M cap is valid for)
     # board hw_rev (factory EEPROM, the value u-boot branches on) -> bundled
-    # pre-built boot script (relative to pyrpl/uboot/). Gen 1 boards only so
-    # far; add Gen 2 entries here once a script is built and verified for them.
+    # pre-built boot script (relative to pyrpl/uboot/). Add an entry only once
+    # the script has been built AND boot-verified on that revision.
+    # Gen 2 note: those branches also set 'high' (-> fdt_high/initrd_high),
+    # the ceiling u-boot relocates the devicetree below. Stock is 0x20000000,
+    # i.e. above the capped RAM top, which would leave the 480 MiB kernel
+    # unable to reach its own DTB — the bundled Gen 2 script lowers it to
+    # 0x1E000000 alongside the mem= change. Gen 1 branches set no 'high'.
     _UBOOT_PREBUILT = {
-        'STEM_125-14_Z7020_LN_v1.1': 'u-boot.scr.STEM_125-14_Z7020_LN_v1.1',
+        'STEM_125-14_Z7020_LN_v1.1':  'u-boot.scr.STEM_125-14_Z7020_LN_v1.1',
+        'STEM_125-14_Z7020_Pro_v2.0': 'u-boot.scr.STEM_125-14_Z7020_Pro_v2.0',
     }
 
     def _system_ram_top(self):
@@ -558,8 +575,8 @@ class RedPitaya(object):
         this board's hw_rev and reboot ONCE to apply. No boot-script tooling
         is required on the host (may be Windows) or the board — the matching
         script is simply uploaded, verified by md5, and installed with a
-        backup. Any check failing (unknown hw_rev — e.g. a Gen 2 board, no
-        bundled script, non-512 MiB layout) leaves the board untouched and
+        backup. Any check failing (unknown hw_rev, no bundled script,
+        non-512 MiB layout) leaves the board untouched and
         warns with a pointer to the manual procedure.
 
         Returns True when the reservation is in place when we're done."""
@@ -586,8 +603,7 @@ class RedPitaya(object):
         if prebuilt is None:
             self.logger.warning(
                 "DMA ring window is NOT reserved and no pre-built boot script "
-                "is bundled for this board revision (hw_rev %r — a Gen 2 or "
-                "otherwise unsupported board?); only Gen 1 revisions %s are "
+                "is bundled for this board revision (hw_rev %r); only %s are "
                 "covered so far. Leaving the board untouched; %s",
                 hw_rev or '<unreadable>',
                 sorted(self._UBOOT_PREBUILT), manual)
@@ -651,6 +667,24 @@ class RedPitaya(object):
                 "(RAM top 0x%08X) — not retrying automatically; %s",
                 self._system_ram_top() or 0, manual)
         return bool(reserved)
+
+    _FPGAUTIL = '/opt/redpitaya/bin/fpgautil'
+
+    def _board_has_fpgautil(self):
+        """True when the board provides `fpgautil` (Red Pitaya OS 2.x and
+        newer), i.e. the bitstream must be loaded through update_fpga.sh
+        rather than by writing it to the legacy /dev/xdevcfg.
+
+        Probed by capability, NOT by parsing /root/.version: that used to be
+        `version.find('2.') != -1`, which silently went FALSE on OS 3.00 and
+        sent the flash down the legacy xdevcfg path, so the bitstream never
+        actually loaded (and the flash marker was still recorded, hiding it).
+        """
+        try:
+            return self.ssh.run('test -x ' + self._FPGAUTIL)[0] == 0
+        except Exception:
+            self.logger.debug('fpgautil probe failed', exc_info=True)
+            return False
 
     def update_fpga(self, filename=None):
         serverdirname = self.parameters['serverdirname']
@@ -723,18 +757,42 @@ class RedPitaya(object):
             self.ssh.ask('killall nginx')
             self.ssh.ask('systemctl stop redpitaya_nginx') # for 0.94 and higher
             sleep(3) # sleep after stopping service
-            result = self.ssh.ask('cat /root/.version')
-            self.logger.debug('cat /root/.version: {}'.format(result))
-            if result.find('2.') != -1:
-                self.ssh.run(update_cmd)
-            else:
+            version = self.ssh.ask('cat /root/.version')
+            self.logger.debug('cat /root/.version: {}'.format(version))
+            # Flash, capturing any failure rather than raising straight away:
+            # nginx is stopped and / may be remounted rw at this point, so the
+            # cleanup below must run before we propagate the error.
+            flash_error = None
+            if self._board_has_fpgautil():
+                ret, out = self.ssh.run(update_cmd)
+                if ret != 0 or 'loaded through FPGA manager successfully' not in out:
+                    flash_error = (
+                        "Flashing the FPGA bitstream FAILED.\n\n"
+                        "Command : %s\nExit code: %s\n"
+                        "Board OS: %s\n\nOutput:\n%s"
+                        % (update_cmd, ret, version.strip(), out.strip()[-800:]))
+            elif self.ssh.run('test -w /dev/xdevcfg')[0] == 0:
                 self.ssh.ask('cat ' + serverbinfilename + ' > //dev//xdevcfg')
+            else:
+                flash_error = (
+                    "Cannot flash the FPGA bitstream: this board has neither "
+                    "%s nor a writable /dev/xdevcfg, so there is no supported "
+                    "way to load the PL.\n\nBoard OS: %s"
+                    % (self._FPGAUTIL, version.strip()))
             sleep(self.parameters['delay'])
-            self._record_fpga_flashed(serverbinfilename, md5)
+            # Only claim the PL holds this bitstream when it actually does —
+            # a marker written after a failed flash hides the failure from
+            # every later connection.
+            if flash_error is None:
+                self._record_fpga_flashed(serverbinfilename, md5)
             self.logger.debug('About to restart the redpitaya service')
             self.ssh.ask("nginx -p //opt//www//")
             self.ssh.ask('systemctl start redpitaya_nginx')  # for 0.94 and higher #needs test
             sleep(self.parameters['delay'])
+            if flash_error is not None:
+                self._restore_root_mount()
+                self.logger.error(flash_error)
+                raise FpgaFlashError(flash_error)
 
         # NB: the bitstream + flash script are intentionally KEPT on the board
         # (no rm) so the next connection can md5-skip the upload and reflash
@@ -777,10 +835,10 @@ class RedPitaya(object):
                                 "the config file.", exc_info=True)
         return filename
 
-    def fpgarecentlyflashed(self):
+    def fpgarecentlyflashed(self):   # NB: currently unused
         self.ssh.ask()
         result = self.ssh.ask('cat /root/.version')
-        if result.find('2.') != -1:
+        if self._board_has_fpgautil():
             result = self.ssh.ask("echo $(($(date +%s) - $(date +%s -r \""
                                   + "//opt//redpitaya//fpga//z10_125//pyrpl//fpga.bit.bin" +"\")))")
             result = result.replace('\r', os.linesep)

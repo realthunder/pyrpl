@@ -5,8 +5,18 @@ boot partition (`/dev/mmcblk0p1`, mounted at `/boot` on the running board).
 It detects the board via the EEPROM `hw_rev` and assembles the kernel command
 line (`bootargs`), loads the FPGA bitstream, kernel, and devicetree, then boots.
 
-This copy is for **our board only**: `hw_rev = STEM_125-14_Z7020_LN_v1.1`
-(Zynq-7020, 512 MB), Red Pitaya ecosystem 2.00, U-Boot redpitaya-v2022.1.
+The `u-boot.scr` here is the Gen 1 board's script: `hw_rev =
+STEM_125-14_Z7020_LN_v1.1` (Zynq-7020, 512 MB), Red Pitaya ecosystem 2.00,
+U-Boot redpitaya-v2022.1.
+
+The scripts pyrpl actually *installs* at runtime live in `pyrpl/uboot/`, one
+per supported revision, named `u-boot.scr.<hw_rev>` and selected by
+`RedPitaya._UBOOT_PREBUILT`:
+
+| `hw_rev`                     | Board                        | Ecosystem | U-Boot            |
+| ---------------------------- | ---------------------------- | --------- | ----------------- |
+| `STEM_125-14_Z7020_LN_v1.1`  | Gen 1 LN, Zynq-7020, 512 MB  | 2.00 (37) | redpitaya-v2022.1 |
+| `STEM_125-14_Z7020_Pro_v2.0` | Gen 2 Pro, Zynq-7020, 512 MB | 2.07 (43) | redpitaya-v2022.3 |
 
 ## Why we carry our own copy
 
@@ -30,6 +40,48 @@ fi
 `480 MiB = 0x1E000000` exactly, so Linux uses `0x00000000–0x1dffffff` and the
 top 32 MB (`0x1e000000–0x1fffffff`) is a hole we own — reachable via `/dev/mem`
 and mapped uncached, which is what the poll loop needs.
+
+Note that `read()`/`write()` on `/dev/mem` cannot reach that hole on ARM (the
+kernel clamps them to `high_memory`, so `dd` returns 0 bytes); only `mmap()`
+can, which is what `monitor_server` uses. Test the window with a small
+`mmap` program, not with `dd`.
+
+## Gen 2 differences (`STEM_125-14_Z7020_Pro_v2.0`)
+
+Two things differ from the Gen 1 recipe, and the second one bricks the boot if
+missed:
+
+1. The Gen 2 branch **already carries `mem=512M`** (a no-op cap — the board has
+   exactly 512 MB). So the edit is a *replacement*, `mem=512M` → `mem=480M`,
+   not the append that Gen 1 needed.
+2. The Gen 2 branch also sets `high`, which the script later assigns to
+   `fdt_high`/`initrd_high` — the ceiling U-Boot relocates the devicetree
+   below. Stock is `0x20000000`, i.e. *above* the new RAM cap, so a 480 MiB
+   kernel could not reach its own DTB and the board would not boot. It must
+   drop to `0x1E000000` in the same block. Gen 1 branches set no `high` at
+   all, which is why the Gen 1 recipe never mentioned it.
+
+```
+if test ${hw_rev} == 'STEM_125-14_Z7020_Pro_v2.0'
+then
+  setenv bootargs ${bootargs} mem=480M      # was mem=512M
+  setenv high     0x1E000000                # was 0x20000000 (fdt_high!)
+  setenv dts_path z20_125_v2
+  setenv zynq z7020
+fi
+```
+
+Unrelated to us, Gen 2 also reserves memory in the *devicetree* rather than in
+bootargs: `linux,cma` (16 MB) plus `buffer@1000000` / `labuf@1000000`, two
+aliases (`dma_region`, `rprx_reserverd`) of the same 32 MB window at
+`0x01000000–0x02FFFFFF` used by Deep Memory Acquisition and the logic
+analyzer. That window is disjoint from ours and is left alone. Because
+devicetree `reserved-memory` stays inside `System RAM`, it does not affect the
+`/proc/iomem`-top check pyrpl uses to detect our reservation.
+
+Gen 2 rollback has an extra net: `/boot/uboot/u-boot_512Mb_ram.scr` is a
+pristine factory copy of the stock script (and `u-boot_1Gb_ram.scr` for the
+1 GB variants), alongside the `.bak-<timestamp>` the installer writes.
 
 A device-tree `reserved-memory` overlay was tried first and removed: a runtime
 configfs overlay cannot reserve memory (the kernel scans `reserved-memory` far
