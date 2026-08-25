@@ -770,7 +770,11 @@ class HardwareModule(Module):
         return self._client.reads(self._addr_base + addr, length)
 
     def _writes(self, addr, values):
-        self._client.writes(self._addr_base + addr, values)
+        # returns True when the server confirmed the write, None when it did
+        # not (desync, or a fail-fast while the link is down/reconnecting) —
+        # callers that cache what the FPGA holds must not trust an unconfirmed
+        # write.
+        return self._client.writes(self._addr_base + addr, values)
 
     def _read(self, addr):
         # reads() returns None on a transient fault (an out-of-sync frame, or the

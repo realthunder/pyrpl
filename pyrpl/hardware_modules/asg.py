@@ -266,10 +266,16 @@ def make_asg(channel=0):
         output_directs = None
         addr_base = 0x40400000
 
+        # last waveform table the server confirmed writing (None = FPGA
+        # contents unknown -> the next `data` write pushes unconditionally).
+        # Class-level default so the getter/setter are safe before __init__.
+        _pushed_data = None
+
         def __init__(self, parent, name=None):
             super(Asg, self).__init__(parent, name=name)
             self._counter_wrap = self._default_counter_wrap
             self._writtendata = np.zeros(self.data_length)
+            self._pushed_data = None
 
         _loading_attributes = False
         def _load_setup_attributes(self):
@@ -454,9 +460,30 @@ def make_asg(channel=0):
             # values that are still negativeare set to maximally negative
             data[data < 0] = -2 ** 13
             data = np.array(data, dtype=np.uint32)
-            self._writes(self._DATA_OFFSET, data)
+            # Skip the push when the table already on the FPGA is identical.
+            # This is the single largest I/O the register link ever does (64 KB
+            # in one frame) and _setup() re-pushes it on EVERY parameter change,
+            # so an unchanged waveform used to re-send 64 KB for nothing — the
+            # one operation big enough to stall past the 1 s socket timeout.
+            # _pushed_data is the last table the server CONFIRMED writing; it is
+            # None whenever the FPGA contents are unknown (startup, failed
+            # write, reconnect), which forces a real push.
+            if (self._pushed_data is not None
+                    and np.array_equal(self._pushed_data, data)):
+                self._writtendata = data
+                return
+            self._pushed_data = None       # contents unknown while in flight
+            ok = self._writes(self._DATA_OFFSET, data)
             # memorize the data on host PC since we have disabled readback from fpga
             self._writtendata = data
+            if ok:
+                self._pushed_data = data
+
+        def invalidate_data_cache(self):
+            """Forget what the FPGA's waveform table holds, so the next `data`
+            write pushes unconditionally. Call whenever the fabric may have
+            been reloaded underneath us (board reboot, bitstream reflash)."""
+            self._pushed_data = None
 
         def _setup(self):
             """

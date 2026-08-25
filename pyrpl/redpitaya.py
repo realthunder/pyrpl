@@ -1127,10 +1127,28 @@ class RedPitaya(object):
         Re-emit as a Qt signal so a GUI can clear any "reconnecting" indicator.
         Safe to call from the reconnect worker thread (queued to GUI slots)."""
         self.logger.info("Register link auto-reconnected.")
+        # The fabric may have been reloaded while the link was down (board
+        # reboot), so anything cached about FPGA contents is now a guess.
+        self._invalidate_hw_caches()
         try:
             self.signal_launcher.reconnected.emit()
         except BaseException:
             self.logger.exception("Failed to emit reconnected signal")
+
+    def _invalidate_hw_caches(self):
+        """Drop every host-side cache of what the FPGA currently holds, so the
+        next write pushes for real. Today that is the ASGs' waveform tables
+        (whose 64 KB push is skipped when unchanged)."""
+        modules = getattr(self, 'modules', None) or {}
+        for name, module in list(modules.items()):
+            invalidate = getattr(module, 'invalidate_data_cache', None)
+            if invalidate is None:
+                continue
+            try:
+                invalidate()
+            except BaseException:
+                self.logger.debug("could not invalidate %s data cache",
+                                  name, exc_info=True)
 
     def _on_connection_lost(self, reason):
         """Called by MonitorClient when the register link drops and the bounded
@@ -1171,6 +1189,8 @@ class RedPitaya(object):
                     % self.parameters['hostname'])
         self.logger.info("Reconnected to Red Pitaya at %s.",
                          self.parameters['hostname'])
+        # the board may have rebooted while we were away — see _on_reconnected
+        self._invalidate_hw_caches()
         self.signal_launcher.reconnected.emit()
         return True
 

@@ -218,7 +218,10 @@ class MonitorClient(object):
         header = b'r' + bytes(bytearray([0,
                                          length & 0xFF, (length >> 8) & 0xFF,
                                          addr & 0xFF, (addr >> 8) & 0xFF, (addr >> 16) & 0xFF, (addr >> 24) & 0xFF]))
-        self.socket.send(header)
+        # sendall, not send: send() may transmit only part of the buffer and
+        # report the count, which we would otherwise discard — leaving the
+        # server with a truncated frame and the link out of sync.
+        self.socket.sendall(header)
         data = self.socket.recv(length * 4 + 8)
         while (len(data) < length * 4 + 8):
             data += self.socket.recv(length * 4 - len(data) + 8)
@@ -239,9 +242,13 @@ class MonitorClient(object):
                                          (addr >> 8) & 0xFF,
                                          (addr >> 16) & 0xFF,
                                          (addr >> 24) & 0xFF]))
-        # send header+body
-        self.socket.send(header +
-                         np.array(values, dtype=np.uint32).tobytes())
+        # send header+body. sendall, not send: the ASG waveform table is a
+        # single 64 KB body (16384 words), far more than a socket send buffer
+        # holds, so send() routinely returns a PARTIAL byte count. Discarding
+        # it truncated the frame and desynced the link ("wrong control
+        # sequence from server" on the next exchange).
+        self.socket.sendall(header +
+                            np.array(values, dtype=np.uint32).tobytes())
         if self.socket.recv(8) == header:  # check for in-sync transmission
             return True  # indicate successful write
         else:  # error handling
