@@ -45,10 +45,12 @@ module red_pitaya_asg_ch #(
    // trigger
    input                 trig_sw_i       ,  //!< software trigger
    input                 trig_ext_i      ,  //!< external trigger
+   input                 trig_enc_i      ,  //!< encoder tick trigger (clean 1-cycle pulse, no debounce)
    input      [  3-1: 0] trig_src_i      ,  //!< trigger source selector
    input                 trig_slave_i    ,  //!< slave trigger
    output                trig_done_o     ,  //!< trigger event
    output                play_done_o     ,  //!< data play done event
+   output                play_active_o   ,  //!< playing (dac_do) — busy indicator for tick gating
    
    // buffer ctrl
    input                 buf_we_i        ,  //!< buffer write enable
@@ -207,6 +209,11 @@ always @(posedge dac_clk_i) begin
           3'd3 : trig_in <= ext_trig_n  ; // external negative edge
           3'd4 : trig_in <= trig_ext_i  ; // unprocessed ext trigger
           3'd5 : trig_in <= 1'b1  ;       // always high
+          // Encoder tick: enters directly, NO debounce — the 62500-cycle
+          // (0.5 ms) hard debounce of ext_trig_p caps ext_positive_edge at
+          // ~2 kHz, useless for 20-80 k ticks/s. The pulse is already a clean
+          // 1-cycle adc_clk pulse from red_pitaya_enc (sync + glitch filter).
+          3'd6 : trig_in <= trig_enc_i  ; // encoder tick (scope-gated pulse)
 
        default : trig_in <= 1'b0        ;
       endcase
@@ -232,6 +239,7 @@ assign dac_npnt_sub_neg = dac_npnt_sub[RSZ+16];
 
 wire trig_done     ;
 assign trig_done = ((~dac_npnt_sub_neg) | (reverse_run && reverse_on_i && step_o==0)) && trig_slave_i;
+assign play_active_o = dac_do;
 assign play_done_o = trig_done;
 reg trig_done_prev ;
 assign trig_done_o = (!dac_rep && trig_in) | (trig_done && !trig_done_prev);

@@ -81,7 +81,9 @@ module red_pitaya_asg  #(
   input                 trig_b_i  ,  // starting trigger CHB
   input                 trig_c_i  ,  // starting trigger CHC
   input                 trig_d_i  ,  // starting trigger CHD
+  input                 trig_enc_i,  // encoder tick trigger (clean 1-cycle pulse from red_pitaya_enc)
   output     [  4-1: 0] trig_out_o,  // notification trigger
+  output     [  4-1: 0] play_active_o, // per-channel playing (dac_do) — asg3 busy gates encoder ticks
  
   input                 trig_scope_i    ,  // trigger from the scope
   input                 scope_trig_i    ,  // scope done signal
@@ -133,6 +135,7 @@ reg               trig_a_sw    , trig_b_sw    , trig_c_sw    , trig_d_sw    ;
 reg   [   3-1: 0] trig_a_src   , trig_b_src   , trig_c_src   , trig_d_src   ;
 wire              trig_a_done  , trig_b_done  , trig_c_done  , trig_d_done  ;
 wire              play_a_done  , play_b_done  , play_c_done  , play_d_done  ;
+wire              play_a_act   , play_b_act   , play_c_act   , play_d_act   ;
 reg               slave_a_trig , slave_b_trig , slave_c_trig , slave_d_trig ;
 reg               scope_a_trig , scope_b_trig , scope_c_trig , scope_d_trig ;
 wire              trig_a_slave , trig_b_slave , trig_c_slave , trig_d_slave ;
@@ -263,10 +266,12 @@ red_pitaya_asg_ch  #(.RSZ (RSZ)) ch [4-1:0] (
   // trigger
   .trig_sw_i       ({_trig_d_sw       ,_trig_c_sw        ,_trig_b_sw        ,_trig_a_sw        }),  // software trigger
   .trig_ext_i      ({at_trig_d        , at_trig_c        , at_trig_a        , at_trig_b        }),  // advanced trigger as ext trigger - backwards-compatible with original version
+  .trig_enc_i      ({trig_enc_i       , trig_enc_i       , trig_enc_i       , trig_enc_i       }),  // encoder tick (same pulse; used only by channels with trig_src=6)
   .trig_src_i      ({trig_d_src       , trig_c_src       , trig_b_src       , trig_a_src       }),  // trigger source selector
   .trig_slave_i    ({trig_d_slave     , trig_c_slave     , trig_b_slave     , trig_a_slave     }),  // slave trigger
   .trig_done_o     ({trig_d_done      , trig_c_done      , trig_b_done      , trig_a_done      }),  // trigger event
   .play_done_o     ({play_d_done      , play_c_done      , play_b_done      , play_a_done      }),  // data play done event
+  .play_active_o   ({play_d_act       , play_c_act       , play_b_act       , play_a_act       }),  // playing (dac_do)
   // buffer ctrl
   .buf_we_i        ({buf_d_we         , buf_c_we         , buf_b_we         , buf_a_we         }),  // buffer buffer write
   .buf_addr_i      ({buf_d_addr       , buf_c_addr       , buf_b_addr       , buf_a_addr       }),  // buffer address
@@ -329,6 +334,7 @@ begin
 end
 
 assign trig_out_o = {trig_d_done, trig_c_done, trig_b_done, trig_a_done};
+assign play_active_o = {play_d_act, play_c_act, play_b_act, play_a_act};
 
 reg [1: 0] scope_trig;
 wire _scope_trig = scope_trig == 2'b01;

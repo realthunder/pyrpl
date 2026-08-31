@@ -351,7 +351,9 @@ class Scope(HardwareModule, AcquisitionModule):
                                     "asg1": 9,
                                     "asg2": 11,
                                     "asg3": 12,
-                                    "dsp": 10}, #dsp trig module trigger
+                                    "dsp": 10, #dsp trig module trigger
+                                    "enc_tick": 13}, # Scanner360 gated encoder
+                                                     # tick (no debounce)
                                     sort_by_values=True)
 
     trigger_sources = _trigger_sources.keys()  # help for the user
@@ -602,6 +604,66 @@ class Scope(HardwareModule, AcquisitionModule):
                                      doc="stream a value word (peak amplitudes) per point; "
                                          "takes effect at the next DMA packet boundary")
 
+    # Scanner360 azimuth mode (see fpga/docs/Scanner360.md). Capability bit +
+    # raw enable, wrapped by the dma_azimuth property below (which also keeps
+    # the UDP client's decode mode in sync).
+    _dma_azimuth_cap = BoolRegister(0x194, 29,
+                                    doc="bitstream has the azimuth scan-cell / packet mode")
+    _dma_azimuth_en = BoolRegister(0x9C, 1,
+                                   doc="azimuth mode: scan cell = {tick, mems}, packet "
+                                       "versions +4 (v7-v10); packet-boundary latched")
+    # Azimuth packet-format descriptor (RO 0x1A4): cell = {tick[TKW], mems[MSW]},
+    # data word carries a DTW-bit tick delta + the absolute mems field.
+    dma_az_msw = IntRegister(0x1A4, bits=8, bitmask=0x000000ff,
+                             doc="azimuth cell MEMS sub-field width MSW (stride 2^MSW)")
+    dma_az_dtw = IntRegister(0x1A4, bits=8, bitmask=0x0000ff00,
+                             doc="azimuth data-word tick-delta field width (bits)")
+    dma_az_tkw = IntRegister(0x1A4, bits=8, bitmask=0x00ff0000,
+                             doc="azimuth cell tick sub-field width (= HSZ - MSW)")
+
+    # ---- Scanner360 encoder block (0x1A8-0x1BC) ----
+    enc_enable = BoolRegister(0x1A8, 0,
+                              doc="enable the encoder tick/turn front-end")
+    enc_gate_asg = BoolRegister(0x1A8, 1,
+                                doc="mask ticks while asg3 (chirp) is playing — a "
+                                    "re-trigger would APPEND a chirp period, not restart")
+    enc_gate_fft = BoolRegister(0x1A8, 2,
+                                doc="mask ticks while the FFT frame is in flight "
+                                    "(incl. fft_trig_delay) — a passed tick is "
+                                    "guaranteed to become a point")
+    enc_turn_source = BoolRegister(0x1A8, 3,
+                                   doc="False = DIO0_N per-turn pulse, True = synthetic "
+                                       "turn when tick_in_turn reaches enc_az_modulus")
+    enc_divider = IntRegister(0x1A8, bits=4, bitmask=0x000000f0,
+                              doc="fire every (N+1)-th tick (this register holds N); "
+                                  "phase reset at the turn pulse. Keep 2*(N+1) <= 15 "
+                                  "so a single busy-masked tick still fits the dt field")
+    enc_glitch_log2 = IntRegister(0x1A8, bits=4, bitmask=0x00000f00,
+                                  doc="glitch filter: pin level must hold 2^n adc "
+                                      "cycles before an edge is accepted (0 = off)")
+    enc_mems_turn_kick = IntRegister(0x1A8, bits=4, bitmask=0x0000f000,
+                                     doc="extra MEMS step pulses injected at each turn "
+                                         "pulse (forces the rosette precession "
+                                         "regardless of T mod L); 0 = natural")
+    enc_az_modulus = IntRegister(0x1AC, bits=16,
+                                 doc="ticks per turn T: synthetic-turn modulus "
+                                     "(enc_turn_source=True) / sanity bound")
+    enc_tick_in_turn = IntRegister(0x1B0, bits=16, bitmask=0x0000ffff,
+                                   doc="live 0-based azimuth tick counter (RO)")
+    enc_turn_cnt = IntRegister(0x1B0, bits=16, bitmask=0xffff0000,
+                               doc="live turn counter (RO, wraps at 2^16)")
+    enc_ticks_last_turn = IntRegister(0x1B4, bits=16,
+                                      doc="ticks counted between the last two turn "
+                                          "pulses (RO; should equal T)")
+    enc_turn_period = IntRegister(0x1B8,
+                                  doc="adc_clk cycles of the last full turn (RO) "
+                                      "-> f_rev = 125e6 / enc_turn_period")
+    enc_ticks_masked = IntRegister(0x1BC, bits=16, bitmask=0x0000ffff,
+                                   doc="divider-eligible ticks masked by the busy "
+                                       "gate (RO, wrapping)")
+    enc_ticks_fired = IntRegister(0x1BC, bits=16, bitmask=0xffff0000,
+                                  doc="ticks that fired the trigger chain (RO, wrapping)")
+
     fft_debug2 = IntRegister(0x174)
     fft_debug3 = IntRegister(0x178)
 
@@ -735,7 +797,10 @@ class Scope(HardwareModule, AcquisitionModule):
     # the DMA_PER_CHAN_TAG build option (3 = combined, 4 = per-channel tag).
     # v3/v4 = combined / per-channel-tag index-only; v5/v6 = the same with an
     # extra per-point value word (raw peak amplitudes -> reflectivity).
-    _DMA_FMT_VERSIONS_SUPPORTED = (3, 4, 5, 6)
+    # v7-v10 = the azimuth (Scanner360) variants of v3-v6: version = base +
+    # 2*intensity + 4*azimuth; cell = {tick, mems}, data words carry a 4-bit
+    # tick delta + the absolute MEMS step in the formerly-reserved span.
+    _DMA_FMT_VERSIONS_SUPPORTED = (3, 4, 5, 6, 7, 8, 9, 10)
 
     def __init__(self, parent, name=None):
         super().__init__(parent, name=name)
@@ -816,6 +881,30 @@ class Scope(HardwareModule, AcquisitionModule):
                                        dsz=self.fft_data_width)
 
     @property
+    def dma_azimuth(self):
+        """Scanner360 azimuth mode: the scan cell becomes {tick, mems} (motor
+        tick x MEMS step instead of raster y*stride+x), the DMA frame becomes
+        one motor TURN, and the packets stamp versions v7-v10 (data words carry
+        a 4-bit tick delta + the absolute MEMS step). Setting it also switches
+        the UDP client's decode (msw from the 0x1A4 descriptor). Refused on
+        bitstreams without the capability bit 0x194[29]."""
+        return bool(self._dma_azimuth_en) if self._dma_azimuth_cap \
+            else self.dma_fmt_version in (7, 8, 9, 10)
+
+    @dma_azimuth.setter
+    def dma_azimuth(self, value):
+        value = bool(value)
+        if not self._dma_azimuth_cap:
+            if value != (self.dma_fmt_version in (7, 8, 9, 10)):
+                self._logger.warning(
+                    "dma_azimuth: bitstream has no azimuth mode; the packet "
+                    "format is fixed at version %d", self.dma_fmt_version)
+            return
+        self._dma_azimuth_en = value
+        # Keep the host decoder in step (cell split tick/mems).
+        self._dma_udp_client.configure(msw=self.dma_az_msw)
+
+    @property
     def dma_refl_alpha(self):
         """Range exponent of the echo POWER loss used for the DMA reflectivity
         (intensity bitstreams v5/v6): rho ∝ A^2 * (bin-bin0)^alpha. 2 (default)
@@ -893,10 +982,13 @@ class Scope(HardwareModule, AcquisitionModule):
             hist_block_size=self.dma_block_size,
             max_interval=self.dma_max_interval,
             seq_bits=self.dma_fmt_seq_bits,
-            # v5/v6 append a value word (raw peak amplitudes, DSZ bits each,
-            # reg 0x34) per point; the client derives reflectivity from it.
+            # v5/v6 (and the azimuth v9/v10) append a value word (raw peak
+            # amplitudes, DSZ bits each, reg 0x34) per point; the client
+            # derives reflectivity from it.
             dsz=self.fft_data_width,
-            intensity=version in (5, 6),
+            intensity=version in (5, 6, 9, 10),
+            # Azimuth variants: cell = {tick, mems[msw-1:0]} (descriptor 0x1A4).
+            msw=self.dma_az_msw if self._dma_azimuth_cap else None,
         )
 
     def _ownership_changed(self, old, new):

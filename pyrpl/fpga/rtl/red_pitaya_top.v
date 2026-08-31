@@ -483,6 +483,8 @@ wire  [  8-1: 0] exp_p_dir, exp_n_dir;
 wire scope_fft_o;
 wire [2-1:0] fft_window;   // scope fft acq windows {down, up} -> dsp pid gating
 wire scope_sig_o;
+wire [ 4-1: 0] asg_play_active;   // per-ASG-channel playing (dac_do); [2] = asg3 chirp
+wire           enc_trig_tick;     // gated encoder tick (scope enc block -> ASG enc_tick)
 wire x_step_0;
 wire y_step_0;
 wire [3:0] scope_sigs = {y_step_0, x_step_0, scope_sig_o, scope_fft_o};
@@ -613,7 +615,10 @@ red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .FSSR(FFT_SSR), .DSZ(FFT_WIDTH)
   .adc_b_i         (  scope_b_in[14-1:14-ADC_SZ] ),  // CH 2 (optionally pipelined, see SCOPE_FB_PIPELINE)
   .adc_clk_i       (  adc_clk                    ),  // clock
   .adc_rstn_i      (  adc_rstn                   ),  // reset - active low
-  .trig_ext_i      (  exp_p_in[0]                ),  // external trigger
+  .trig_ext_i      (  exp_p_in[0]                ),  // external trigger / encoder per-tick
+  .trig_extn_i     (  exp_n_in[0]                ),  // encoder per-turn (Scanner360)
+  .asg_busy_i      (  asg_play_active[2]         ),  // asg3 (chirp) playing — tick gate
+  .trig_enc_o      (  enc_trig_tick              ),  // gated encoder tick -> ASG enc_tick source
   .trig_asg_i      (  trig_asg_out               ),  // ASG trigger
   .trig_dsp_i      (  dsp_trigger                ),
   .trig_scope_o    (  trig_scope_out             ),  // scope trigger to feed other instruments
@@ -684,7 +689,9 @@ red_pitaya_asg i_asg (
   .trig_b_i        (  exp_p_in[0]                ),
   .trig_c_i        (  exp_p_in[0]                ),
   .trig_d_i        (  exp_p_in[0]                ),
+  .trig_enc_i      (  enc_trig_tick              ),  // gated encoder tick (trigger_source=enc_tick)
   .trig_out_o      (  trig_asg_out               ),
+  .play_active_o   (  asg_play_active            ),
   .trig_scope_i    (  trig_scope_out             ),
   .scope_trig_i    (  scope_sig_o                ),
   .sync_rst_o      (  asg_sync_rst_o             ),

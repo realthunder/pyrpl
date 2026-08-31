@@ -7,6 +7,11 @@ scan cell + frame counter, followed by data words whose scan cell is rebuilt fro
 a 1-bit per-point advance flag. Re-anchor headers appear inline (on a scan-index
 jump, a new 2D frame, or a packet boundary).
 
+Azimuth (Scanner360) variants v7-v10 (= v3-v6 + 4): the scan cell is
+{tick[hsz-msw], mems[msw]} (motor tick x MEMS step), the data word carries a
+4-bit unsigned TICK delta at [56:53] plus the ABSOLUTE mems step at [52:53-msw]
+(the old advance/dir bits read 0), and frame_cnt counts motor TURNS.
+
   Header word, bit[63] = 1:
     [63]            is_header = 1
     [62:59]         CHANNEL_ID (0=fft_a, 1=fft_b)
@@ -273,6 +278,15 @@ class DmaUdpClient:
         # mean over up to refl_avg samples per cell, restarted when the cell's
         # peak index moves by more than refl_avg_tol bins (new surface).
         self._refl_avg = 0       # samples in the running mean; 0 = no averaging
+        # Azimuth (Scanner360) cell split: cell = {tick, mems[msw-1:0]}. Only
+        # used by the v7-v10 formats; pushed from the FPGA descriptor (0x1A4).
+        self._msw = 10
+        # Optional azimuth DE-SPARSIFY: the FPGA cell stride is 2^msw >= L, so
+        # a raw-cell buffer wastes (2^msw - L) cells per tick. With az_lcount
+        # = L (the MEMS steps per circle) the parser rebuilds the position as
+        # tick*L + mems -> a DENSE ticks x L buffer the host can reshape
+        # directly. 0 keeps the raw {tick,mems} cell.
+        self._az_l = 0
         self._refl_avg_tol = 1.0 # max |bin move| to keep averaging (bins)
         self._avg_cnt = [None, None]  # per-cell sample counts, lazy (n,2) uint16
         self.configure(fsz=fsz, frac=frac, hsz=hsz, dsz=dsz,
@@ -346,7 +360,7 @@ class DmaUdpClient:
     # ------------------------------------------------------------------
 
     def configure(self, fsz=None, frac=None, hsz=None, hist_block_size=None,
-                  dsz=None, intensity=None,
+                  dsz=None, intensity=None, msw=None, az_lcount=None,
                   refl_alpha=None, refl_bin0=None, refl_cal=None,
                   refl_avg=None, refl_avg_tol=None,
                   max_interval=None, max_parse_rate=None, seq_bits=None,
@@ -394,6 +408,10 @@ class DmaUdpClient:
                 self._avg_cnt = [None, None]   # drop the per-cell counters
         if refl_avg_tol is not None:
             self._refl_avg_tol = max(0.0, float(refl_avg_tol))
+        if msw is not None:
+            self._msw = int(msw)
+        if az_lcount is not None:
+            self._az_l = int(az_lcount)
         if hist_block_size is not None:
             self._hist_block_size = hist_block_size
         if max_interval is not None:
@@ -952,12 +970,22 @@ class DmaUdpClient:
         vers = ((hw[real] >> np.uint64(55)) & np.uint64(0xf)).astype(np.int64)
         ver = int(vers[0])
         if bool((vers == ver).all()):
-            if ver in (4, 6):
+            # Per-packet walkers: v4/v6 (per-channel re-anchoring) and the
+            # azimuth formats v7-v10 (position from a tick-delta cumsum; their
+            # rates — one point per motor tick — don't need the batch pass).
+            if ver in (4, 6) or ver >= 7:
                 self._bad_count += nohdr
                 for q in range(npkt):
                     s = slice(q * nw, (q + 1) * nw)
-                    self._process_packet_v4(words[s], is_header[s],
-                                            has_val=(ver == 6))
+                    if ver in (4, 6):
+                        self._process_packet_v4(words[s], is_header[s],
+                                                has_val=(ver == 6))
+                    elif ver in (8, 10):
+                        self._process_packet_az_tagged(words[s], is_header[s],
+                                                       has_val=(ver == 10))
+                    else:
+                        self._process_packet_az(words[s], is_header[s],
+                                                has_val=(ver == 9))
                 return
             if self._process_v35_batch(words, is_header, csh, npkt,
                                        has_val=(ver == 5)):
@@ -1213,6 +1241,11 @@ class DmaUdpClient:
                 break
         if ver in (4, 6):
             return self._process_packet_v4(words, is_header, has_val=(ver == 6))
+        if ver in (8, 10):
+            return self._process_packet_az_tagged(words, is_header,
+                                                  has_val=(ver == 10))
+        if ver in (7, 9):
+            return self._process_packet_az(words, is_header, has_val=(ver == 9))
         has_val = (ver == 5)
 
         idx = self._idx
@@ -1280,6 +1313,142 @@ class DmaUdpClient:
                     self._write_channel(c, frame_cnt, p, up, down, ru, rd)
                 else:
                     self._write_channel(c, frame_cnt, p, up, down)
+
+    def _process_packet_az(self, words, is_header, has_val=False):
+        """Azimuth combined formats v7/v9 (Scanner360). Same skeleton as the
+        v3/v5 walk, but the scan cell is {tick, mems[msw-1:0]} and the position
+        is NOT rebuilt from ±1 advance bits: each group's channel-0 word carries
+        a 4-bit unsigned TICK delta at [56:53] (0 after a header — the first
+        group is pinned at the header anchor), and every word carries its
+        ABSOLUTE mems step at [52:53-msw] (self-contained: no wrap ambiguity,
+        no header per MEMS circle). tick = anchor_tick + cumsum(dt);
+        cell = tick << msw | mems. frame_cnt counts motor TURNS."""
+        idx = self._idx
+        pmask = np.uint64(self._mask)
+        hsz = self._hsz
+        msw = self._msw
+        idx_lsb = np.uint64(55 - hsz)
+        hist_mask = (1 << hsz) - 1
+        fc_mask = (1 << (55 - hsz)) - 1
+        mmask = np.uint64((1 << msw) - 1)
+        m_lsb = np.uint64(53 - msw)
+        nchan = len(self._live)
+        hdr_pos = np.nonzero(is_header)[0]
+
+        for si, h in enumerate(hdr_pos):
+            hw = int(words[h])
+            nch = (hw >> 59) & 0xf
+            if nch == 0 or nch > nchan:
+                continue                    # 0xF pad sentinel / unknown
+            frame_cnt = (hw & fc_mask) >> self._seq_bits
+            anchor_tick = ((hw >> int(idx_lsb)) & hist_mask) >> msw
+            seg_end = hdr_pos[si + 1] if si + 1 < hdr_pos.size else words.size
+            seg = words[h + 1:seg_end]
+
+            gw = 2 * nch if has_val else nch
+            ngrp = seg.size // gw
+            if ngrp == 0:
+                empty = np.empty(0, dtype=np.int32)
+                for c in range(nch):
+                    self._write_channel(c, frame_cnt, empty, empty, empty)
+                continue
+            grp = seg[:ngrp * gw].reshape(ngrp, gw)
+
+            dt = ((grp[:, 0] >> np.uint64(53)) & np.uint64(0xf)).astype(np.int64)
+            dt[0] = 0                       # first group pinned at the anchor
+            tick = anchor_tick + np.cumsum(dt)
+
+            for c in range(nch):
+                col = grp[:, 2 * c if has_val else c]
+                mems = ((col >> m_lsb) & mmask).astype(np.int64)
+                pos = (tick * self._az_l + mems) if self._az_l \
+                    else ((tick << msw) | mems)
+                keep = (pos >= 0) & (pos < self._max_frame_size)
+                p = pos[keep].astype(np.int64)
+                up = (col & pmask).astype(np.int32)[keep]
+                down = ((col >> np.uint64(idx)) & pmask).astype(np.int32)[keep]
+                if has_val and self._intensity:
+                    vw = grp[:, 2 * c + 1][keep]
+                    ru, rd = self._reflectivity(vw, up, down)
+                    self._write_channel(c, frame_cnt, p, up, down, ru, rd)
+                else:
+                    self._write_channel(c, frame_cnt, p, up, down)
+
+    def _process_packet_az_tagged(self, words, is_header, has_val=False):
+        """Azimuth per-channel-tag formats v8/v10: the v4/v6 walk with the
+        azimuth position coding (see _process_packet_az). Every channel's data
+        word carries the dt field, so each tagged stream cumsums its own ticks
+        independently; a word right after its channel's header carries dt=0."""
+        idx_sh = np.uint64(self._idx)
+        pmask = np.uint64(self._mask)
+        hsz = self._hsz
+        msw = self._msw
+        idx_lsb = np.uint64(55 - hsz)
+        hist_mask = (1 << hsz) - 1
+        fc_mask = (1 << (55 - hsz)) - 1
+        mmask = np.uint64((1 << msw) - 1)
+        nchan = len(self._live)
+
+        hdr_tag  = ((words >> np.uint64(59)) & np.uint64(0xf)).astype(np.int64)
+        data_tag = ((words >> np.uint64(57)) & np.uint64(0xf)).astype(np.int64)
+        tag = np.where(is_header, hdr_tag, data_tag)
+        dt_all = ((words >> np.uint64(53)) & np.uint64(0xf)).astype(np.int64)
+        mems_all = ((words >> np.uint64(53 - msw)) & mmask).astype(np.int64)
+        hidx = ((words >> idx_lsb) & np.uint64(hist_mask)).astype(np.int64)
+        fcnt = (words & np.uint64(fc_mask)) >> np.uint64(self._seq_bits)
+        up_all = (words & pmask).astype(np.int32)
+        dn_all = ((words >> idx_sh) & pmask).astype(np.int32)
+
+        for c in range(nchan):
+            sel = np.nonzero(tag == c)[0]
+            if sel.size == 0:
+                continue
+            sh = is_header[sel]
+            if not sh.any():
+                continue
+            first = int(np.argmax(sh))
+            sel = sel[first:]; sh = sh[first:]
+            seg_id = np.cumsum(sh) - 1
+            step = np.where(sh, 0, dt_all[sel])
+            cs = np.cumsum(step)
+            anchors_tick = hidx[sel][sh] >> msw
+            seg_fc = fcnt[sel][sh]
+            seg_start_cs = cs[sh]
+            tick = anchors_tick[seg_id] + (cs - seg_start_cs[seg_id])
+            mems = mems_all[sel]
+            pos = (tick * self._az_l + mems) if self._az_l \
+                else ((tick << msw) | mems)      # header rows never emitted
+            data_rows = ~sh
+            if has_val:
+                csd = np.cumsum(data_rows.astype(np.int64))
+                ord1 = csd - csd[sh][seg_id]
+                idx_rows = data_rows & (ord1 % 2 == 1)
+                val_rows = data_rows & (ord1 % 2 == 0)
+            else:
+                idx_rows = data_rows
+            for s in range(anchors_tick.size):
+                rows = idx_rows & (seg_id == s)
+                if not rows.any():
+                    self._write_channel(c, int(seg_fc[s]),
+                                        np.empty(0, np.int32), np.empty(0, np.int32),
+                                        np.empty(0, np.int32))
+                    continue
+                ri = sel[rows]
+                p = pos[rows]
+                rv = None
+                if has_val and self._intensity:
+                    rv = sel[val_rows & (seg_id == s)]
+                    m = min(ri.size, rv.size)
+                    ri, rv, p = ri[:m], rv[:m], p[:m]
+                keep = (p >= 0) & (p < self._max_frame_size)
+                p = p[keep].astype(np.int64)
+                srows = ri[keep]
+                up, dn = up_all[srows], dn_all[srows]
+                if rv is not None:
+                    ru, rd = self._reflectivity(words[rv[keep]], up, dn)
+                    self._write_channel(c, int(seg_fc[s]), p, up, dn, ru, rd)
+                else:
+                    self._write_channel(c, int(seg_fc[s]), p, up, dn)
 
     def _process_packet_v4(self, words, is_header, has_val=False):
         """Packet format v4/v6 (per-channel tag). Each word self-describes its

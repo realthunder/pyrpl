@@ -278,6 +278,7 @@ read_verilog                      $path_rtl/red_pitaya_dsp.v
 read_verilog                      $path_rtl/red_pitaya_pll.sv
 read_verilog                      $path_rtl/red_pitaya_ps.v
 read_verilog                      $path_rtl/red_pitaya_pwm.sv
+read_verilog                      $path_rtl/red_pitaya_enc.sv
 read_verilog                      $path_rtl/red_pitaya_scope.sv
 read_verilog                      $path_rtl/red_pitaya_top.v
 

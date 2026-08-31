@@ -1345,7 +1345,8 @@ class _ExtTriggerPinFreeMixin(object):
     input and can be read as the trigger. Applied to modules whose external
     trigger is wired to DIO0_P (scope, asg)."""
     # option names that route the external trigger through DIO0_P
-    _EXT_PIN0_SOURCES = ('ext_positive_edge', 'ext_negative_edge')
+    # (enc_tick is the Scanner360 encoder per-tick wire on the same pin)
+    _EXT_PIN0_SOURCES = ('ext_positive_edge', 'ext_negative_edge', 'enc_tick')
 
     def set_value(self, obj, value):
         result = super(_ExtTriggerPinFreeMixin, self).set_value(obj, value)

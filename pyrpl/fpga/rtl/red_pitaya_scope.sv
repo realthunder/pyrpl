@@ -73,6 +73,7 @@ module red_pitaya_scope #(
   parameter FRAC = 8,   // sub-bin interpolation fractional bits (k_interp = Q(FSZ).FRAC); 0=off
   parameter RSZ  = 14,  // RAM size 2^RSZ
   parameter HSZ  = 24,  // scan-index (hist_index) width; build knob, default 24
+  parameter MSW  = 10,  // azimuth-mode MEMS sub-field width: cell = {tick, mems[MSW-1:0]}
   parameter FSSR     = 1, // FFT super sample rate (parallel channels)
   parameter FFT_IMPL = 3,  // 1=LogiCORE, 2=HLS SSR (DIT), 3=IP SSR (DIF)
   parameter FFT_SINGLE = 0, // 1 = build only fft_a, omit fft_b (e.g. SSR=8 to fit)
@@ -85,7 +86,10 @@ module red_pitaya_scope #(
    input      [ASZ-1: 0] adc_a_i         ,  // ADC data CHA
    input      [ASZ-1: 0] adc_b_i         ,  // ADC data CHB
    // trigger sources
-   input                 trig_ext_i      ,  // external trigger
+   input                 trig_ext_i      ,  // external trigger (Scanner360: encoder per-tick, DIO0_P)
+   input                 trig_extn_i     ,  // encoder per-turn input (DIO0_N)
+   input                 asg_busy_i      ,  // asg3 playing (dac_do) — encoder tick gate
+   output                trig_enc_o      ,  // gated encoder tick pulse -> ASG enc_tick trigger
    input      [  4-1: 0] trig_asg_i      ,  // ASG trigger
    input                 trig_dsp_i      ,  // DSP module trigger
    output                trig_scope_o    ,  // copy of scope trigger
@@ -784,6 +788,67 @@ logic fft_trig_accept = (fft_state == S_IDLE) && fft_trig_i && (&fft_done)
 // export the acq windows for PID gating (EO-PLL locks only inside them)
 assign fft_window_o = {fft_down, fft_up};
 
+// ===========================================================================
+// Scanner360 encoder (azimuth mode) — see docs/Scanner360.md "Design v2".
+// One encoder tick = one chirp (asg3 one-shot) = one FFT point = one MEMS
+// step; every point is tagged with the motor position. The enc block gates
+// ticks on asg3/FFT busy so a fired tick is GUARANTEED to become a point,
+// and latches the azimuth AT the fired tick (the fft trigger is delayed by
+// fft_trig_dly while ticks keep arriving).
+localparam ENC_TW = 16;
+logic [16-1:0]     enc_ctrl;       // 0x1A8: [0] enable [1] gate asg3 [2] gate fft
+                                   // [3] turn source [7:4] divider N-1
+                                   // [11:8] glitch log2 [15:12] mems_turn_kick
+logic [ENC_TW-1:0] az_modulus;     // 0x1AC: ticks per turn T
+logic              enc_trig_tick, enc_turn_evt;
+logic [ENC_TW-1:0] az_tick_trig, az_turn_trig;
+logic [ENC_TW-1:0] enc_tick_in_turn, enc_turn_cnt, enc_ticks_last_turn;
+logic [32-1:0]     enc_turn_period;
+logic [ENC_TW-1:0] enc_cnt_masked, enc_cnt_fired;
+logic              dma_az_en;      // 0x9C bit 1: azimuth scan-cell / packet mode
+logic [ENC_TW-1:0] az_tick_lat;    // az of the point entering the index pipeline
+logic [ENC_TW-1:0] az_turn_prev;   // previous point's turn (frame-pulse compare)
+
+// FFT busy = the exact complement of fft_trig_accept's readiness, plus a
+// trigger delay in flight — a tick passing this gate is guaranteed accepted.
+wire enc_fft_busy = !((fft_state == S_IDLE) && (&fft_done) && (fft_reconf_wait == 0))
+                    || fft_trig_dly_do;
+
+red_pitaya_enc #(.TW(ENC_TW)) i_enc (
+   .clk_i             (adc_clk_i),
+   .rstn_i            (adc_rstn_i),
+   .tick_i            (trig_ext_i),
+   .turn_i            (trig_extn_i),
+   .asg_busy_i        (asg_busy_i),
+   .fft_busy_i        (enc_fft_busy),
+   .enable_i          (enc_ctrl[0]),
+   .gate_asg_i        (enc_ctrl[1]),
+   .gate_fft_i        (enc_ctrl[2]),
+   .turn_src_i        (enc_ctrl[3]),
+   .div_n_i           (enc_ctrl[7:4]),
+   .glitch_log2_i     (enc_ctrl[11:8]),
+   .az_modulus_i      (az_modulus),
+   .trig_tick_o       (enc_trig_tick),
+   .turn_evt_o        (enc_turn_evt),
+   .az_tick_o         (az_tick_trig),
+   .az_turn_o         (az_turn_trig),
+   .tick_in_turn_o    (enc_tick_in_turn),
+   .turn_cnt_o        (enc_turn_cnt),
+   .ticks_last_turn_o (enc_ticks_last_turn),
+   .turn_period_o     (enc_turn_period),
+   .cnt_masked_o      (enc_cnt_masked),
+   .cnt_fired_o       (enc_cnt_fired)
+);
+assign trig_enc_o = enc_trig_tick;
+
+// Azimuth data word: [56:53] dt + [52:53-MSW] mems + peaks must fit under the
+// tag bits; also the peaks size-cast below must never truncate.
+generate
+if (2*IDX + MSW > 53) begin : gen_dma_az_width_check
+    $error("DMA azimuth data word: 2*IDX + MSW exceeds the payload (<= 53 required)");
+end
+endgenerate
+
 localparam IDXSZ = 8;
 localparam IHSZ = 10;
 
@@ -817,6 +882,8 @@ if (fft_index_flush) begin
    y_step <= 0;
    fft_frame_start <= 1'b0;
    fft_rep_d <= 1'b0;
+   az_tick_lat <= '0;
+   az_turn_prev <= '0;
    `ifdef DEBUG_FFT_INDEX
       y_step_0 <= 0;
    `endif
@@ -832,7 +899,16 @@ end else begin
    `endif
 
     if (fft_index_valid[0]) begin
-        if (y_step_i == 0 && x_step_i == 0) begin
+        if (dma_az_en) begin
+            // Azimuth mode: frame = TURN. Compare the LATCHED turn of this
+            // point against the previous point's — synchronous with the point
+            // pipeline, so a point in flight across the turn pulse is still
+            // stamped with its own turn (raster origin-wrap analogue).
+            if (az_turn_prev != az_turn_trig)
+                fft_frame_start <= 1'b1;
+            az_turn_prev <= az_turn_trig;
+            az_tick_lat  <= az_tick_trig;
+        end else if (y_step_i == 0 && x_step_i == 0) begin
             fft_indices_pos <= 0;
             fft_hist_step <= 0;
             // New 2D frame: pulse only on a real WRAP into origin (previous cell
@@ -889,7 +965,11 @@ end else begin
     // extra pipeline stage is needed. Keep HSZ <= 24 (unsigned A on the 25-bit
     // signed port) to stay in ONE DSP; HSZ >= 25 cascades to two DSPs (still meets
     // timing). fft_hist_index[0]->[1]->[2] are alignment delays, NOT mult pipeline.
-    fft_hist_index[0] <= y_step * fft_hist_step + x_step;
+    // Azimuth mode: plain bit-concatenation {tick, mems} (stride 2^MSW), no
+    // multiply — tick was latched at the fired tick, mems = asg1 step (x_step),
+    // both registered at fft_index_valid[0] like the raster path.
+    fft_hist_index[0] <= dma_az_en ? {az_tick_lat[HSZ-MSW-1:0], x_step[MSW-1:0]}
+                                   : y_step * fft_hist_step + x_step;
     for (int i=0; i<IDX_PIPELINE; i=i+1)
         fft_hist_index[i+1] <= fft_hist_index[i];
 
@@ -1215,6 +1295,16 @@ xpm_cdc_single #(
     .dest_clk  (fft_input_clk),
     .dest_out  (dma_int_clk)
 );
+// Runtime azimuth mode, same treatment: quasi-static level, packet-sampled.
+logic dma_az_clk;
+xpm_cdc_single #(
+    .DEST_SYNC_FF (2)
+) dma_az_sync (
+    .src_clk   (adc_clk_i),
+    .src_in    (dma_az_en),
+    .dest_clk  (fft_input_clk),
+    .dest_out  (dma_az_clk)
+);
 
 logic [ASM_WCW-1:0] asm_wc;          // next word index within the packet
 logic               asm_need_hdr;
@@ -1228,17 +1318,25 @@ logic [1:0]         asm_state;
 logic [3:0]         asm_ch;
 logic               asm_int;         // intensity format for the CURRENT packet
                                      // (dma_int_clk sampled at packet boundaries)
+logic               asm_az;          // azimuth format for the CURRENT packet (+4 on
+                                     // the version; dma_az_clk, packet-sampled)
 logic [IDX-1:0]     pt_up0, pt_dn0, pt_up1, pt_dn1;
 logic [DSZ-1:0]     pt_vu0, pt_vd0, pt_vu1, pt_vd1;   // raw peak amplitudes (intensity builds)
 logic [HSZ-1:0]     pt_idx;
 logic               pt_adv;       // step magnitude (1 = ±1 advance, 0 = hold)
 logic               pt_dir;       // step direction (1 = -1 backward, 0 = +1 forward)
 logic               pt_hdr;       // v4 tagged: this index needs a (per-channel) header
+logic [3:0]         pt_dt;        // az mode: tick delta vs the previous point (0 after a header)
+logic [MSW-1:0]     pt_mems;      // az mode: absolute MEMS step of this point
 logic [3:0]         pt_nch;
 logic [63:0]        asm_tdata;
 logic               asm_tvalid, asm_tlast;
 
 wire [HSZ-1:0] asm_delta = dma_point_idx_a - asm_prev_idx;
+// Azimuth mode: position delta in TICKS (the cell's high field). Unsigned —
+// the motor never reverses; a backward/large jump (counter reset, >15 gated
+// ticks) re-anchors with a header instead.
+wire [HSZ-MSW-1:0] asm_dtick = dma_point_idx_a[HSZ-1:MSW] - asm_prev_idx[HSZ-1:MSW];
 wire asm_inc = (asm_delta == 1);              // scan stepped +1
 wire asm_dec = (asm_delta == {HSZ{1'b1}});    // scan stepped -1 (two's-complement all-ones)
 // Frame boundary for the DMA header frame_cnt: the origin-wrap pulse (a real
@@ -1251,7 +1349,8 @@ wire asm_last_word  = (asm_wc == ASM_PKT-1);
 // single segment, instead of a re-anchor header per point when the scan runs
 // downward.
 wire asm_hdr_need   = asm_need_hdr || asm_frame_pend || asm_flush_rise ||
-                      (asm_delta != 0 && !asm_inc && !asm_dec) ||
+                      (asm_az ? (asm_dtick > 15)
+                              : (asm_delta != 0 && !asm_inc && !asm_dec)) ||
                       (dma_nch != asm_nch_seg);
 
 always @(posedge fft_input_clk) begin
@@ -1268,6 +1367,7 @@ always @(posedge fft_input_clk) begin
         asm_busy       <= 1'b0;
         asm_tlast      <= 1'b0;
         asm_int        <= dma_int_clk;
+        asm_az         <= dma_az_clk;
     end else begin
         asm_flush_d <= fft_frame_start;
         if (asm_flush_rise) begin
@@ -1286,6 +1386,10 @@ always @(posedge fft_input_clk) begin
                 pt_adv <= asm_inc || asm_dec;     // ±1 step rides the advance bits
                 pt_dir <= asm_dec;                // 1 = backward (-1)
                 pt_hdr <= asm_hdr_need;           // v4: each channel re-anchors on a jump
+                // az mode: dt rides the data word; 0 when a header re-anchors
+                // this group (the parser pins the first point at the anchor)
+                pt_dt   <= asm_hdr_need ? 4'h0 : asm_dtick[3:0];
+                pt_mems <= dma_point_idx_a[MSW-1:0];
                 asm_frame_pend <= 1'b0;
                 asm_busy <= 1'b1;
                 // Reserve the worst-case index span so it never straddles a packet:
@@ -1310,12 +1414,14 @@ always @(posedge fft_input_clk) begin
                     asm_wc       <= '0;
                     asm_pkt_seq  <= asm_pkt_seq + 1'b1;   // packet boundary
                     asm_int      <= dma_int_clk;          // format may switch here
+                    asm_az       <= dma_az_clk;
                     asm_need_hdr <= 1'b1;
                     asm_state    <= S_HDR;           // new packet -> header
                     asm_ch       <= '0;
                     pt_hdr       <= 1'b1;            // v4: re-anchor every channel
                     pt_adv       <= 1'b0;            // v3: point re-anchored at header
                     pt_dir       <= 1'b0;
+                    pt_dt        <= 4'h0;            // az: point re-anchored at header
                 end else
                     asm_wc <= asm_wc + 1'b1;
             end
@@ -1324,7 +1430,8 @@ always @(posedge fft_input_clk) begin
                 // frame_cnt field = { frame_cnt[high ASM_FCW-DMA_SEQ_W bits],
                 //                     per-packet seq[DMA_SEQ_W bits] } (host splits it).
                 asm_tdata    <= {1'b1, (DMA_PCT ? asm_ch : pt_nch),
-                                 4'(DMA_FMT_VERSION[3:0] + (asm_int ? 4'd2 : 4'd0)),
+                                 4'(DMA_FMT_VERSION[3:0] + (asm_int ? 4'd2 : 4'd0)
+                                                         + (asm_az  ? 4'd4 : 4'd0)),
                                  pt_idx,
                                  asm_frame_cnt[ASM_FCW-DMA_SEQ_W-1:0], asm_pkt_seq};
                 asm_tvalid   <= 1'b1;
@@ -1333,11 +1440,13 @@ always @(posedge fft_input_clk) begin
                 if (asm_last_word) begin
                     asm_pkt_seq <= asm_pkt_seq + 1'b1;   // packet boundary
                     asm_int     <= dma_int_clk;
+                    asm_az      <= dma_az_clk;
                 end
                 asm_need_hdr <= asm_last_word;
                 asm_nch_seg  <= pt_nch;
                 asm_prev_idx <= pt_idx;
                 asm_state    <= S_DATA;             // emit data next
+                pt_dt        <= 4'h0;               // az: anchored at this header
                 if (!DMA_PCT) begin                 // v3: data starts at channel 0,
                     asm_ch <= '0;                   //     pinned to the header idx
                     pt_adv <= 1'b0;
@@ -1348,7 +1457,20 @@ always @(posedge fft_input_clk) begin
                 // v3 combined: advance rides the channel-0 word only (shared pos);
                 // v4 tagged:   every word carries its channel tag and (after its own
                 //              header, pt_hdr) sits on the anchor with advance 0.
-                if (DMA_PCT)
+                // az (v7-v10): [56:53] = dt (unsigned tick delta; every word in
+                //              tagged mode — each channel cumsums its own stream —
+                //              channel-0 only in combined mode), [52:53-MSW] =
+                //              ABSOLUTE mems step (self-contained, no wrap
+                //              ambiguity), peaks at the bottom as before. The
+                //              old advance/direction bits read 0.
+                if (asm_az)
+                    asm_tdata <= {1'b0, 2'b00,
+                                  (DMA_PCT ? asm_ch : 4'h0),
+                                  ((DMA_PCT || asm_ch == 0) ? pt_dt : 4'h0),
+                                  pt_mems,
+                                  (53-MSW)'({(asm_ch == 0 ? pt_dn0 : pt_dn1),
+                                             (asm_ch == 0 ? pt_up0 : pt_up1)})};
+                else if (DMA_PCT)
                     asm_tdata <= {1'b0, (pt_hdr ? 1'b0 : pt_adv),
                                   (pt_hdr ? 1'b0 : pt_dir),
                                   asm_ch,                         // 4-bit channel tag
@@ -1368,6 +1490,7 @@ always @(posedge fft_input_clk) begin
                     asm_need_hdr <= 1'b1;
                     asm_pkt_seq  <= asm_pkt_seq + 1'b1;          // packet boundary
                     asm_int      <= dma_int_clk;
+                    asm_az       <= dma_az_clk;
                 end
                 asm_prev_idx <= pt_idx;                          // shared position
                 if (asm_int)
@@ -1397,6 +1520,7 @@ always @(posedge fft_input_clk) begin
                     asm_need_hdr <= 1'b1;
                     asm_pkt_seq  <= asm_pkt_seq + 1'b1;          // packet boundary
                     asm_int      <= dma_int_clk;
+                    asm_az       <= dma_az_clk;
                 end
                 if (asm_ch + 1 >= pt_nch) asm_busy <= 1'b0;      // index done
                 else begin
@@ -1455,6 +1579,9 @@ if (adc_rstn_i == 1'b0) begin
     fft_clk_sel <= 0;
     dma_nch <= DMA_MAXCH;                 // default: stream all present channels
     dma_int_en <= DMA_INT_DEF;            // runtime intensity (default = build knob)
+    dma_az_en  <= 1'b0;                   // azimuth mode always defaults off
+    enc_ctrl   <= 16'h0;                  // encoder disabled; gates default off
+    az_modulus <= 16'd1024;               // AEDR-9830 x1 default (sanity bound)
 end else if (sys_wen) begin
     if (sys_addr[19:0]==20'h0)  begin
         fft_parallel <= sys_wdata[4];
@@ -1467,8 +1594,12 @@ end else if (sys_wen) begin
         dma_nch <= (sys_wdata[3:0] > DMA_MAXCH) ? DMA_MAXCH : sys_wdata[3:0];
     // Runtime intensity enable: takes effect at the next DMA packet boundary
     // (the ASM FSM resamples per packet); the stamped version follows (+2).
-    if (sys_addr[19:0]==20'h9C)
+    if (sys_addr[19:0]==20'h9C) begin
         dma_int_en <= sys_wdata[0];
+        dma_az_en  <= sys_wdata[1];
+    end
+    if (sys_addr[19:0]==20'h1A8) enc_ctrl   <= sys_wdata[16-1:0];
+    if (sys_addr[19:0]==20'h1AC) az_modulus <= sys_wdata[ENC_TW-1:0];
     if (sys_addr[19:0]==20'h38) fft_peak_start <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h3C) fft_threshold_k <= sys_wdata[16-1:0];
     if (sys_addr[19:0]==20'h40) fft_peak_minimum <= sys_wdata[DSZ-1:0];
@@ -1863,6 +1994,8 @@ end else begin
         4'd10: adc_trig <= trig_dsp_i    ; // dsp trigger input
         4'd11: adc_trig <= asg_trig2_p   ; // ASG 3 - rising edge
         4'd12: adc_trig <= asg_trig2_n   ; // ASG 4 - rising edge
+        4'd13: adc_trig <= enc_trig_tick ; // encoder tick (gated; no debounce —
+                                           // fixed 1-cycle latency, matches asg3)
         default : adc_trig <= 1'b0          ;
     endcase
 
@@ -1879,6 +2012,7 @@ end else begin
         4'd10: fft_trig <= trig_dsp_i    ; // dsp trigger input
         4'd11: fft_trig <= asg_trig2_p   ; // ASG 3 - rising edge
         4'd12: fft_trig <= asg_trig2_n   ; // ASG 4 - rising edge
+        4'd13: fft_trig <= enc_trig_tick ; // encoder tick
         default : fft_trig <= 1'b0          ;
     endcase
 end
@@ -2138,6 +2272,10 @@ assign sys_en = sys_wen | sys_ren;
 logic scope_sig;
 logic [32-1:0] scope_sig_pre_cnt;
 logic [8-1:0] scope_sig_post_cnt;
+// mems_turn_kick (enc_ctrl[15:12]): extra scope_sig_o pulses injected at each
+// turn pulse, forcing a chosen MEMS precession regardless of T mod L. Reuses
+// the scan one-shot (same pre-delay/width), fired back-to-back while pending.
+logic [4-1:0] kick_pend;
 // Width of the scope_sig_o scan-trigger pulse, in adc cycles. Was 125 (1 us) only
 // so a cheap oscilloscope could see it; that 1 us is ~30% of the 300 kHz chirp
 // period and, since scope_sig blocks re-arming while high, it made the scan-
@@ -2154,12 +2292,18 @@ if (adc_rstn_i == 1'b0) begin
    sys_err <= 1'b0 ;
    sys_ack <= 1'b0 ;
    scope_sig <= 1'b0;
+   kick_pend <= 4'h0;
 
 end else begin
    sys_err <= 1'b0 ;
 
+   if (enc_turn_evt)
+      kick_pend <= enc_ctrl[15:12];
+   else if (!scope_sig && !fft_trig_accept && (kick_pend != 0))
+      kick_pend <= kick_pend - 1'b1;
+
    if (!scope_sig) begin
-     scope_sig <= fft_trig_accept;
+     scope_sig <= fft_trig_accept || (kick_pend != 0);
      scope_sig_pre_cnt <= scope_sig_dly;
      scope_sig_post_cnt <= SCAN_SIG_POST; // short scan-trigger pulse (was 125 = 1us debug)
    end else if (scope_sig_pre_cnt != 0)
@@ -2288,10 +2432,11 @@ end else begin
      // Data-word peak field width IDX = FSZ+FRAC; host: bin = field / 2^FRAC.
      // (FRAC was previously exposed standalone here; it is now the [15:8] sub-field.)
      20'h00098 : begin sys_ack <= sys_en;          sys_rdata <= {28'h0, dma_nch}                          ; end
-     20'h0009C : begin sys_ack <= sys_en;          sys_rdata <= {31'h0, dma_int_en}                       ; end
+     20'h0009C : begin sys_ack <= sys_en;          sys_rdata <= {30'h0, dma_az_en, dma_int_en}            ; end
      // Version byte is LIVE: base +2 while the runtime intensity enable is on,
      // matching what the packets stamp (after the next packet boundary).
-     20'h00170 : begin sys_ack <= sys_en;          sys_rdata <= {8'(DMA_FMT_VERSION + (dma_int_en ? 8'd2 : 8'd0)),
+     20'h00170 : begin sys_ack <= sys_en;          sys_rdata <= {8'(DMA_FMT_VERSION + (dma_int_en ? 8'd2 : 8'd0)
+                                                                                    + (dma_az_en  ? 8'd4 : 8'd0)),
                                                                  DMA_FMT_HSZ, DMA_FMT_FRAC, DMA_FMT_FSZ}  ; end
      // Peak-bin sub-bin FRACTION (the low FRAC bits of k_interp), per channel.
      // 0x174/0x178 pack {down, up} for channel A/B — each the FRAC-bit fraction
@@ -2309,10 +2454,22 @@ end else begin
      //   [27:20]=DMA_SEQ_W (header low bits used as a per-packet sequence; 0 = none).
      // [28] = runtime-intensity capable (the 0x9C enable register exists);
      // older bitstreams read 0 there, so the host can feature-detect.
-     20'h00194 : begin sys_ack <= sys_en;          sys_rdata <= {3'h0, 1'b1, 8'(DMA_SEQ_W), 4'd4, DMA_PKT_BLK}    ; end
+     // [29] = azimuth-mode capable (0x9C bit 1 + the v7-v10 formats exist);
+     // older bitstreams read 0, so the host feature-detects like intensity.
+     20'h00194 : begin sys_ack <= sys_en;          sys_rdata <= {2'h0, 1'b1, 1'b1, 8'(DMA_SEQ_W), 4'd4, DMA_PKT_BLK}  ; end
      // Input-FIFO reset diagnostics per engine: {rst_drop[31:16], zero_frame[15:0]}
      20'h00198 : begin sys_ack <= sys_en;          sys_rdata <= fft_diag[0]                         ; end
      20'h0019C : begin sys_ack <= sys_en;          sys_rdata <= fft_diag[1]                         ; end
+
+     // ---- Scanner360 encoder / azimuth-mode registers ----
+     // az packet-format descriptor: [7:0]=MSW [15:8]=DTW [23:16]=TKW
+     20'h001A4 : begin sys_ack <= sys_en;          sys_rdata <= {8'h0, 8'(HSZ-MSW), 8'd4, 8'(MSW)}  ; end
+     20'h001A8 : begin sys_ack <= sys_en;          sys_rdata <= {16'h0, enc_ctrl}                   ; end
+     20'h001AC : begin sys_ack <= sys_en;          sys_rdata <= {16'h0, az_modulus}                 ; end
+     20'h001B0 : begin sys_ack <= sys_en;          sys_rdata <= {enc_turn_cnt, enc_tick_in_turn}    ; end
+     20'h001B4 : begin sys_ack <= sys_en;          sys_rdata <= {16'h0, enc_ticks_last_turn}        ; end
+     20'h001B8 : begin sys_ack <= sys_en;          sys_rdata <= enc_turn_period                     ; end
+     20'h001BC : begin sys_ack <= sys_en;          sys_rdata <= {enc_cnt_fired, enc_cnt_masked}     ; end
 
      20'h1???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_a_rd}              ; end
      20'h2???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_b_rd}              ; end
