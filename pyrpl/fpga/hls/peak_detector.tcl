@@ -41,6 +41,8 @@ if {$peak_algo == "cfar"} {
     # the capacity fallback for n11. Must match red_pitaya_vivado.tcl's
     # $peak_ramp (BD ports + fft_proc PEAK_RAMP define). Default on.
     if {[info exists env(PEAK_RAMP)] && !$env(PEAK_RAMP)} { append cflags " -DPEAK_RAMP=0" }
+    # CFAR_ZNORM=1: block-floating z-test (DSP saver, LUT cost; see peak_detector.h).
+    if {[info exists env(CFAR_ZNORM)]} { append cflags " -DCFAR_ZNORM=$env(CFAR_ZNORM)" }
     # Retry re-sweep beats/cycle (and its beat-dim partition = UF/2); sizes the
     # worst-case all-retries frame cost. Both must be set together (UF, UF/2).
 }

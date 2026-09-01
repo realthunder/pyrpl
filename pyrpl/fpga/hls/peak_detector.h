@@ -113,6 +113,17 @@ typedef ap_int<SSZ + SQ_BITS + 1>           sdiff_t;    // ap_int<32>
 #ifndef PEAK_RAMP
 #define PEAK_RAMP 1
 #endif
+// CFAR_ZNORM=1 runs the detect-stage SO cross-multiply and z-test on block-
+// floating (nibble-normalized, 19-bit mantissa) operands instead of full width.
+// Measured on the n11 image (2026-09-01, DSZ=24/NCNT_W=7): -10 DSP and +421 LUT
+// per engine, FF unchanged, verdicts identical in csim. The wide products live
+// in DSPs at 1-2 LUT each, so normalization only trades DSP for LUT muxes —
+// a loss on the LUT-bound n11 die, a win only for a DSP-bound image (e.g. the
+// 178 MHz IMPL=5 profile at 98% DSP). Default OFF. HLS-only knob (no BD/RTL
+// side); part of make.sh's HLS fingerprint.
+#ifndef CFAR_ZNORM
+#define CFAR_ZNORM 0
+#endif
 #ifndef RAMP_INT
 #define RAMP_INT 3                  // 8 log2 units == ~48 dB of attenuation cap,
                                     // still ~2x the measured ~24 dB pedestal. The

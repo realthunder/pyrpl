@@ -292,6 +292,7 @@ static void cfar_stream_stage(
 //     inside the ramp region therefore needs a higher RAW amplitude to pass,
 //     which is expected and roughly self-compensating: beat frequency tracks
 //     range, so a nearer target returns proportionally more power.
+#if CFAR_ZNORM
 // Block-floating normalization for the detect-stage statistics.
 // norm_nib: the smallest nibble count k such that (big >> 4k) < 2^MANT_.
 // NSTEP_ = ceil((W-MANT_)/4); the threshold bit MANT_+4*(k-1) is always < W.
@@ -321,6 +322,7 @@ static ap_uint<OW> nib_shr(ap_uint<W> x, ap_uint<3> k) {
     }
     return r;
 }
+#endif  // CFAR_ZNORM
 
 static void cfar_detect_stage(
     data_t                     mag[FSSR][PK_DEPTH],
@@ -475,6 +477,7 @@ static void cfar_detect_stage(
     // k^2=30); raise threshold_k_sq alongside it.
     bool so_ok = ((bool)so_mode) && (n_left  >= (ncnt_t)min_side)
                                  && (n_right >= (ncnt_t)min_side);
+#if CFAR_ZNORM
     //
     // Both this cross-multiply and the z-test below run on BLOCK-FLOATING
     // operands (see norm_nib / nib_shr): the comparisons are homogeneous in magnitude
@@ -501,6 +504,14 @@ static void cfar_detect_stage(
     ap_uint<MANT + NCNT_W> ml = nib_shr<LINW, MANT, NSTEP, 4>(Sig_l, k_so) * n_right;
     ap_uint<MANT + NCNT_W> mr = nib_shr<LINW, MANT, NSTEP, 4>(Sig_r, k_so) * n_left;
     bool take_left = (ml <= mr);
+#else
+    typedef ap_uint<2*DSZ + 2*NCNT_W + 1> wprod_t; // n*Q, Sigma^2, diff^2
+    typedef ap_uint<2*DSZ + 2*NCNT_W + 17> wthr_t; // k^2 (16b) * V
+
+    ap_uint<DSZ + 2*NCNT_W> ml = Sig_l * n_right;
+    ap_uint<DSZ + 2*NCNT_W> mr = Sig_r * n_left;
+    bool take_left = (ml <= mr);
+#endif  // CFAR_ZNORM
 
     wsum_t Sigma;
     wsq_t  Q;
@@ -519,6 +530,7 @@ static void cfar_detect_stage(
     // n>0 and P above the local mean (P*n > Sigma). No divide or sqrt. Multiply
     // at natural operand widths and cast the RESULT (don't widen an operand).
     // P is the CORRECTED peak: it must live in the same domain as the window.
+#if CFAR_ZNORM
     // Normalized: k nibbles clear the larger of Pn / Sigma down to MANT bits. Q
     // fits 2*MANT bits after >> 8k because Q = sum x^2 <= max(x) * Sigma <= Sigma^2
     // < 2^(2*(MANT+s)). The sign test (P above the local mean) stays exact.
@@ -534,6 +546,19 @@ static void cfar_detect_stage(
     vprod_t S_sq    = (vprod_t)(Sig_n * Sig_n);         // MANT^2
     vprod_t V       = (nQ >= S_sq) ? (vprod_t)(nQ - S_sq) : (vprod_t)0;  // n^2 * variance >= 0
     vthr_t  thr     = (vthr_t)(threshold_k_sq * V);     // 16b x vprod
+#else
+    pn_t    Pn      = peak_cor * n;                     // DSZ x NCNT_W
+    typedef ap_int<DSZ + NCNT_W + 1> sdiff_w;           // signed (P*n - Sigma)
+    sdiff_w diff    = (sdiff_w)Pn - (sdiff_w)Sigma;     // signed
+    bool    above   = (diff > 0);
+    ap_int<2*(DSZ + NCNT_W + 1)> diff_s = diff * diff;  // (DSZ+NCNT+1)^2, >= 0
+    wprod_t diff_sq = (wprod_t)diff_s;
+    wprod_t nQ      = (wprod_t)(n * Q);                 // NCNT_W x (2DSZ+NCNT)
+    wprod_t S_sq    = (wprod_t)(Sigma * Sigma);         // (DSZ+NCNT)^2
+    wprod_t V       = (nQ >= S_sq) ? (wprod_t)(nQ - S_sq) : (wprod_t)0;  // n^2 * variance >= 0
+    wthr_t  thr     = (wthr_t)(threshold_k_sq * V);     // 16b x wprod
+    typedef wthr_t vthr_t;                              // for the shared verdict below
+#endif  // CFAR_ZNORM
 
     // One-sided near-cutoff fallback (`onesided` runtime register): a
     // candidate whose LEFT band is short (inside the dead zone) may still
