@@ -197,7 +197,7 @@ fi
 # keep an fftNNN prefix; non-default variants take a suffix, e.g. -impl5, -single, -global.)
 #   ssr4n11 — IMPL=4 (native xfft) SSR=4 NFFT=11 (2048-pt) — single-clock version of
 #             fft178ssr4n11. dsz24/frac8/scaled2/approx + ramp/SO-CFAR, DSP+module+scope
-#             fb pipelines, lean knobs (ASG_ADVTRIG=0, PID_FILTERSTAGES=2, guard 8 /
+#             fb pipelines, lean knobs (ASG_ADVTRIG=0, ASG0=0, PID_FILTERSTAGES=2, guard 8 /
 #             train 63, opt ExploreSequentialArea), place ExtraNetDelay_high
 #             (DETERMINISTIC=2), phys_opt AggressiveExplore. LUT ~91% — at the placer's
 #             cliff; N11@125 placement is netlist-sensitive, re-sweep DETERMINISTIC
@@ -333,13 +333,17 @@ case "${PROFILE:-}" in
         # neutral: they reset to the transparent state and the product never
         # arms them).
         export ASG_ADVTRIG=${ASG_ADVTRIG:-0}
+        # Compile out ASG channel 0 (~770 LUT / 7 RAMB36 / 1 DSP): the product
+        # only uses asg1 (mems cos), asg2 (mems sin) and asg3 (chirp). Buys back
+        # more than the ramp costs, so the n11 die fits with PEAK_RAMP on.
+        export ASG0=${ASG0:-0}
         # DET=2 (ExtraNetDelay_high) won the 2026-07-22 ramp-slim 4-seed sweep
         # (7/2/8/5 all PLACED; DET=2 closed at adc +0.023/+0.020 with the
         # steping->scope multicycle now in sdc/red_pitaya.xdc). Re-sweep after
         # RTL edits — the winner is netlist-sensitive.
         export DETERMINISTIC=${DETERMINISTIC:-2}
         export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
-        echo "==> PROFILE=ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/pidfilt2/guard8/train63), place ExtraNetDelay_high (DETERMINISTIC=2), phys_opt AggressiveExplore"
+        echo "==> PROFILE=ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place ExtraNetDelay_high (DETERMINISTIC=2), phys_opt AggressiveExplore"
         ;;
     ssr4n11-impl5)
         # LOWER-DR experiment — NOT the product N11 image (use ssr4n11 / IMPL=4 for that).
@@ -734,7 +738,7 @@ manifest="$WORKROOT/out/BUILD_INFO.txt"
     for v in FPGA_PART ADC_SZ CLK_MULT CLK_ADC_DIV FFT_IMPL FFT_SSR FFT_NFFT \
              FFT_WIDTH PEAK_FRAC PEAK_ALGO CFAR_GUARD_MAX CFAR_TRAIN_MAX PEAK_RAMP CFAR_ZNORM FFT_SCALED FFT_INTERNAL_W FFT_CLK_PERIOD FFT_CLK_SEL FFT_CLK_200 FFT_CLK_178 \
              FFT_MULT_LUT FFT_USE_APPROX FFT_UNSCALED FFT_CORDIC_ITER HIST_BLOCK_SIZE HSZ PHYS_OPT OPT_DIRECTIVE FFT_SINGLE DSP_FB_PIPELINE SCOPE_FB_PIPELINE MODULE_FB_PIPELINE \
-             DSP_LEAN ASG_ADVTRIG PID_FILTERSTAGES DMA_PER_CHAN_TAG DMA_INTENSITY; do
+             DSP_LEAN ASG_ADVTRIG ASG0 PID_FILTERSTAGES DMA_PER_CHAN_TAG DMA_INTENSITY; do
         printf '%-14s= %s\n' "$v" "${!v:-}"
     done
 } > "$manifest"

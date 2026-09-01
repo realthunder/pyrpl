@@ -258,44 +258,113 @@ red_pitaya_adv_trigger adv_trig_d (
 `endif
 
 
-red_pitaya_asg_ch  #(.RSZ (RSZ)) ch [4-1:0] (
-  // DAC
-  .dac_o           ({dac_d_o          , dac_c_o          , dac_b_o          , dac_a_o          }),  // dac data output
-  .dac_clk_i       ({dac_clk_i        , dac_clk_i        , dac_clk_i        , dac_clk_i        }),  // dac clock
-  .dac_rstn_i      ({dac_rstn_i       , dac_rstn_i       , dac_rstn_i       , dac_rstn_i       }),  // dac reset - active low
-  // trigger
-  .trig_sw_i       ({_trig_d_sw       ,_trig_c_sw        ,_trig_b_sw        ,_trig_a_sw        }),  // software trigger
-  .trig_ext_i      ({at_trig_d        , at_trig_c        , at_trig_a        , at_trig_b        }),  // advanced trigger as ext trigger - backwards-compatible with original version
-  .trig_enc_i      ({trig_enc_i       , trig_enc_i       , trig_enc_i       , trig_enc_i       }),  // encoder tick (same pulse; used only by channels with trig_src=6)
-  .trig_src_i      ({trig_d_src       , trig_c_src       , trig_b_src       , trig_a_src       }),  // trigger source selector
-  .trig_slave_i    ({trig_d_slave     , trig_c_slave     , trig_b_slave     , trig_a_slave     }),  // slave trigger
-  .trig_done_o     ({trig_d_done      , trig_c_done      , trig_b_done      , trig_a_done      }),  // trigger event
-  .play_done_o     ({play_d_done      , play_c_done      , play_b_done      , play_a_done      }),  // data play done event
-  .play_active_o   ({play_d_act       , play_c_act       , play_b_act       , play_a_act       }),  // playing (dac_do)
-  // buffer ctrl
-  .buf_we_i        ({buf_d_we         , buf_c_we         , buf_b_we         , buf_a_we         }),  // buffer buffer write
-  .buf_addr_i      ({buf_d_addr       , buf_c_addr       , buf_b_addr       , buf_a_addr       }),  // buffer address
-  .buf_wdata_i     ({sys_wdata[14-1:0], sys_wdata[14-1:0], sys_wdata[14-1:0], sys_wdata[14-1:0]}),  // buffer write data
-  .buf_rdata_o     ({buf_d_rdata      , buf_c_rdata      , buf_b_rdata      , buf_a_rdata      }),  // buffer read data
-  .buf_rpnt_o      ({buf_d_rpnt       , buf_c_rpnt       , buf_b_rpnt       , buf_a_rpnt       }),  // buffer current read pointer
-  .step_o          ({_step_d_o        ,_step_c_o         ,_step_b_o         ,_step_a_o         }),  // buffer current step
-  // configuration
-  .set_size_i      ({set_d_size       , set_c_size       , set_b_size       , set_a_size       }),  // set table data size
-  .set_step_i      ({set_d_step       , set_c_step       , set_b_step       , set_a_step       }),  // set pointer step
-  .set_ofs_i       ({set_d_ofs        , set_c_ofs        , set_b_ofs        , set_a_ofs        }),  // set reset offset
-  .set_rst_i       ({_set_d_rst       ,_set_c_rst        ,_set_b_rst        ,_set_a_rst        }),  // set FMS to reset
-  .set_wrap_i      ({set_d_wrap       , set_c_wrap       , set_b_wrap       , set_a_wrap       }),  // set wrap pointer
-  .set_amp_i       ({set_d_amp        , set_c_amp        , set_b_amp        , set_a_amp        }),  // set amplitude scale
-  .set_dc_i        ({set_d_dc         , set_c_dc         , set_b_dc         , set_a_dc         }),  // set output offset
-  .set_zero_i      ({_set_d_zero      ,_set_c_zero       ,_set_b_zero       ,_set_a_zero       }),  // set output to zero
-  .set_ncyc_i      ({set_d_ncyc       , set_c_ncyc       , set_b_ncyc       , set_a_ncyc       }),  // set number of cycle
-  .set_rnum_i      ({set_d_rnum       , set_c_rnum       , set_b_rnum       , set_a_rnum       }),  // set number of repetitions
-  .set_rdly_i      ({set_d_rdly       , set_c_rdly       , set_b_rdly       , set_a_rdly       }),  // set delay between repetitions
-  .set_rgate_i     ({set_d_rgate      , set_c_rgate      , set_b_rgate      , set_a_rgate      }),  // set external gated repetition
-  .reverse_on_i    ({reverse_d_on     , reverse_c_on     , reverse_b_on     , reverse_a_on     }),
-  .rand_on_i       ({rand_d_on        , rand_c_on        , rand_b_on        , rand_a_on        }),
-  .rand_pnt_i      ({rand_pnt         , rand_pnt         , rand_pnt         , rand_pnt         })
-);
+// The four channels used to be one array instance (`ch [4-1:0]`) driven by
+// port concatenations.  It is now a generate loop over the same packed
+// vectors, so a single channel can be compiled out; with all four present the
+// netlist is identical to the array form (only the hierarchy names change,
+// ch[i] -> gen_ch[i].ch).
+//
+// DISABLE_ASG0 drops channel 0 (asg0, ~770 LUT / 320 FF / 7 RAMB36 / 1 DSP)
+// and ties its outputs off.  The FMCW product never uses asg0 (asg1 = mems
+// cos, asg2 = mems sin, asg3 = chirp); the sysbus decode is left untouched, so
+// asg0 writes are dead and its reads return the (still present) config
+// registers with a zeroed read pointer / table.  Side effects: asg1's
+// "slave to asg0" mode (trig_b_slave on play_a_done) never fires — the scanner
+// uses scope one-shot stepping, not slaving; asg1phase_o (= buf_a_rpnt) and
+// the asg0 trigger/DSP-mux outputs read 0.
+wire [ 4*14   -1:0] ch_dac_o;
+wire [ 4      -1:0] ch_trig_sw    = {_trig_d_sw  ,_trig_c_sw   ,_trig_b_sw   ,_trig_a_sw   };
+// note the a/b swap on trig_ext: backwards-compatible with the original version
+wire [ 4      -1:0] ch_trig_ext   = {at_trig_d   , at_trig_c   , at_trig_a   , at_trig_b   };
+wire [ 4*3    -1:0] ch_trig_src   = {trig_d_src  , trig_c_src  , trig_b_src  , trig_a_src  };
+wire [ 4      -1:0] ch_trig_slave = {trig_d_slave, trig_c_slave, trig_b_slave, trig_a_slave};
+wire [ 4      -1:0] ch_trig_done;
+wire [ 4      -1:0] ch_play_done;
+wire [ 4      -1:0] ch_play_act;
+wire [ 4      -1:0] ch_buf_we     = {buf_d_we    , buf_c_we    , buf_b_we    , buf_a_we    };
+wire [ 4*RSZ  -1:0] ch_buf_addr   = {buf_d_addr  , buf_c_addr  , buf_b_addr  , buf_a_addr  };
+wire [ 4*14   -1:0] ch_buf_rdata;
+wire [ 4*RSZ  -1:0] ch_buf_rpnt;
+wire [ 4*RSZ  -1:0] ch_step;
+wire [ 4*(RSZ+16)-1:0] ch_set_size = {set_d_size , set_c_size  , set_b_size  , set_a_size  };
+wire [ 4*(RSZ+16)-1:0] ch_set_step = {set_d_step , set_c_step  , set_b_step  , set_a_step  };
+wire [ 4*(RSZ+16)-1:0] ch_set_ofs  = {set_d_ofs  , set_c_ofs   , set_b_ofs   , set_a_ofs   };
+wire [ 4      -1:0] ch_set_rst    = {_set_d_rst  ,_set_c_rst   ,_set_b_rst   ,_set_a_rst   };
+wire [ 4      -1:0] ch_set_wrap   = {set_d_wrap  , set_c_wrap  , set_b_wrap  , set_a_wrap  };
+wire [ 4*14   -1:0] ch_set_amp    = {set_d_amp   , set_c_amp   , set_b_amp   , set_a_amp   };
+wire [ 4*14   -1:0] ch_set_dc     = {set_d_dc    , set_c_dc    , set_b_dc    , set_a_dc    };
+wire [ 4      -1:0] ch_set_zero   = {_set_d_zero ,_set_c_zero  ,_set_b_zero  ,_set_a_zero  };
+wire [ 4*32   -1:0] ch_set_ncyc   = {set_d_ncyc  , set_c_ncyc  , set_b_ncyc  , set_a_ncyc  };
+wire [ 4*16   -1:0] ch_set_rnum   = {set_d_rnum  , set_c_rnum  , set_b_rnum  , set_a_rnum  };
+wire [ 4*32   -1:0] ch_set_rdly   = {set_d_rdly  , set_c_rdly  , set_b_rdly  , set_a_rdly  };
+wire [ 4      -1:0] ch_set_rgate  = {set_d_rgate , set_c_rgate , set_b_rgate , set_a_rgate };
+wire [ 4      -1:0] ch_reverse_on = {reverse_d_on, reverse_c_on, reverse_b_on, reverse_a_on};
+wire [ 4      -1:0] ch_rand_on    = {rand_d_on   , rand_c_on   , rand_b_on   , rand_a_on   };
+
+assign {dac_d_o     , dac_c_o     , dac_b_o     , dac_a_o     } = ch_dac_o;
+assign {trig_d_done , trig_c_done , trig_b_done , trig_a_done } = ch_trig_done;
+assign {play_d_done , play_c_done , play_b_done , play_a_done } = ch_play_done;
+assign {play_d_act  , play_c_act  , play_b_act  , play_a_act  } = ch_play_act;
+assign {buf_d_rdata , buf_c_rdata , buf_b_rdata , buf_a_rdata } = ch_buf_rdata;
+assign {buf_d_rpnt  , buf_c_rpnt  , buf_b_rpnt  , buf_a_rpnt  } = ch_buf_rpnt;
+assign {_step_d_o   ,_step_c_o    ,_step_b_o    ,_step_a_o    } = ch_step;
+
+genvar gi;
+generate
+for (gi = 0; gi < 4; gi = gi + 1) begin : gen_ch
+`ifdef DISABLE_ASG0
+  if (gi == 0) begin : ch_off
+    assign ch_dac_o   [14*gi  +: 14 ] = 14'h0;
+    assign ch_buf_rdata[14*gi +: 14 ] = 14'h0;
+    assign ch_buf_rpnt[RSZ*gi +: RSZ] = {RSZ{1'b0}};
+    assign ch_step    [RSZ*gi +: RSZ] = {RSZ{1'b0}};
+    assign ch_trig_done[gi]           = 1'b0;
+    assign ch_play_done[gi]           = 1'b0;
+    assign ch_play_act [gi]           = 1'b0;
+  end else
+`endif
+  begin : ch_on
+  red_pitaya_asg_ch  #(.RSZ (RSZ)) ch (
+    // DAC
+    .dac_o           (ch_dac_o     [ 14*gi        +: 14     ]),  // dac data output
+    .dac_clk_i       (dac_clk_i                              ),  // dac clock
+    .dac_rstn_i      (dac_rstn_i                             ),  // dac reset - active low
+    // trigger
+    .trig_sw_i       (ch_trig_sw   [ gi                     ]),  // software trigger
+    .trig_ext_i      (ch_trig_ext  [ gi                     ]),  // advanced trigger as ext trigger
+    .trig_enc_i      (trig_enc_i                             ),  // encoder tick (same pulse; used only by channels with trig_src=6)
+    .trig_src_i      (ch_trig_src  [  3*gi        +:  3     ]),  // trigger source selector
+    .trig_slave_i    (ch_trig_slave[ gi                     ]),  // slave trigger
+    .trig_done_o     (ch_trig_done [ gi                     ]),  // trigger event
+    .play_done_o     (ch_play_done [ gi                     ]),  // data play done event
+    .play_active_o   (ch_play_act  [ gi                     ]),  // playing (dac_do)
+    // buffer ctrl
+    .buf_we_i        (ch_buf_we    [ gi                     ]),  // buffer buffer write
+    .buf_addr_i      (ch_buf_addr  [RSZ*gi        +: RSZ    ]),  // buffer address
+    .buf_wdata_i     (sys_wdata[14-1:0]                      ),  // buffer write data
+    .buf_rdata_o     (ch_buf_rdata [ 14*gi        +: 14     ]),  // buffer read data
+    .buf_rpnt_o      (ch_buf_rpnt  [RSZ*gi        +: RSZ    ]),  // buffer current read pointer
+    .step_o          (ch_step      [RSZ*gi        +: RSZ    ]),  // buffer current step
+    // configuration
+    .set_size_i      (ch_set_size  [(RSZ+16)*gi   +: RSZ+16 ]),  // set table data size
+    .set_step_i      (ch_set_step  [(RSZ+16)*gi   +: RSZ+16 ]),  // set pointer step
+    .set_ofs_i       (ch_set_ofs   [(RSZ+16)*gi   +: RSZ+16 ]),  // set reset offset
+    .set_rst_i       (ch_set_rst   [ gi                     ]),  // set FMS to reset
+    .set_wrap_i      (ch_set_wrap  [ gi                     ]),  // set wrap pointer
+    .set_amp_i       (ch_set_amp   [ 14*gi        +: 14     ]),  // set amplitude scale
+    .set_dc_i        (ch_set_dc    [ 14*gi        +: 14     ]),  // set output offset
+    .set_zero_i      (ch_set_zero  [ gi                     ]),  // set output to zero
+    .set_ncyc_i      (ch_set_ncyc  [ 32*gi        +: 32     ]),  // set number of cycle
+    .set_rnum_i      (ch_set_rnum  [ 16*gi        +: 16     ]),  // set number of repetitions
+    .set_rdly_i      (ch_set_rdly  [ 32*gi        +: 32     ]),  // set delay between repetitions
+    .set_rgate_i     (ch_set_rgate [ gi                     ]),  // set external gated repetition
+    .reverse_on_i    (ch_reverse_on[ gi                     ]),
+    .rand_on_i       (ch_rand_on   [ gi                     ]),
+    .rand_pnt_i      (rand_pnt                               )
+  );
+  end
+end
+endgenerate
 
 
 

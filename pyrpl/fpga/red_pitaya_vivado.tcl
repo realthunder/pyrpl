@@ -126,6 +126,14 @@ set dsp_lean [expr {[info exists env(DSP_LEAN)] ? $env(DSP_LEAN) : 0}]
 # so the plain-wire replacement is bit-identical unless software arms the alpha
 # feature (nothing in the FMCW product does). Default 1 (blocks present).
 set asg_advtrig [expr {[info exists env(ASG_ADVTRIG)] ? $env(ASG_ADVTRIG) : 1}]
+# ASG0=0 compiles out ASG channel 0 (asg0) in red_pitaya_asg — ~770 LUT / 320 FF
+# / 7 RAMB36 / 1 DSP of table+NCO+FSM. The FMCW product never uses asg0 (asg1 =
+# mems cos, asg2 = mems sin, asg3 = chirp), so this is free area on the n11 die
+# where the ramp/SO-CFAR detector sits at the placer's capacity cliff. Its
+# sysbus decode stays (writes dead, reads return the config regs with a zeroed
+# read pointer/table); asg1's unused "slave to asg0" mode, the asg0 trigger
+# output and the asg0 DSP mux input all read 0. Default 1 (channel present).
+set asg0 [expr {[info exists env(ASG0)] ? $env(ASG0) : 1}]
 # PID_FILTERSTAGES trims the pid input-filter chain (default 4 stages, ~530
 # LUT; 2 halves it). pyrpl reads the stage count back from reg 0x220, so the
 # host adapts automatically.
@@ -322,6 +330,7 @@ if {$scope_fb_pipeline} { lappend verilog_defines -verilog_define SCOPE_FB_PIPEL
 if {$module_fb_pipeline} { lappend verilog_defines -verilog_define MODULE_FB_PIPELINE }
 if {$dsp_lean} { lappend verilog_defines -verilog_define DSP_LEAN }
 if {!$asg_advtrig} { lappend verilog_defines -verilog_define DISABLE_ASG_ADVTRIG }
+if {!$asg0} { lappend verilog_defines -verilog_define DISABLE_ASG0 }
 if {$pid_filterstages != 4} { lappend verilog_defines -verilog_define PID_FILTERSTAGES=$pid_filterstages }
 if {$dma_per_chan_tag} { lappend verilog_defines -verilog_define DMA_PER_CHAN_TAG }
 if {$dma_intensity} { lappend verilog_defines -verilog_define DMA_INTENSITY }
@@ -586,7 +595,7 @@ if {![catch {open $path_out/BUILD_INFO.txt a} bi]} {
             fft_clk_period $fft_clk_period  fft_clk_sel $fft_clk_sel \
             fft_clk_200 $fft_clk_200  fft_clk_178 $fft_clk_178 \
             hist_block_size $hist_block_size  dsp_lean $dsp_lean \
-            asg_advtrig $asg_advtrig  pid_filterstages $pid_filterstages \
+            asg_advtrig $asg_advtrig  asg0 $asg0  pid_filterstages $pid_filterstages \
             phys_opt_dir $phys_opt_dir  opt_dir $opt_dir] {
         puts $bi [format "%-17s= %s" $k $v]
     }
