@@ -351,7 +351,12 @@ set_multicycle_path 1 -hold  -from $dsp_cfg
 
 # Scope (i_scope). set_a_tresh, set_a_hyst, set_dec, set_dly, fft_peak_start,
 # fft_threshold_k, fft_peak_minimum, fft_wait1_cnt, fft_wait2_cnt, fft_acq1_cnt,
-# fft_acq2_cnt, scope_sig_dly.
+# fft_acq2_cnt, scope_sig_dly, plus the Scanner360 config: enc_ctrl (0x1A8:
+# enable/gates/divider/glitch/kick), az_modulus (0x1AC, ticks per turn) and
+# dma_az_en (0x9C[1], azimuth scan-cell mode). All are written once by the host
+# before a scan; enc_ctrl/az_modulus fan into i_enc's compare/reload logic and
+# dma_az_en into the hist-index DSP (RSTA/C mux) and the ASM (packet-sampled
+# through xpm_cdc), so a 2-cycle settle is invisible.
 # (Input-filter set_*_filt_* and AXI-DMA set_*_axi_* are commented out in scope.sv
 #  — registers undriven/optimized away, so they are NOT constrained here.)
 set scope_cfg [get_cells {
@@ -362,6 +367,8 @@ set scope_cfg [get_cells {
     i_scope/fft_wait1_cnt_reg[*]  i_scope/fft_wait2_cnt_reg[*]
     i_scope/fft_acq1_cnt_reg[*]   i_scope/fft_acq2_cnt_reg[*]
     i_scope/scope_sig_dly_reg[*]
+    i_scope/enc_ctrl_reg[*]     i_scope/az_modulus_reg[*]
+    i_scope/dma_az_en_reg
 }]
 set_multicycle_path 2 -setup -from $scope_cfg
 set_multicycle_path 1 -hold  -from $scope_cfg

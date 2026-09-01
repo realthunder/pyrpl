@@ -1386,9 +1386,14 @@ always @(posedge fft_input_clk) begin
                 pt_adv <= asm_inc || asm_dec;     // ±1 step rides the advance bits
                 pt_dir <= asm_dec;                // 1 = backward (-1)
                 pt_hdr <= asm_hdr_need;           // v4: each channel re-anchors on a jump
-                // az mode: dt rides the data word; 0 when a header re-anchors
-                // this group (the parser pins the first point at the anchor)
-                pt_dt   <= asm_hdr_need ? 4'h0 : asm_dtick[3:0];
+                // az mode: dt rides the data word. Captured UNCONDITIONALLY: when
+                // asm_hdr_need is set this group goes through S_HDR (directly, or
+                // via the packet-overflow re-header below), and S_HDR zeroes pt_dt
+                // before any data word is emitted — so gating it here was
+                // redundant and put the whole asm_hdr_need cone (10 logic levels:
+                // idx subtract + compares + OR tree) on pt_dt's reset pin; on the
+                // n11 die that path missed by -0.380 ns.
+                pt_dt   <= asm_dtick[3:0];
                 pt_mems <= dma_point_idx_a[MSW-1:0];
                 asm_frame_pend <= 1'b0;
                 asm_busy <= 1'b1;

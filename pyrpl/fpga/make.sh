@@ -196,10 +196,12 @@ fi
 # neither is spelled out — plain ssrXnY = SSR=X / NFFT=Y @125 / CFAR. Non-default clocks
 # keep an fftNNN prefix; non-default variants take a suffix, e.g. -impl5, -single, -global.)
 #   ssr4n11 — IMPL=4 (native xfft) SSR=4 NFFT=11 (2048-pt) — single-clock version of
-#             fft178ssr4n11. dsz24/frac8/scaled2/approx + DSP fb pipeline, place
-#             AltSpreadLogic_medium (DETERMINISTIC=7), phys_opt AggressiveExplore. Best:
-#             pll_adc +0.170 (ser non-binding). N11@125 placement is netlist-sensitive —
-#             re-sweep DETERMINISTIC after RTL edits.
+#             fft178ssr4n11. dsz24/frac8/scaled2/approx + ramp/SO-CFAR, DSP+module+scope
+#             fb pipelines, lean knobs (ASG_ADVTRIG=0, PID_FILTERSTAGES=2, guard 8 /
+#             train 63, opt ExploreSequentialArea), place ExtraNetDelay_high
+#             (DETERMINISTIC=2), phys_opt AggressiveExplore. LUT ~91% — at the placer's
+#             cliff; N11@125 placement is netlist-sensitive, re-sweep DETERMINISTIC
+#             after RTL edits. History in docs/BuildLog.md (2026-07-22, 2026-09-01).
 #   ssr4n11-impl5 — LOWER-DR experiment, NOT for product. Same 2048-pt image as ssr4n11 but
 #             the direct hls::fft (FFT_IMPL=5). It only fits because it runs INTERNAL_W=16
 #             (16-bit *scaled* internal datapath) vs ssr4n11's unscaled 28-bit full-growth —
@@ -218,6 +220,14 @@ fi
 #             pre-scope-change winner Default/DET=8 at +0.076/+0.051 now FAILS setup at
 #             −0.156.) LUT 70% / FF 45% / BRAM 55% / DSP 67%. Archive:
 #             out.d/sweep-impl4-ssr4n9-125-dsz24-fbpipe-cfar-det2-AggressiveExplore.
+#   ssr4n9scan360 — ssr4n9 for the scan360 branch. Identical datapath; adds
+#             MODULE_FB_PIPELINE=1 + phys_opt Explore. scan360's added i_scope logic
+#             (ramp/SO-CFAR + azimuth/DMA) congests i_dsp and stretches its sum1->pid
+#             feedback path in routing: plain ssr4n9 fails 21/21 across a 7x3 sweep
+#             (best -0.127, setup-bound). modpipe cuts that path at the PID/IQ input
+#             filter. DET=2 x Explore: pll_adc WNS +0.205 / WHS +0.018 — hold is the
+#             binding margin. LUT 74% / FF 48% / BRAM 49% / DSP 73%. Costs +1 adc_clk
+#             of PID/IQ input latency. RE-SWEEP after RTL edits.
 #   ssr4n9-global — ssr4n9 with the legacy global peak detector (PEAK_ALGO=global) instead
 #             of the default CA-CFAR — the original 512-pt profile. WLDrivenBlockPlacement
 #             (DETERMINISTIC=4) was its pre-CFAR pick (pll_adc +0.272); RE-SWEEP under the
@@ -294,6 +304,18 @@ case "${PROFILE:-}" in
         # that binds n11 once the CFAR detector fills the die (force-replication is
         # counterproductive here). +1 adc_clk cycle of module input latency.
         export MODULE_FB_PIPELINE=${MODULE_FB_PIPELINE:-1}
+        # PID_FILTERSTAGES=2 halves the pid input-filter cascade (~270 LUT). The July
+        # 2026 ramp/SO-CFAR closure (out.d/n11-ramp-so-slim-adc+0.023) was built with
+        # it from the sweep environment, but the profile never exported it — the
+        # plain profile was ~270 LUT bigger than the documented recipe and, once
+        # Scanner360 added +259 LUT, no longer placed (LUT 101%). pyrpl reads the
+        # stage count back from reg 0x220.
+        export PID_FILTERSTAGES=${PID_FILTERSTAGES:-2}
+        # SCOPE_FB_PIPELINE=1 registers the i_dsp module-sum -> scope ADC-input path
+        # (sum1 -> dac_saturate -> adc_*_sum, 13 levels, 60% route): the worst 20 of
+        # the 66 failing endpoints on the 2026-09-01 scan360 n11 build (WNS -0.575).
+        # Costs +1 adc_clk of scope/FFT input latency; bit-identical otherwise.
+        export SCOPE_FB_PIPELINE=${SCOPE_FB_PIPELINE:-1}
         # DSP_LEAN=1 would strip PID0+IQ0 (~2.7k LUT + the recurring pll_adc_clk
         # module-sum feedback endpoints), but the product needs both (EO-PLL leg,
         # iq0 window-tuning probe) — keep it an emergency opt-in, default OFF.
@@ -317,7 +339,7 @@ case "${PROFILE:-}" in
         # RTL edits — the winner is netlist-sensitive.
         export DETERMINISTIC=${DETERMINISTIC:-2}
         export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
-        echo "==> PROFILE=ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe+modpipe+lean(advtrig/pidfilt2/guard8/train63), place ExtraNetDelay_high (DETERMINISTIC=2), phys_opt AggressiveExplore"
+        echo "==> PROFILE=ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/pidfilt2/guard8/train63), place ExtraNetDelay_high (DETERMINISTIC=2), phys_opt AggressiveExplore"
         ;;
     ssr4n11-impl5)
         # LOWER-DR experiment — NOT the product N11 image (use ssr4n11 / IMPL=4 for that).
@@ -407,6 +429,44 @@ case "${PROFILE:-}" in
         export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
         echo "==> PROFILE=ssr4n9: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, CA-CFAR, dsz24 frac8 scaled2 approx fbpipe, place ExtraNetDelay_high (DETERMINISTIC=2), phys_opt AggressiveExplore"
         ;;
+    ssr4n9scan360)
+        # ssr4n9 for the scan360 branch (Scanner360 tick-driven chain: encoder block,
+        # enc_tick triggers, DMA azimuth v7-v10). Same datapath as ssr4n9 — the only
+        # delta is MODULE_FB_PIPELINE=1 and phys_opt Explore.
+        #
+        # WHY: scan360 grows the die (LUT 37157->39635, FF 47456->51171, DSP 147->161;
+        # ~all of it inside i_scope: ramp/SO-CFAR detector + azimuth/DMA). i_dsp itself
+        # barely moves (+97 LUT) but gets squeezed, and its sum1 -> dac_saturate ->
+        # pid/pidfilter -> ki_mult feedback path stretches in ROUTING (64% of a 7.675ns
+        # path). A full 7x3 place x phys sweep on plain ssr4n9 closed NOTHING — 21/21
+        # failed setup, best -0.127 (hold was fine everywhere, +0.008..+0.050).
+        # MODULE_FB_PIPELINE registers dat_i at the PID/IQ input filter and cuts that
+        # path at its start — the same fix n11 needed once the CFAR detector filled the
+        # die. Costs +1 adc_clk cycle of PID/IQ input latency (harmless for FMCW
+        # acquisition, which does not traverse PID0; it does shift the EO-PLL leg 8ns).
+        #
+        # Best of the 4x2 re-sweep (2026-08-31, commit 7d119b19): DET=2 x Explore,
+        # pll_adc WNS +0.205 / WHS +0.018 (ser non-binding at 125 — FFT is on adc_clk).
+        # 6/8 closed; det10-Explore had more setup (+0.210) but thinner hold (+0.009).
+        # HOLD IS THE BINDING MARGIN (+0.018) and does not improve with a slower clock.
+        # LUT 73.8% / FF 48.1% / BRAM 48.6% / DSP 73.2%. New critical path is unrelated
+        # (i_asg/ch[1]/step_o -> i_scope CE). Archive:
+        # out.d/sweep-scan360-ssr4n9-125-dsz24-fbpipe-modpipe-cfar-det2-Explore.
+        # RE-SWEEP DETERMINISTIC/PHYS_OPT after RTL edits — N9 placement is noisy.
+        export FFT_IMPL=${FFT_IMPL:-4}
+        export FFT_SSR=${FFT_SSR:-4}
+        export FFT_NFFT=${FFT_NFFT:-9}
+        export FFT_WIDTH=${FFT_WIDTH:-24}
+        export PEAK_FRAC=${PEAK_FRAC:-8}
+        export FFT_SCALED=${FFT_SCALED:-2}
+        export FFT_USE_APPROX=${FFT_USE_APPROX:-1}
+        export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
+        export DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-1}
+        export MODULE_FB_PIPELINE=${MODULE_FB_PIPELINE:-1}
+        export DETERMINISTIC=${DETERMINISTIC:-2}
+        export PHYS_OPT=${PHYS_OPT:-Explore}
+        echo "==> PROFILE=ssr4n9scan360: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, CA-CFAR, dsz24 frac8 scaled2 approx fbpipe+modpipe, place ExtraNetDelay_high (DETERMINISTIC=2), phys_opt Explore"
+        ;;
     ssr4n9-global)
         # ssr4n9 with the LEGACY global peak detector (PEAK_ALGO=global) instead of the
         # default CA-CFAR — the original 512-pt profile. IMPL=4 SSR=4 NFFT=9, dsz24 +
@@ -428,7 +488,7 @@ case "${PROFILE:-}" in
         echo "==> PROFILE=ssr4n9-global: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, LEGACY global detector (PEAK_ALGO=global), dsz24 frac8 scaled2 approx fbpipe, place WLDrivenBlockPlacement (DETERMINISTIC=4), phys_opt AggressiveExplore"
         ;;
     *)
-        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 ssr2n13-125 fft178ssr4n11 ssr4n11 ssr4n11-impl5 ssr4n13-single fft178ssr8n11 ssr4n9 ssr4n9-global)" >&2; exit 1 ;;
+        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 ssr2n13-125 fft178ssr4n11 ssr4n11 ssr4n11-impl5 ssr4n13-single fft178ssr8n11 ssr4n9 ssr4n9scan360 ssr4n9-global)" >&2; exit 1 ;;
 esac
 
 # ---- Active build defaults (override on the command line, e.g. FFT_IMPL=5 ./make.sh) ----
