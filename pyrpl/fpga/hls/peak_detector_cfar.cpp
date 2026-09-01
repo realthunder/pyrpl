@@ -292,6 +292,36 @@ static void cfar_stream_stage(
 //     inside the ramp region therefore needs a higher RAW amplitude to pass,
 //     which is expected and roughly self-compensating: beat frequency tracks
 //     range, so a nearer target returns proportionally more power.
+// Block-floating normalization for the detect-stage statistics.
+// norm_nib: the smallest nibble count k such that (big >> 4k) < 2^MANT_.
+// NSTEP_ = ceil((W-MANT_)/4); the threshold bit MANT_+4*(k-1) is always < W.
+// nib_shr: x >> (STEP*k) as an explicit select over the NSTEP_+1 CONSTANT
+// shifts, truncated to OW bits. Written this way on purpose: a variable-amount
+// `x >> s` makes HLS instantiate a full pipelined barrel shifter per operand
+// (lshr_31ns_4ns: 243 LUT + 338 FF each, lshr_55ns_5ns: 461 + 546 — more than
+// the wide multiplies it replaced), whereas this is an OW-bit (NSTEP_+1):1 mux.
+template<int W, int MANT_, int NSTEP_>
+static ap_uint<3> norm_nib(ap_uint<W> big) {
+#pragma HLS INLINE
+    ap_uint<3> k = 0;
+    for (int i = NSTEP_; i >= 1; i--) {
+#pragma HLS UNROLL
+        if (k == 0 && big >= (ap_uint<W>(1) << (MANT_ + 4 * (i - 1))))
+            k = i;
+    }
+    return k;
+}
+template<int W, int OW, int NSTEP_, int STEP>
+static ap_uint<OW> nib_shr(ap_uint<W> x, ap_uint<3> k) {
+#pragma HLS INLINE
+    ap_uint<OW> r = (ap_uint<OW>)x;            // k == 0: x < 2^OW by construction
+    for (int i = 1; i <= NSTEP_; i++) {
+#pragma HLS UNROLL
+        if (k == i) r = (ap_uint<OW>)(x >> (STEP * i));
+    }
+    return r;
+}
+
 static void cfar_detect_stage(
     data_t                     mag[FSSR][PK_DEPTH],
     hls::stream<pk_info_t>    &pk_in,
@@ -333,9 +363,6 @@ static void cfar_detect_stage(
     typedef ap_uint<DSZ + NCNT_W>  wsum_t;    // Sum of training magnitudes  (<= 2T * 2^DSZ)
     typedef ap_uint<2*DSZ + NCNT_W> wsq_t;    // Sum of training squares     (<= 2T * 2^2DSZ)
     typedef ap_uint<DSZ + NCNT_W>  pn_t;      // P * n
-    typedef ap_int<DSZ + NCNT_W + 1> sdiff_w; // signed (P*n - Sigma)
-    typedef ap_uint<2*DSZ + 2*NCNT_W + 1> wprod_t; // n*Q, Sigma^2, diff^2
-    typedef ap_uint<2*DSZ + 2*NCNT_W + 17> wthr_t; // k^2 (16b) * V
 
     int G = (int)guard_cells;
     int T = (int)train_cells;
@@ -448,8 +475,31 @@ static void cfar_detect_stage(
     // k^2=30); raise threshold_k_sq alongside it.
     bool so_ok = ((bool)so_mode) && (n_left  >= (ncnt_t)min_side)
                                  && (n_right >= (ncnt_t)min_side);
-    ap_uint<DSZ + 2*NCNT_W> ml = Sig_l * n_right;
-    ap_uint<DSZ + 2*NCNT_W> mr = Sig_r * n_left;
+    //
+    // Both this cross-multiply and the z-test below run on BLOCK-FLOATING
+    // operands (see norm_nib / nib_shr): the comparisons are homogeneous in magnitude
+    // (degree 1 here, degree 2 in the z-test), so shifting the linear operands
+    // right by a common s (and the quadratic Q by 2s) leaves the verdict
+    // unchanged up to truncation. A MANT-bit mantissa perturbs a ratio by
+    // < 2^-(MANT-1); a verdict can only flip when the true margin is that thin
+    // (k^2 is 9..30, margins are dB-scale). The shift is chosen in NIBBLE
+    // steps from the larger linear operand, so the barrel shifters are 2-3
+    // stages of 4:1 muxes rather than 16:1. What it buys at n11 (DSZ=24,
+    // NCNT_W=7): the 31x31, 32x32, 55x7 and 63x16 products and the 55/62/79-
+    // bit adders/compares of the full-width test (23 DSPs, ~2.5k FF per
+    // engine in csynth) collapse to <= 2*MANT+NCNT_W+16 bits. The testbench
+    // reference model stays exact integer math; csim checks agreement.
+    const int MANT  = 19;                                   // mantissa width
+    const int LINW  = DSZ + NCNT_W;                         // Pn / Sigma / Sig_l/r
+    const int NSTEP = (LINW > MANT) ? (LINW - MANT + 3) / 4 : 0;
+    typedef ap_uint<MANT>                  mant_t;
+    typedef ap_uint<2*MANT>                mant2_t;         // Q>>2s, Sigma'^2, diff'^2
+    typedef ap_uint<2*MANT + NCNT_W>       vprod_t;         // n*Q', V'
+    typedef ap_uint<2*MANT + NCNT_W + 16>  vthr_t;          // k^2 * V'
+
+    ap_uint<3> k_so = norm_nib<LINW, MANT, NSTEP>((Sig_l > Sig_r) ? Sig_l : Sig_r);
+    ap_uint<MANT + NCNT_W> ml = nib_shr<LINW, MANT, NSTEP, 4>(Sig_l, k_so) * n_right;
+    ap_uint<MANT + NCNT_W> mr = nib_shr<LINW, MANT, NSTEP, 4>(Sig_r, k_so) * n_left;
     bool take_left = (ml <= mr);
 
     wsum_t Sigma;
@@ -469,14 +519,21 @@ static void cfar_detect_stage(
     // n>0 and P above the local mean (P*n > Sigma). No divide or sqrt. Multiply
     // at natural operand widths and cast the RESULT (don't widen an operand).
     // P is the CORRECTED peak: it must live in the same domain as the window.
-    pn_t    Pn      = peak_cor * n;                     // DSZ x NCNT_W
-    sdiff_w diff    = (sdiff_w)Pn - (sdiff_w)Sigma;     // signed
-    ap_int<2*(DSZ + NCNT_W + 1)> diff_s = diff * diff;  // (DSZ+NCNT+1)^2, >= 0
-    wprod_t diff_sq = (wprod_t)diff_s;
-    wprod_t nQ      = (wprod_t)(n * Q);                 // NCNT_W x (2DSZ+NCNT)
-    wprod_t S_sq    = (wprod_t)(Sigma * Sigma);         // (DSZ+NCNT)^2
-    wprod_t V       = (nQ >= S_sq) ? (wprod_t)(nQ - S_sq) : (wprod_t)0;  // n^2 * variance >= 0
-    wthr_t  thr     = (wthr_t)(threshold_k_sq * V);     // 16b x wprod
+    // Normalized: k nibbles clear the larger of Pn / Sigma down to MANT bits. Q
+    // fits 2*MANT bits after >> 8k because Q = sum x^2 <= max(x) * Sigma <= Sigma^2
+    // < 2^(2*(MANT+s)). The sign test (P above the local mean) stays exact.
+    pn_t    Pn      = peak_cor * n;                     // DSZ x NCNT_W (one MAC)
+    bool    above   = (Pn > Sigma);
+    ap_uint<3> k    = norm_nib<LINW, MANT, NSTEP>(above ? (wsum_t)Pn : Sigma);
+    mant_t  Pn_n    = nib_shr<LINW,           MANT,   NSTEP, 4>((wsum_t)Pn, k);
+    mant_t  Sig_n   = nib_shr<LINW,           MANT,   NSTEP, 4>(Sigma, k);
+    mant2_t Q_n     = nib_shr<2*DSZ + NCNT_W, 2*MANT, NSTEP, 8>(Q, k);
+    ap_int<MANT + 1> diff_n = (ap_int<MANT + 1>)Pn_n - (ap_int<MANT + 1>)Sig_n;
+    mant2_t diff_sq = (mant2_t)(diff_n * diff_n);       // |diff_n| < 2^MANT
+    vprod_t nQ      = n * Q_n;                          // NCNT_W x 2*MANT
+    vprod_t S_sq    = (vprod_t)(Sig_n * Sig_n);         // MANT^2
+    vprod_t V       = (nQ >= S_sq) ? (vprod_t)(nQ - S_sq) : (vprod_t)0;  // n^2 * variance >= 0
+    vthr_t  thr     = (vthr_t)(threshold_k_sq * V);     // 16b x vprod
 
     // One-sided near-cutoff fallback (`onesided` runtime register): a
     // candidate whose LEFT band is short (inside the dead zone) may still
@@ -487,8 +544,8 @@ static void cfar_detect_stage(
                    ((n_left >= (ncnt_t)min_side) ||
                     ((bool)onesided && clear_ok));
 
-    bool passes = peak_valid && (n > 0) && (diff > 0) && edge_ok &&
-                  ((wthr_t)diff_sq > thr);
+    bool passes = peak_valid && (n > 0) && above && edge_ok &&
+                  ((vthr_t)diff_sq > thr);
 
     // --- Sub-bin parabolic interpolation (natural order), neighbors from buffer
     // RAW domain: this measures the SHAPE of the peak, and the ramp gain varies
