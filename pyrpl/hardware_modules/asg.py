@@ -276,6 +276,14 @@ def make_asg(channel=0):
             self._counter_wrap = self._default_counter_wrap
             self._writtendata = np.zeros(self.data_length)
             self._pushed_data = None
+            try:
+                if not self.present:
+                    self._logger.warning(
+                        "%s is compiled out of this bitstream (ASG0=0): its "
+                        "settings are accepted but the channel is silent",
+                        self.name)
+            except Exception:
+                pass
 
         _loading_attributes = False
         def _load_setup_attributes(self):
@@ -517,6 +525,30 @@ def make_asg(channel=0):
                                               doc='delay of the advanced trigger - 1 [cycles]')
 
         cur_step = IntRegister(0x120 + _VALUE_OFFSET, doc = 'current step index')
+
+        # Build-feature word (RO, 0x1F4 in the asg block; older bitstreams read
+        # 0 -> every bit False, and the channel is then assumed present).
+        _feat_valid = BoolRegister(0x1F4, 2, doc="feature word implemented by this bitstream")
+        _feat_asg0 = BoolRegister(0x1F4, 0, doc="asg0 channel present (ASG0 build knob)")
+        _feat_advtrig = BoolRegister(0x1F4, 1, doc="advanced-trigger blocks present (ASG_ADVTRIG)")
+
+        @property
+        def present(self):
+            """False when this channel was compiled out of the bitstream
+            (ASG0=0 drops asg0: its registers still read back, but writes are
+            dead and the output is silent). Always True on bitstreams without
+            the feature word."""
+            if _CHANNEL != 0 or not self._feat_valid:
+                return True
+            return bool(self._feat_asg0)
+
+        @property
+        def advanced_trigger_present(self):
+            """False when the advanced-trigger blocks were compiled out
+            (ASG_ADVTRIG=0); the related attributes are then inert."""
+            if not self._feat_valid:
+                return True
+            return bool(self._feat_advtrig)
 
         def enable_advanced_trigger(self,
                                     frequency,

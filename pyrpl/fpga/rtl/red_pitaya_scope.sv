@@ -847,6 +847,17 @@ generate
 if (2*IDX + MSW > 53) begin : gen_dma_az_width_check
     $error("DMA azimuth data word: 2*IDX + MSW exceeds the payload (<= 53 required)");
 end
+// The cell's tick field is HSZ-MSW bits wide and is sliced out of the ENC_TW-bit
+// latch (az_tick_lat[HSZ-MSW-1:0] below); it must fit, and MSW must leave room.
+if (MSW >= HSZ || HSZ - MSW > ENC_TW) begin : gen_dma_az_tick_width_check
+    $error("DMA azimuth cell: need 0 < HSZ-MSW <= ENC_TW (tick field vs the encoder latch width)");
+end
+// The intensity VALUE word packs {val_down, val_up} (2*DSZ bits) from bit 0 and
+// the azimuth walkers read the tick delta at [56:53] of every tagged data row;
+// the value word must never reach that field.
+if (2*DSZ > 53) begin : gen_dma_val_width_check
+    $error("DMA value word: 2*DSZ must be <= 53 so it cannot overlap the azimuth dt field [56:53]");
+end
 endgenerate
 
 localparam IDXSZ = 8;

@@ -1409,15 +1409,6 @@ class DmaUdpClient:
             first = int(np.argmax(sh))
             sel = sel[first:]; sh = sh[first:]
             seg_id = np.cumsum(sh) - 1
-            step = np.where(sh, 0, dt_all[sel])
-            cs = np.cumsum(step)
-            anchors_tick = hidx[sel][sh] >> msw
-            seg_fc = fcnt[sel][sh]
-            seg_start_cs = cs[sh]
-            tick = anchors_tick[seg_id] + (cs - seg_start_cs[seg_id])
-            mems = mems_all[sel]
-            pos = (tick * self._az_l + mems) if self._az_l \
-                else ((tick << msw) | mems)      # header rows never emitted
             data_rows = ~sh
             if has_val:
                 csd = np.cumsum(data_rows.astype(np.int64))
@@ -1426,6 +1417,18 @@ class DmaUdpClient:
                 val_rows = data_rows & (ord1 % 2 == 0)
             else:
                 idx_rows = data_rows
+            # Only INDEX rows carry a tick delta. Value rows pack 2*DSZ
+            # amplitude bits from bit 0 and are excluded here explicitly, so
+            # a wide DSZ reaching into [56:53] cannot walk the position.
+            step = np.where(idx_rows, dt_all[sel], 0)
+            cs = np.cumsum(step)
+            anchors_tick = hidx[sel][sh] >> msw
+            seg_fc = fcnt[sel][sh]
+            seg_start_cs = cs[sh]
+            tick = anchors_tick[seg_id] + (cs - seg_start_cs[seg_id])
+            mems = mems_all[sel]
+            pos = (tick * self._az_l + mems) if self._az_l \
+                else ((tick << msw) | mems)      # header rows never emitted
             for s in range(anchors_tick.size):
                 rows = idx_rows & (seg_id == s)
                 if not rows.any():

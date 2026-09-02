@@ -108,10 +108,16 @@ wire turn_edge = enable_i &&  turn_filt && !turn_filt_d;
 // reach az_modulus. tick_in_turn_o is the 0-based azimuth of the NEXT tick
 // (= ticks counted since the turn started): a tick coincident with the turn
 // pulse is azimuth 0 of the NEW turn, a tick between turn pulses gets the
-// running count. With the real pulse az_modulus is only a sanity bound
-// (the counter saturates rather than wrapping, so a missing index pulse
-// cannot corrupt the concatenated scan cell).
-wire syn_wrap = (az_modulus_i != 0) && (tick_in_turn_o >= az_modulus_i);
+// running count. The live counter itself only saturates at all-ones (so the
+// ticks_last_turn diagnostic stays truthful when the index pulse goes
+// missing); the bound is applied to the LATCHED azimuth instead: a tick at or
+// beyond az_modulus is latched AS az_modulus (an overflow bucket the host
+// drops, since tick*L >= the frame size) rather than a value the scope
+// truncates to its HSZ-MSW cell field and aliases back into the frame.
+// (Before this clamp, 16 missed index pulses at T=1024 wrapped into cell 0.)
+// az_modulus == 0 disables the bound.
+wire az_over  = (az_modulus_i != 0) && (tick_in_turn_o >= az_modulus_i);
+wire syn_wrap = az_over;
 wire turn_evt = turn_src_i ? (tick_edge && syn_wrap) : turn_edge;
 
 logic [32-1:0] period_cnt;
@@ -174,7 +180,8 @@ end else begin
       // 0-based azimuth OF THIS TICK: tick_in_turn_o still holds "ticks so
       // far", i.e. exactly this tick's index (its own increment lands one
       // cycle later); a turn-coincident tick is azimuth 0 of the new turn.
-      az_tick_o   <= turn_evt ? {TW{1'b0}} : tick_in_turn_o;
+      az_tick_o   <= turn_evt ? {TW{1'b0}}
+                  : az_over  ? az_modulus_i : tick_in_turn_o;   // bounded (see az_over)
       az_turn_o   <= turn_evt ? turn_cnt_o + 1'b1 : turn_cnt_o;
       cnt_fired_o <= cnt_fired_o + 1'b1;
    end else if (tick_edge && div_hit)

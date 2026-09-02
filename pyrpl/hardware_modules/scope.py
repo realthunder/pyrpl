@@ -273,6 +273,25 @@ class DmaUnicastProperty(BoolProperty):
         return val
 
 
+class _AzModulusRegister(IntRegister):
+    """enc_az_modulus with a bound from the bitstream: the DMA cell's tick field
+    is TKW = HSZ - MSW bits (descriptor 0x1A4), and the encoder latches ticks
+    >= T as T itself, so T must fit that field or the overflow bucket aliases
+    into the frame. Clamps with a warning instead of writing an unusable T."""
+    def validate_and_normalize(self, obj, value):
+        value = super(_AzModulusRegister, self).validate_and_normalize(obj, value)
+        try:
+            tkw = int(obj.dma_az_tkw) if obj._dma_azimuth_cap else 0
+        except Exception:
+            tkw = 0
+        if tkw and value > (1 << tkw) - 1:
+            obj._logger.warning(
+                "enc_az_modulus %d exceeds the azimuth cell tick field "
+                "(%d bits); clamping to %d", value, tkw, (1 << tkw) - 1)
+            value = (1 << tkw) - 1
+        return value
+
+
 class Scope(HardwareModule, AcquisitionModule):
     MIN_DELAY_CONTINUOUS_ROLLING_MS = 20
     addr_base = 0x40200000
@@ -645,9 +664,12 @@ class Scope(HardwareModule, AcquisitionModule):
                                      doc="extra MEMS step pulses injected at each turn "
                                          "pulse (forces the rosette precession "
                                          "regardless of T mod L); 0 = natural")
-    enc_az_modulus = IntRegister(0x1AC, bits=16,
-                                 doc="ticks per turn T: synthetic-turn modulus "
-                                     "(enc_turn_source=True) / sanity bound")
+    enc_az_modulus = _AzModulusRegister(0x1AC, bits=16,
+                                        doc="ticks per turn T: synthetic-turn modulus "
+                                            "(enc_turn_source=True) / bound on the "
+                                            "latched azimuth (ticks >= T land in the "
+                                            "overflow bucket T, dropped by the host); "
+                                            "clamped to the cell tick field 2^TKW-1")
     enc_tick_in_turn = IntRegister(0x1B0, bits=16, bitmask=0x0000ffff,
                                    doc="live 0-based azimuth tick counter (RO)")
     enc_turn_cnt = IntRegister(0x1B0, bits=16, bitmask=0xffff0000,

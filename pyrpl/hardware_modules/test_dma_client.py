@@ -827,6 +827,180 @@ def test_seq_tracked_in_receiver():
     return True
 
 
+# --------------------------------------------------------------------------
+# Azimuth (Scanner360) formats v7-v10 = v3-v6 + 4. Scan cell = {tick, mems[msw]};
+# the data word carries an unsigned 4-bit TICK delta at [56:53] (combined: on
+# the channel-0 word only; tagged: on every channel's index word) and the
+# ABSOLUTE mems step at [52:53-msw]. A header re-anchors on dt > 15 (that
+# includes any backward jump, e.g. the turn wrap, which also changes frame_cnt),
+# a frame change, or a packet boundary. mems jumps never need a header.
+# --------------------------------------------------------------------------
+def _make_data_az(dt, mems, up, dn, idx, msw, tag=0):
+    m = (1 << idx) - 1
+    return (((tag & 0xF) << 57) | ((dt & 0xF) << 53)
+            | ((mems & ((1 << msw) - 1)) << (53 - msw))
+            | ((dn & m) << idx) | (up & m))
+
+
+def emit_packets_az(points, *, hsz, msw, idx, hist_block_size, nch=1,
+                    tagged=False, dsz=None):
+    """Encode [(tick, mems, frame, [((up, dn), (vu, vd)), ...]), ...] into
+    azimuth packets (v7 combined / v8 tagged; +2 with dsz = value words),
+    mirroring the red_pitaya_scope.sv assembler."""
+    has_val = dsz is not None
+    ver = 7 + (2 if has_val else 0) + (1 if tagged else 0)
+    PKT = hist_block_size + 1
+    tkw = hsz - msw
+    words = []
+    st = {'wc': 0, 'need_hdr': True, 'prev_tick': 0, 'frame': None}
+
+    def push(w):
+        words.append(w); st['wc'] += 1
+        if st['wc'] == PKT:
+            st['wc'] = 0; st['need_hdr'] = True
+
+    per_ch = 2 if has_val else 1
+    reserve = (per_ch + 1) * nch if tagged else 1 + per_ch * nch
+    for (tick, mems, f, chvals) in points:
+        if st['wc'] + reserve > PKT:           # reserve worst case -> no straddle
+            while st['wc'] != 0:
+                push(0xFFFFFFFFFFFFFFFF)
+        cell = (tick << msw) | mems
+        dt = (tick - st['prev_tick']) % (1 << tkw)
+        hdr_need = (st['need_hdr'] or st['frame'] is None or f != st['frame']
+                    or dt > 15)
+        if hdr_need:
+            dt = 0
+        # clear BEFORE pushing: a push that fills the packet exactly re-arms
+        # the flag for the next point (the RTL's asm_last_word -> asm_need_hdr)
+        st['need_hdr'] = False
+        if not tagged:
+            if hdr_need:
+                push(_make_header(nch, ver, cell, f, hsz))
+            for c in range(nch):
+                (up, dn), (vu, vd) = chvals[c]
+                push(_make_data_az(dt if c == 0 else 0, mems, up, dn, idx, msw))
+                if has_val:
+                    push(_make_val(vu, vd, dsz))
+        else:
+            for c in range(nch):
+                if hdr_need:
+                    push(_make_header(c, ver, cell, f, hsz))
+                (up, dn), (vu, vd) = chvals[c]
+                push(_make_data_az(dt, mems, up, dn, idx, msw, tag=c))
+                if has_val:
+                    push(_make_val(vu, vd, dsz, tag=c))
+        st['frame'] = f
+        st['prev_tick'] = tick
+    while st['wc'] != 0:
+        push(0xFFFFFFFFFFFFFFFF)
+    buf = np.array(words, dtype='<u8').tobytes()
+    return [buf[i:i + PKT * 8] for i in range(0, len(buf), PKT * 8)]
+
+
+def _az_points(T, L, nch, with_val=False):
+    """A scan of ~1.5 turns: per-tick chirps with a few busy-masked ticks (dt 2),
+    one long gap (dt 20 -> re-anchor header), and the turn wrap (tick T-1 -> 0,
+    frame +1). mems precesses 121 steps/tick modulo L (jumps freely)."""
+    ticks = list(range(0, 40)) + list(range(41, 60, 2)) + [80, 81, 82] \
+        + list(range(T - 5, T)) + list(range(0, 12))
+    pts, frame, prev = [], 0, -1
+    for i, t in enumerate(ticks):
+        if t < prev:
+            frame += 1
+        prev = t
+        mems = (i * 121) % L
+        chv = []
+        for c in range(nch):
+            up, dn = 1000 + 3 * i + c, 2000 + 5 * i + c
+            chv.append(((up, dn), (50 + i + c, 60 + i + c)))
+        pts.append((t, mems, frame, chv))
+    return pts
+
+
+def _check_az(client, points, nch, L, msw, has_val=False, frac=8):
+    for c in range(nch):
+        fr = client.get_frame(c)
+        peak_down, peak_up = fr[0], fr[1]
+        cells = {}
+        for (t, mems, _, chv) in points:          # last-write-wins
+            pos = t * L + mems if L else (t << msw) | mems
+            cells[pos] = chv[c]
+        for pos, ((up, dn), (vu, vd)) in cells.items():
+            assert peak_up[pos] == up, (c, 'up', pos, peak_up[pos], up)
+            assert peak_down[pos] == dn, (c, 'dn', pos, peak_down[pos], dn)
+            if has_val:
+                assert abs(fr[3][pos] - _refl(vu, up, frac)) <= _REFL_TOL, (c, 'refl up', pos)
+                assert abs(fr[2][pos] - _refl(vd, dn, frac)) <= _REFL_TOL, (c, 'refl dn', pos)
+        nz = set(np.nonzero(peak_up)[0]) | set(np.nonzero(peak_down)[0])
+        assert nz <= set(cells), (c, 'unexpected', sorted(nz - set(cells))[:10])
+    assert client._bad_count == 0
+
+
+def test_azimuth_combined_v7():
+    """v7 round-trip (combined, NCH=2): tick from the dt cumsum, mems absolute,
+    both the raw {tick, mems} cell and the az_lcount-dense T x L buffer."""
+    fsz, frac, hsz, msw, hbs, T, L = 9, 8, 24, 10, 20, 1024, 129
+    idx = fsz + frac
+    points = _az_points(T, L, 2)
+    pkts = emit_packets_az(points, hsz=hsz, msw=msw, idx=idx,
+                           hist_block_size=hbs, nch=2)
+    nhdr = sum(int(((np.frombuffer(p, '<u8') >> np.uint64(63)) & np.uint64(1)).sum())
+               - int((np.frombuffer(p, '<u8') == 0xFFFFFFFFFFFFFFFF).sum()) for p in pkts)
+    assert nhdr >= 3, nhdr          # start + dt>15 gap + turn wrap (+ boundaries)
+    for L_cfg in (L, 0):
+        c = DmaUdpClient(fsz=fsz, frac=frac, hsz=hsz, hist_block_size=hbs,
+                         max_frame_size=(T + 1) * L if L_cfg else (T + 1) << msw,
+                         max_interval=0.0)
+        c.configure(msw=msw, az_lcount=L_cfg)
+        for pkt in pkts:
+            assert len(pkt) == c._pkt_bytes
+            c._process_packet(pkt)
+        _check_az(c, points, 2, L_cfg, msw)
+    return True
+
+
+def test_azimuth_tagged_v8():
+    """v8 round-trip (per-channel tag, NCH=2): each tagged stream cumsums its
+    own dt; the word after a channel's header sits on the anchor."""
+    fsz, frac, hsz, msw, hbs, T, L = 9, 8, 24, 10, 20, 1024, 129
+    idx = fsz + frac
+    points = _az_points(T, L, 2)
+    pkts = emit_packets_az(points, hsz=hsz, msw=msw, idx=idx,
+                           hist_block_size=hbs, nch=2, tagged=True)
+    c = DmaUdpClient(fsz=fsz, frac=frac, hsz=hsz, hist_block_size=hbs,
+                     max_frame_size=(T + 1) * L, max_interval=0.0)
+    c.configure(msw=msw, az_lcount=L)
+    for pkt in pkts:
+        assert len(pkt) == c._pkt_bytes
+        c._process_packet(pkt)
+    _check_az(c, points, 2, L, msw)
+    return True
+
+
+def test_azimuth_tagged_intensity_v10():
+    """v10 round-trip (tagged + value words). DSZ=27 puts value-word amplitude
+    bits into [56:53] on purpose: the walker must take the tick delta from INDEX
+    rows only, or those bits would walk the position."""
+    fsz, frac, hsz, msw, hbs, T, L, dsz = 9, 8, 24, 10, 20, 1024, 129, 27
+    idx = fsz + frac
+    points = _az_points(T, L, 2, with_val=True)
+    # force value bits above bit 53: vd bit 26 lands at 26 + 27 = 53
+    points = [(t, m, f, [((ud), (vu, vd | (1 << 26))) for (ud, (vu, vd)) in chv])
+              for (t, m, f, chv) in points]
+    pkts = emit_packets_az(points, hsz=hsz, msw=msw, idx=idx,
+                           hist_block_size=hbs, nch=2, tagged=True, dsz=dsz)
+    c = DmaUdpClient(fsz=fsz, frac=frac, hsz=hsz, dsz=dsz, intensity=True,
+                     hist_block_size=hbs, max_frame_size=(T + 1) * L,
+                     max_interval=0.0)
+    c.configure(msw=msw, az_lcount=L)
+    for pkt in pkts:
+        assert len(pkt) == c._pkt_bytes
+        c._process_packet(pkt)
+    _check_az(c, points, 2, L, msw, has_val=True, frac=frac)
+    return True
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:

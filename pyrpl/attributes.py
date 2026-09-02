@@ -1347,17 +1347,25 @@ class _ExtTriggerPinFreeMixin(object):
     # option names that route the external trigger through DIO0_P
     # (enc_tick is the Scanner360 encoder per-tick wire on the same pin)
     _EXT_PIN0_SOURCES = ('ext_positive_edge', 'ext_negative_edge', 'enc_tick')
+    # sources that ALSO need DIO0_N as an input (the encoder per-turn wire)
+    _EXT_PIN0N_SOURCES = ('enc_tick',)
 
     def set_value(self, obj, value):
         result = super(_ExtTriggerPinFreeMixin, self).set_value(obj, value)
         if value in self._EXT_PIN0_SOURCES:
-            try:
-                hk = getattr(getattr(obj, 'parent', None), 'hk', None)
-                if hk is not None and hk.expansion_P0_output:
-                    hk.expansion_P0_output = False
-            except Exception:
-                obj._logger.debug("could not free DIO0_P (hk.expansion_P0) "
-                                  "for the external trigger", exc_info=True)
+            pins = ['P0']
+            if value in self._EXT_PIN0N_SOURCES:
+                pins.append('N0')
+            for pin in pins:
+                attr = 'expansion_%s_output' % pin
+                try:
+                    hk = getattr(getattr(obj, 'parent', None), 'hk', None)
+                    if hk is not None and getattr(hk, attr):
+                        setattr(hk, attr, False)
+                except Exception:
+                    obj._logger.debug("could not free DIO0_%s (hk.%s) "
+                                      "for the external trigger", pin, attr,
+                                      exc_info=True)
         return result
 
 

@@ -619,6 +619,17 @@ wire [32-1: 0] r0_rd = {sync_b_on, reverse_b_on, slave_b_trig, rand_b_on,at_auto
 wire [32-1: 0] r1_rd = {sync_d_on, reverse_d_on, slave_d_trig, rand_d_on,at_autorearm_d,at_invert_d,at_reset_d,set_d_rgate, set_d_zero,set_d_rst,set_d_steping,set_d_wrap, scope_d_trig, trig_d_src,
                         sync_c_on, reverse_c_on, slave_c_trig, rand_c_on,at_autorearm_c,at_invert_c,at_reset_c,set_c_rgate, set_c_zero,set_c_rst,set_c_steping,set_c_wrap, scope_c_trig, trig_c_src };
 
+`ifdef DISABLE_ASG0
+wire asg_feat_ch0 = 1'b0;
+`else
+wire asg_feat_ch0 = 1'b1;
+`endif
+`ifdef DISABLE_ASG_ADVTRIG
+wire asg_feat_advtrig = 1'b0;
+`else
+wire asg_feat_advtrig = 1'b1;
+`endif
+
 wire sys_en;
 assign sys_en = sys_wen | sys_ren;
 
@@ -689,6 +700,13 @@ end else begin
      20'h00188 : begin sys_ack <= sys_en;          sys_rdata <= at_counts_d[32-1:0]                ; end
      20'h0018C : begin sys_ack <= sys_en;          sys_rdata <= at_counts_d[64-1:32]               ; end
      20'h00190 : begin sys_ack <= sys_en;          sys_rdata <= step_d_o                           ; end
+
+     // Build-feature word (RO). Older bitstreams read 0 here (default branch),
+     // so the host feature-detects. [0] = asg0 channel present (ASG0 build
+     // knob; 0 = DISABLE_ASG0, writes dead / outputs tied off), [1] = the
+     // advanced-trigger blocks are present (ASG_ADVTRIG), [2] = the enc_tick
+     // (Scanner360 encoder) trigger source exists.
+     20'h001F4 : begin sys_ack <= sys_en;          sys_rdata <= {29'h0, 1'b1, asg_feat_advtrig, asg_feat_ch0} ; end
 
 	 20'h1zzzz : begin sys_ack <= ack_dly;         sys_rdata <= {{32-14{1'b0}},buf_a_rdata}        ; end
      20'h2zzzz : begin sys_ack <= ack_dly;         sys_rdata <= {{32-14{1'b0}},buf_b_rdata}        ; end
