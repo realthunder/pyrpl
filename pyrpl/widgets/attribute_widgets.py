@@ -172,16 +172,54 @@ class BaseAttributeWidget(QtWidgets.QWidget):
 class StringAttributeWidget(BaseAttributeWidget):
     """
     Widget for string values.
+
+    Commits on Enter or focus-out, NOT per keystroke. The box used to be wired
+    to textChanged, so typing "20,20" wrote the attribute five times — "2",
+    "20", "20,", "20,2", "20,20" — and every one of those was a real setter
+    call: a config save, and for setters that act on write (a reflash, a
+    device command, a re-parse) a real action on a half-typed value. Worse,
+    the intermediate strings are usually INVALID, so parsers saw garbage and
+    logged for every character.
+
+    editingFinished is the commit point, guarded by _editing so a bare
+    focus-out cannot re-commit a value nobody touched, nor revert an external
+    update that landed while the box had focus (same idiom as
+    FileAttributeWidget below).
     """
     def _make_widget(self):
+        # True once the user has TYPED since the last programmatic set
+        self._editing = False
         self.widget = QtWidgets.QLineEdit()
         self.widget.setMaximumWidth(200)
-        self.widget.textChanged.connect(self.write_widget_value_to_attribute)
+        # textEdited fires ONLY on user typing, never on programmatic setText
+        self.widget.textEdited.connect(self._on_text_edited)
+        self.widget.editingFinished.connect(self._on_edit_finished)
+
+    def _on_text_edited(self, _text):
+        self._editing = True
+
+    def _on_edit_finished(self):
+        """Enter or focus-out. editingFinished fires on EVERY focus-out, so
+        commit only when the text was actually edited."""
+        if not self._editing:
+            return
+        self._editing = False
+        self.write_widget_value_to_attribute()
+
+    def editing(self):
+        """An uncommitted edit is in the box — callers use this to hold off
+        overwriting it with an external value (BaseAttributeWidget.editing
+        delegates to the subwidget, which for a plain QLineEdit has no such
+        method, so this override is what makes the contract work here)."""
+        return self._editing
 
     def _get_widget_value(self):
         return str(self.widget.text())
 
     def _set_widget_value(self, new_value):
+        # an authoritative value from the attribute: drop any in-progress edit
+        # so the box can never keep showing stale half-typed text
+        self._editing = False
         self.widget.setText(new_value)
 
 
@@ -317,10 +355,36 @@ class FileAttributeWidget(BaseAttributeWidget):
 class TextAttributeWidget(StringAttributeWidget):
     """
     Property for multiline string values.
+
+    Same commit-on-finish rule as StringAttributeWidget, and the same reason:
+    a multiline value written per keystroke is never anything but half-typed.
+    QTextEdit has no editingFinished, so the commit point is the focus-out,
+    caught with an event filter. The "user edited" flag comes from
+    textChanged, which unlike QLineEdit's textEdited also fires on
+    PROGRAMMATIC changes -- so _set_widget_value clears the flag after
+    writing rather than before. The base class happens to block signals
+    around that call, but this must not depend on it.
     """
     def _make_widget(self):
+        self._editing = False
         self.widget = QtWidgets.QTextEdit()
-        self.widget.textChanged.connect(self.write_widget_value_to_attribute)
+        self.widget.textChanged.connect(self._on_text_edited)
+        self.widget.installEventFilter(self)
+
+    def _on_text_edited(self, *_args):
+        self._editing = True
+
+    def eventFilter(self, obj, event):
+        if obj is self.widget and event.type() == QtCore.QEvent.FocusOut:
+            self._on_edit_finished()
+        return super(TextAttributeWidget, self).eventFilter(obj, event)
+
+    def _set_widget_value(self, new_value):
+        # clear AFTER the write: the setText above re-raises textChanged when
+        # signals are not blocked, which would leave a phantom edit pending
+        # and commit it on the next focus-out
+        super(TextAttributeWidget, self)._set_widget_value(new_value)
+        self._editing = False
 
     def _get_widget_value(self):
         return str(self.widget.toPlainText())
