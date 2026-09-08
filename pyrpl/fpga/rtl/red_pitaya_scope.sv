@@ -1598,7 +1598,10 @@ if (adc_rstn_i == 1'b0) begin
     dma_nch <= DMA_MAXCH;                 // default: stream all present channels
     dma_int_en <= DMA_INT_DEF;            // runtime intensity (default = build knob)
     dma_az_en  <= 1'b0;                   // azimuth mode always defaults off
-    enc_ctrl   <= 17'h0;                  // encoder disabled; gates default off
+    // encoder disabled; gates default off; [16]=1 -> the per-turn pin is
+    // treated as ACTIVE LOW out of reset, because the product wiring gives
+    // DIO0_N the index COMPLEMENT (I-) and hands I+ to the motor controller.
+    enc_ctrl   <= 17'h10000;
     az_modulus <= 16'd1024;               // AEDR-9830 x1 default (sanity bound)
 end else if (sys_wen) begin
     if (sys_addr[19:0]==20'h0)  begin

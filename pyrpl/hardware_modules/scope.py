@@ -670,10 +670,11 @@ class Scope(HardwareModule, AcquisitionModule):
                                        "DIO0_N so that I+ can drive a motor controller. "
                                        "Inverted ahead of the sync/glitch filter, so the "
                                        "edge detect stays rising-edge only and nothing "
-                                       "else changes. Set it BEFORE enc_enable: flipping "
-                                       "polarity on a live block can synthesise one "
-                                       "spurious turn event (edges are gated by "
-                                       "enc_enable, so a disabled block is safe)")
+                                       "else changes. DEFAULTS TO TRUE out of reset — the "
+                                       "product wiring puts I- here. Set it BEFORE "
+                                       "enc_enable: flipping polarity on a live block can "
+                                       "synthesise one spurious turn event (edges are "
+                                       "gated by enc_enable, so a disabled block is safe)")
     enc_az_modulus = _AzModulusRegister(0x1AC, bits=16,
                                         doc="ticks per turn T: synthetic-turn modulus "
                                             "(enc_turn_source=True) / bound on the "
