@@ -796,9 +796,10 @@ assign fft_window_o = {fft_down, fft_up};
 // and latches the azimuth AT the fired tick (the fft trigger is delayed by
 // fft_trig_dly while ticks keep arriving).
 localparam ENC_TW = 16;
-logic [16-1:0]     enc_ctrl;       // 0x1A8: [0] enable [1] gate asg3 [2] gate fft
+logic [17-1:0]     enc_ctrl;       // 0x1A8: [0] enable [1] gate asg3 [2] gate fft
                                    // [3] turn source [7:4] divider N-1
                                    // [11:8] glitch log2 [15:12] mems_turn_kick
+                                   // [16] turn pin active LOW (index complement)
 logic [ENC_TW-1:0] az_modulus;     // 0x1AC: ticks per turn T
 logic              enc_trig_tick, enc_turn_evt;
 logic [ENC_TW-1:0] az_tick_trig, az_turn_trig;
@@ -825,6 +826,7 @@ red_pitaya_enc #(.TW(ENC_TW)) i_enc (
    .gate_asg_i        (enc_ctrl[1]),
    .gate_fft_i        (enc_ctrl[2]),
    .turn_src_i        (enc_ctrl[3]),
+   .turn_inv_i        (enc_ctrl[16]),
    .div_n_i           (enc_ctrl[7:4]),
    .glitch_log2_i     (enc_ctrl[11:8]),
    .az_modulus_i      (az_modulus),
@@ -1596,7 +1598,7 @@ if (adc_rstn_i == 1'b0) begin
     dma_nch <= DMA_MAXCH;                 // default: stream all present channels
     dma_int_en <= DMA_INT_DEF;            // runtime intensity (default = build knob)
     dma_az_en  <= 1'b0;                   // azimuth mode always defaults off
-    enc_ctrl   <= 16'h0;                  // encoder disabled; gates default off
+    enc_ctrl   <= 17'h0;                  // encoder disabled; gates default off
     az_modulus <= 16'd1024;               // AEDR-9830 x1 default (sanity bound)
 end else if (sys_wen) begin
     if (sys_addr[19:0]==20'h0)  begin
@@ -1614,7 +1616,7 @@ end else if (sys_wen) begin
         dma_int_en <= sys_wdata[0];
         dma_az_en  <= sys_wdata[1];
     end
-    if (sys_addr[19:0]==20'h1A8) enc_ctrl   <= sys_wdata[16-1:0];
+    if (sys_addr[19:0]==20'h1A8) enc_ctrl   <= sys_wdata[17-1:0];
     if (sys_addr[19:0]==20'h1AC) az_modulus <= sys_wdata[ENC_TW-1:0];
     if (sys_addr[19:0]==20'h38) fft_peak_start <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h3C) fft_threshold_k <= sys_wdata[16-1:0];
@@ -2480,7 +2482,7 @@ end else begin
      // ---- Scanner360 encoder / azimuth-mode registers ----
      // az packet-format descriptor: [7:0]=MSW [15:8]=DTW [23:16]=TKW
      20'h001A4 : begin sys_ack <= sys_en;          sys_rdata <= {8'h0, 8'(HSZ-MSW), 8'd4, 8'(MSW)}  ; end
-     20'h001A8 : begin sys_ack <= sys_en;          sys_rdata <= {16'h0, enc_ctrl}                   ; end
+     20'h001A8 : begin sys_ack <= sys_en;          sys_rdata <= {15'h0, enc_ctrl}                   ; end
      20'h001AC : begin sys_ack <= sys_en;          sys_rdata <= {16'h0, az_modulus}                 ; end
      20'h001B0 : begin sys_ack <= sys_en;          sys_rdata <= {enc_turn_cnt, enc_tick_in_turn}    ; end
      20'h001B4 : begin sys_ack <= sys_en;          sys_rdata <= {16'h0, enc_ticks_last_turn}        ; end

@@ -664,6 +664,16 @@ class Scope(HardwareModule, AcquisitionModule):
                                      doc="extra MEMS step pulses injected at each turn "
                                          "pulse (forces the rosette precession "
                                          "regardless of T mod L); 0 = natural")
+    enc_turn_invert = BoolRegister(0x1A8, 16,
+                                   doc="the per-turn (index) pin is ACTIVE LOW — set "
+                                       "this when the encoder's I- output is wired to "
+                                       "DIO0_N so that I+ can drive a motor controller. "
+                                       "Inverted ahead of the sync/glitch filter, so the "
+                                       "edge detect stays rising-edge only and nothing "
+                                       "else changes. Set it BEFORE enc_enable: flipping "
+                                       "polarity on a live block can synthesise one "
+                                       "spurious turn event (edges are gated by "
+                                       "enc_enable, so a disabled block is safe)")
     enc_az_modulus = _AzModulusRegister(0x1AC, bits=16,
                                         doc="ticks per turn T: synthetic-turn modulus "
                                             "(enc_turn_source=True) / bound on the "

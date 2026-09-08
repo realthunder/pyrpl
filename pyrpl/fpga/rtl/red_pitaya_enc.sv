@@ -41,6 +41,11 @@ module red_pitaya_enc #(
    input             gate_asg_i     ,  // gate ticks on asg_busy_i
    input             gate_fft_i     ,  // gate ticks on fft_busy_i
    input             turn_src_i     ,  // 0 = DIO0_N pulse, 1 = synthetic az_modulus wrap
+   input             turn_inv_i     ,  // 1 = the per-turn pin is ACTIVE LOW (index
+                                       //     complement, I- wired here so I+ can
+                                       //     drive a motor controller) -- inverted
+                                       //     ahead of the sync/filter, so the edge
+                                       //     detect below stays rising-edge only
    input   [ 4-1: 0] div_n_i        ,  // fire every (div_n_i+1)-th tick
    input   [ 4-1: 0] glitch_log2_i  ,  // glitch filter: level must hold 2^g cycles (0 = off)
    input   [TW-1: 0] az_modulus_i   ,  // ticks per turn T (synthetic turn / sanity bound)
@@ -76,7 +81,10 @@ if (!rstn_i) begin
    tick_hold <= '0;  turn_hold <= '0;
 end else begin
    tick_sync <= {tick_sync[1:0], tick_i};
-   turn_sync <= {turn_sync[1:0], turn_i};
+   // turn_inv_i folds an active-low index into the same rising-edge path: the
+   // glitch filter is polarity-symmetric (it only asks that a LEVEL hold), so
+   // inverting here costs one LUT and changes nothing downstream.
+   turn_sync <= {turn_sync[1:0], turn_i ^ turn_inv_i};
 
    // glitch filter: the synchronized level must hold for glitch_len cycles
    // before it propagates (symmetric low-pass; 0 = transparent)
