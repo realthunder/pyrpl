@@ -167,17 +167,52 @@ wire index_edge = enable_i && i_f && !i_fd;
 // tick*L >= the frame size, rather than a value the scope truncates to its
 // HSZ-MSW cell field and aliases back into the frame).
 // az_modulus == 0 disables both the modulus and the bound.
-wire have_t = (az_modulus_i != 0);
-wire az_over = have_t && (tick_in_turn_o >= az_modulus_i);           // legacy only
-wire wrap_up = have_t && (tick_in_turn_o == az_modulus_i - 1'b1);
-wire wrap_dn = (tick_in_turn_o == 0);
+// Everything derived from the CONFIG registers is pre-computed into flops.
+// These change only on an AXI write, but the tools cannot know that, and left
+// combinational they put a 16-bit subtract in front of the wrap compare, the
+// azimuth step, the frame event and the counters behind it -- 14 logic levels
+// and -3 ns at 125 MHz. One cycle of staleness after a register write costs
+// nothing: the block is configured while it is disabled, or between ticks that
+// are tens of microseconds apart.
+wire [TW-1:0] az_mark_ext = {{TW-12{1'b0}}, az_mark_i};
+
+logic          have_t_r;      // T != 0
+logic [TW-1:0] az_top_r;      // T-1 (all-ones when T == 0)
+logic [TW-1:0] mark_prev_r;   // (az_mark - 1) mod T -- the azimuth one step BELOW the mark
+logic [TW-1:0] mark_next_r;   // (az_mark + 1) mod T -- one step ABOVE it
+
+wire [TW-1:0] t_top = (az_modulus_i != 0) ? az_modulus_i - 1'b1 : {TW{1'b1}};
+
+// The three azimuth predicates are registered for the same reason, and it is
+// safe for the same reason: they are pure functions of tick_in_turn_o, which
+// only moves on a tick edge (or an index edge), and the next such edge is tens
+// of microseconds away -- thousands of cycles after these have settled.
+logic az_over, wrap_up, wrap_dn;
+
+always @(posedge clk_i)
+if (!rstn_i) begin
+   have_t_r    <= 1'b0;
+   az_top_r    <= {TW{1'b1}};
+   mark_prev_r <= '0;
+   mark_next_r <= '0;
+   az_over     <= 1'b0;
+   wrap_up     <= 1'b0;
+   wrap_dn     <= 1'b1;
+end else begin
+   have_t_r    <= (az_modulus_i != 0);
+   az_top_r    <= t_top;
+   mark_prev_r <= (az_mark_ext == 0)     ? t_top : az_mark_ext - 1'b1;
+   mark_next_r <= (az_mark_ext >= t_top) ? '0    : az_mark_ext + 1'b1;
+   az_over     <= (az_modulus_i != 0) && (tick_in_turn_o >= az_modulus_i);  // legacy only
+   wrap_up     <= (az_modulus_i != 0) && (tick_in_turn_o == t_top);
+   wrap_dn     <= (tick_in_turn_o == 0);
+end
 
 wire [TW-1:0] az_inc = (quad_en_i && wrap_up)  ? {TW{1'b0}}
                      : (&tick_in_turn_o)       ? tick_in_turn_o        // legacy saturate
                      :                           tick_in_turn_o + 1'b1;
 wire [TW-1:0] az_dec = !wrap_dn                ? tick_in_turn_o - 1'b1
-                     : have_t                  ? az_modulus_i - 1'b1
-                     :                           {TW{1'b1}};
+                     :                           az_top_r;
 wire [TW-1:0] az_next = tick_up ? az_inc : az_dec;
 
 // The index zeroes the counter (v2 behaviour; keep it armed in swing mode too —
@@ -187,8 +222,7 @@ wire [TW-1:0] az_next = tick_up ? az_inc : az_dec;
 wire az_zero = idx_zero_i && index_edge;
 wire [TW-1:0] az_zero_next = !tick_edge ? {TW{1'b0}}
                            :  tick_up   ? {{TW-1{1'b0}}, 1'b1}
-                           :  have_t    ? az_modulus_i - 1'b1
-                           :              {TW{1'b1}};
+                           :              az_top_r;
 
 // ---------------------------------------------------------------------------
 // Reversal detection (hysteretic)
@@ -204,10 +238,12 @@ wire        rev_evt = tick_edge && (tick_up != dir_cur) && (rev_run >= rev_hyst_
 // ---------------------------------------------------------------------------
 // Frame event
 // ---------------------------------------------------------------------------
-wire [TW-1:0] az_mark_ext = {{TW-12{1'b0}}, az_mark_i};
-// Arrival at az_mark from any other azimuth, in either direction.
-wire mark_evt = tick_edge && (az_next == az_mark_ext)
-                          && (tick_in_turn_o != az_mark_ext);
+// Arrival at az_mark, in either direction. Asking "is the azimuth one step
+// below the mark and stepping up" keeps the comparison flop-to-flop; testing
+// az_next against the mark instead would stack a 16-bit comparator behind the
+// azimuth adder, and frame_evt fans out to every counter below.
+wire mark_evt = tick_edge && (tick_up ? (tick_in_turn_o == mark_prev_r)
+                                      : (tick_in_turn_o == mark_next_r));
 // Modulus wrap: the ring wrap in quadrature mode, v2's synthetic overflow in
 // legacy mode (the fallback when the index channel is absent).
 wire mod_evt  = quad_en_i ? (tick_edge && (tick_up ? wrap_up : wrap_dn))
@@ -281,10 +317,11 @@ end else begin
       period_cnt <= period_cnt + 1'b1;
       if (tick_edge && !(&ticks_since_frame))       // saturate, don't wrap
          ticks_since_frame <= ticks_since_frame + 1'b1;
-      if (tick_edge || az_zero) begin
-         if (az_now < sweep_lo) sweep_lo <= az_now;
-         if (az_now > sweep_hi) sweep_hi <= az_now;
-      end
+      // compared against the REGISTERED azimuth (az_now would put a 16-bit
+      // comparator behind the azimuth adder); the value it misses is the
+      // azimuth of the tick just taken, which lands here one cycle later.
+      if (tick_in_turn_o < sweep_lo) sweep_lo <= tick_in_turn_o;
+      if (tick_in_turn_o > sweep_hi) sweep_hi <= tick_in_turn_o;
    end
 end
 
