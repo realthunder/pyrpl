@@ -88,6 +88,7 @@ module red_pitaya_scope #(
    // trigger sources
    input                 trig_ext_i      ,  // external trigger (Scanner360: encoder per-tick, DIO0_P)
    input                 trig_extn_i     ,  // encoder per-turn input (DIO0_N)
+   input                 trig_quad_i     ,  // encoder channel B+ (DIO1_P, Scanner360 v3)
    input                 asg_busy_i      ,  // asg3 playing (dac_do) — encoder tick gate
    output                trig_enc_o      ,  // gated encoder tick pulse -> ASG enc_tick trigger
    input      [  4-1: 0] trig_asg_i      ,  // ASG trigger
@@ -796,11 +797,22 @@ assign fft_window_o = {fft_down, fft_up};
 // and latches the azimuth AT the fired tick (the fft trigger is delayed by
 // fft_trig_dly while ticks keep arriving).
 localparam ENC_TW = 16;
-logic [17-1:0]     enc_ctrl;       // 0x1A8: [0] enable [1] gate asg3 [2] gate fft
-                                   // [3] turn source [7:4] divider N-1
+localparam ENC_KW = 12;
+logic [25-1:0]     enc_ctrl;       // 0x1A8: [0] enable [1] gate asg3 [2] gate fft
+                                   // [3] frame src lo [7:4] divider N-1 lo
                                    // [11:8] glitch log2 [15:12] mems_turn_kick
                                    // [16] turn pin active LOW (index complement)
-logic [ENC_TW-1:0] az_modulus;     // 0x1AC: ticks per turn T
+                                   // [17] quadrature enable (B on DIO1_P)
+                                   // [18] frame src hi -- {18,3}: 0 index,
+                                   //      1 modulus, 2 reversal, 3 az_mark
+                                   // [19] an index edge zeroes the azimuth
+                                   // [23:20] divider N-1 hi  [24] quad dir invert
+logic [32-1:0]     az_cfg;         // 0x1AC: [15:0] az_modulus T
+                                   //        [19:16] reversal hysteresis ticks
+                                   //        [31:20] az_mark
+logic [ENC_KW-1:0] enc_krepeat;    // 0x1C4: extra gated pulses per fired tick (k-1)
+wire  [ENC_TW-1:0] az_modulus = az_cfg[ENC_TW-1:0];
+logic [ENC_TW-1:0] enc_sweep_lo, enc_sweep_hi;
 logic              enc_trig_tick, enc_turn_evt;
 logic [ENC_TW-1:0] az_tick_trig, az_turn_trig;
 logic [ENC_TW-1:0] enc_tick_in_turn, enc_turn_cnt, enc_ticks_last_turn;
@@ -815,21 +827,28 @@ logic [ENC_TW-1:0] az_turn_prev;   // previous point's turn (frame-pulse compare
 wire enc_fft_busy = !((fft_state == S_IDLE) && (&fft_done) && (fft_reconf_wait == 0))
                     || fft_trig_dly_do;
 
-red_pitaya_enc #(.TW(ENC_TW)) i_enc (
+red_pitaya_enc #(.TW(ENC_TW), .KW(ENC_KW)) i_enc (
    .clk_i             (adc_clk_i),
    .rstn_i            (adc_rstn_i),
    .tick_i            (trig_ext_i),
+   .quad_i            (trig_quad_i),
    .turn_i            (trig_extn_i),
    .asg_busy_i        (asg_busy_i),
    .fft_busy_i        (enc_fft_busy),
    .enable_i          (enc_ctrl[0]),
    .gate_asg_i        (enc_ctrl[1]),
    .gate_fft_i        (enc_ctrl[2]),
-   .turn_src_i        (enc_ctrl[3]),
+   .frame_src_i       ({enc_ctrl[18], enc_ctrl[3]}),
    .turn_inv_i        (enc_ctrl[16]),
-   .div_n_i           (enc_ctrl[7:4]),
+   .quad_en_i         (enc_ctrl[17]),
+   .quad_inv_i        (enc_ctrl[24]),
+   .idx_zero_i        (enc_ctrl[19]),
+   .div_n_i           ({enc_ctrl[23:20], enc_ctrl[7:4]}),
    .glitch_log2_i     (enc_ctrl[11:8]),
    .az_modulus_i      (az_modulus),
+   .rev_hyst_i        (az_cfg[19:16]),
+   .az_mark_i         (az_cfg[31:20]),
+   .k_repeat_i        (enc_krepeat),
    .trig_tick_o       (enc_trig_tick),
    .turn_evt_o        (enc_turn_evt),
    .az_tick_o         (az_tick_trig),
@@ -839,7 +858,9 @@ red_pitaya_enc #(.TW(ENC_TW)) i_enc (
    .ticks_last_turn_o (enc_ticks_last_turn),
    .turn_period_o     (enc_turn_period),
    .cnt_masked_o      (enc_cnt_masked),
-   .cnt_fired_o       (enc_cnt_fired)
+   .cnt_fired_o       (enc_cnt_fired),
+   .az_sweep_lo_o     (enc_sweep_lo),
+   .az_sweep_hi_o     (enc_sweep_hi)
 );
 assign trig_enc_o = enc_trig_tick;
 
@@ -1601,8 +1622,12 @@ if (adc_rstn_i == 1'b0) begin
     // encoder disabled; gates default off; [16]=1 -> the per-turn pin is
     // treated as ACTIVE LOW out of reset, because the product wiring gives
     // DIO0_N the index COMPLEMENT (I-) and hands I+ to the motor controller.
-    enc_ctrl   <= 17'h10000;
-    az_modulus <= 16'd1024;               // AEDR-9830 x1 default (sanity bound)
+    // [16]=1 -> the index pin is ACTIVE LOW out of reset; [19]=1 -> an index
+    // edge zeroes the azimuth. Quadrature off, frame source = index, so this
+    // reproduces Design v2 exactly.
+    enc_ctrl    <= 25'h090000;
+    az_cfg      <= 32'd1024;              // T = 1024 (AEDR-9830 x1); no hysteresis, mark 0
+    enc_krepeat <= '0;                    // one chirp per fired tick
 end else if (sys_wen) begin
     if (sys_addr[19:0]==20'h0)  begin
         fft_parallel <= sys_wdata[4];
@@ -1619,8 +1644,9 @@ end else if (sys_wen) begin
         dma_int_en <= sys_wdata[0];
         dma_az_en  <= sys_wdata[1];
     end
-    if (sys_addr[19:0]==20'h1A8) enc_ctrl   <= sys_wdata[17-1:0];
-    if (sys_addr[19:0]==20'h1AC) az_modulus <= sys_wdata[ENC_TW-1:0];
+    if (sys_addr[19:0]==20'h1A8) enc_ctrl    <= sys_wdata[25-1:0];
+    if (sys_addr[19:0]==20'h1AC) az_cfg      <= sys_wdata;
+    if (sys_addr[19:0]==20'h1C4) enc_krepeat <= sys_wdata[ENC_KW-1:0];
     if (sys_addr[19:0]==20'h38) fft_peak_start <= sys_wdata[FSZ-1:0];
     if (sys_addr[19:0]==20'h3C) fft_threshold_k <= sys_wdata[16-1:0];
     if (sys_addr[19:0]==20'h40) fft_peak_minimum <= sys_wdata[DSZ-1:0];
@@ -2485,12 +2511,14 @@ end else begin
      // ---- Scanner360 encoder / azimuth-mode registers ----
      // az packet-format descriptor: [7:0]=MSW [15:8]=DTW [23:16]=TKW
      20'h001A4 : begin sys_ack <= sys_en;          sys_rdata <= {8'h0, 8'(HSZ-MSW), 8'd4, 8'(MSW)}  ; end
-     20'h001A8 : begin sys_ack <= sys_en;          sys_rdata <= {15'h0, enc_ctrl}                   ; end
-     20'h001AC : begin sys_ack <= sys_en;          sys_rdata <= {16'h0, az_modulus}                 ; end
+     20'h001A8 : begin sys_ack <= sys_en;          sys_rdata <= { 7'h0, enc_ctrl}                   ; end
+     20'h001AC : begin sys_ack <= sys_en;          sys_rdata <= az_cfg                              ; end
      20'h001B0 : begin sys_ack <= sys_en;          sys_rdata <= {enc_turn_cnt, enc_tick_in_turn}    ; end
      20'h001B4 : begin sys_ack <= sys_en;          sys_rdata <= {16'h0, enc_ticks_last_turn}        ; end
      20'h001B8 : begin sys_ack <= sys_en;          sys_rdata <= enc_turn_period                     ; end
      20'h001BC : begin sys_ack <= sys_en;          sys_rdata <= {enc_cnt_fired, enc_cnt_masked}     ; end
+     20'h001C0 : begin sys_ack <= sys_en;          sys_rdata <= {enc_sweep_hi, enc_sweep_lo}        ; end
+     20'h001C4 : begin sys_ack <= sys_en;          sys_rdata <= {{32-ENC_KW{1'b0}}, enc_krepeat}    ; end
 
      20'h1???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_a_rd}              ; end
      20'h2???? : begin sys_ack <= adc_rd_dv;       sys_rdata <= {16'h0, 2'h0,adc_b_rd}              ; end

@@ -273,6 +273,60 @@ class DmaUnicastProperty(BoolProperty):
         return val
 
 
+class _SplitFieldMixin(object):
+    """Pack/unpack an integer field scattered over non-contiguous bits of ONE
+    32-bit register. Scanner360 v3 widened enc_ctrl (0x1A8) in place and every
+    v2 bit kept its meaning, so the divider's high nibble and the frame
+    source's high bit had to go wherever there was room.
+
+    ``_split_fields`` is ((lsb, width), ...) with the LOW-order value bits
+    first, so ((4, 4), (20, 4)) is an 8-bit field whose low nibble sits at
+    bit 4 and whose high nibble sits at bit 20."""
+    _split_fields = ()
+
+    @staticmethod
+    def _split_mask(fields):
+        mask = 0
+        for lsb, width in fields:
+            mask |= ((1 << width) - 1) << lsb
+        return mask
+
+    def to_python(self, obj, value):
+        out, pos = 0, 0
+        for lsb, width in self._split_fields:
+            out |= ((int(value) >> lsb) & ((1 << width) - 1)) << pos
+            pos += width
+        return out
+
+    def from_python(self, obj, value):
+        out, pos = 0, 0
+        for lsb, width in self._split_fields:
+            out |= ((int(value) >> pos) & ((1 << width) - 1)) << lsb
+            pos += width
+        return out
+
+
+class SplitIntRegister(_SplitFieldMixin, IntRegister):
+    """IntRegister whose field is split over non-contiguous bits (see
+    _SplitFieldMixin)."""
+    def __init__(self, address, fields, **kwargs):
+        self._split_fields = tuple(fields)
+        IntRegister.__init__(self, address,
+                             bits=sum(w for _, w in self._split_fields),
+                             bitmask=self._split_mask(self._split_fields),
+                             **kwargs)
+
+
+class SplitSelectRegister(_SplitFieldMixin, SelectRegister):
+    """SelectRegister whose field is split over non-contiguous bits (see
+    _SplitFieldMixin)."""
+    def __init__(self, address, fields, **kwargs):
+        self._split_fields = tuple(fields)
+        SelectRegister.__init__(self, address,
+                                bitmask=self._split_mask(self._split_fields),
+                                **kwargs)
+
+
 class _AzModulusRegister(IntRegister):
     """enc_az_modulus with a bound from the bitstream: the DMA cell's tick field
     is TKW = HSZ - MSW bits (descriptor 0x1A4), and the encoder latches ticks
@@ -640,7 +694,7 @@ class Scope(HardwareModule, AcquisitionModule):
     dma_az_tkw = IntRegister(0x1A4, bits=8, bitmask=0x00ff0000,
                              doc="azimuth cell tick sub-field width (= HSZ - MSW)")
 
-    # ---- Scanner360 encoder block (0x1A8-0x1BC) ----
+    # ---- Scanner360 encoder block (0x1A8-0x1C4) ----
     enc_enable = BoolRegister(0x1A8, 0,
                               doc="enable the encoder tick/turn front-end")
     enc_gate_asg = BoolRegister(0x1A8, 1,
@@ -650,19 +704,35 @@ class Scope(HardwareModule, AcquisitionModule):
                                 doc="mask ticks while the FFT frame is in flight "
                                     "(incl. fft_trig_delay) — a passed tick is "
                                     "guaranteed to become a point")
-    enc_turn_source = BoolRegister(0x1A8, 3,
-                                   doc="False = DIO0_N per-turn pulse, True = synthetic "
-                                       "turn when tick_in_turn reaches enc_az_modulus")
-    enc_divider = IntRegister(0x1A8, bits=4, bitmask=0x000000f0,
-                              doc="fire every (N+1)-th tick (this register holds N); "
-                                  "phase reset at the turn pulse. Keep 2*(N+1) <= 15 "
-                                  "so a single busy-masked tick still fits the dt field")
+    enc_frame_source = SplitSelectRegister(0x1A8, ((3, 1), (18, 1)),
+                                           options={"index": 0,
+                                                    "modulus": 1,
+                                                    "reversal": 2,
+                                                    "az_mark": 3},
+                                           doc="what raises a frame (and the "
+                                               "mems_turn_kick): 'index' = the DIO0_N "
+                                               "index edge (v2 default), 'modulus' = the "
+                                               "azimuth wrapping enc_az_modulus (fallback "
+                                               "with no index channel), 'reversal' = a "
+                                               "hysteretic direction reversal (the sector "
+                                               "swing's sweep boundary), 'az_mark' = the "
+                                               "azimuth arriving at enc_az_mark. The "
+                                               "counter zero is INDEPENDENT of this — see "
+                                               "enc_index_zero")
+    enc_divider = SplitIntRegister(0x1A8, ((4, 4), (20, 4)),
+                                   doc="fire only at azimuths that are 0 mod (N+1) (this "
+                                       "register holds N, 0..255); the comb is anchored "
+                                       "to the ABSOLUTE azimuth, re-anchored whenever the "
+                                       "index zeroes the counter, so the forward and "
+                                       "return sweeps of a swing sample the same columns. "
+                                       "Keep 2*(N+1) <= 15 so a single busy-masked tick "
+                                       "still fits the dt field")
     enc_glitch_log2 = IntRegister(0x1A8, bits=4, bitmask=0x00000f00,
                                   doc="glitch filter: pin level must hold 2^n adc "
                                       "cycles before an edge is accepted (0 = off)")
     enc_mems_turn_kick = IntRegister(0x1A8, bits=4, bitmask=0x0000f000,
-                                     doc="extra MEMS step pulses injected at each turn "
-                                         "pulse (forces the rosette precession "
+                                     doc="extra MEMS step pulses injected at each frame "
+                                         "event (forces the rosette precession "
                                          "regardless of T mod L); 0 = natural")
     enc_turn_invert = BoolRegister(0x1A8, 16,
                                    doc="the per-turn (index) pin is ACTIVE LOW — set "
@@ -675,27 +745,79 @@ class Scope(HardwareModule, AcquisitionModule):
                                        "enc_enable: flipping polarity on a live block can "
                                        "synthesise one spurious turn event (edges are "
                                        "gated by enc_enable, so a disabled block is safe)")
-    enc_az_modulus = _AzModulusRegister(0x1AC, bits=16,
-                                        doc="ticks per turn T: synthetic-turn modulus "
-                                            "(enc_turn_source=True) / bound on the "
-                                            "latched azimuth (ticks >= T land in the "
-                                            "overflow bucket T, dropped by the host); "
-                                            "clamped to the cell tick field 2^TKW-1")
+    enc_quadrature = BoolRegister(0x1A8, 17,
+                                  doc="x4 quadrature decode on {A+ = DIO0_P, B+ = DIO1_P} "
+                                      "instead of the legacy x1 rising-A count. Gives 4x "
+                                      "the ticks per turn (set enc_az_modulus to match) "
+                                      "and, the point of it, DIRECTION — a swinging prism "
+                                      "counts back down on the return sweep. The azimuth "
+                                      "then becomes a true mod-T ring counter. Free DIO1_P "
+                                      "to an input (hk.expansion_P1_output = False)")
+    enc_quad_invert = BoolRegister(0x1A8, 24,
+                                   doc="swap the decoded quadrature direction (wrong-way "
+                                       "A/B wiring, or a mirrored gear train)")
+    enc_index_zero = BoolRegister(0x1A8, 19,
+                                  doc="an index edge zeroes the azimuth counter (and "
+                                      "re-anchors the divider comb). DEFAULTS TO TRUE, and "
+                                      "worth leaving on even for a sector that rarely "
+                                      "crosses the index: it costs nothing and gives a "
+                                      "free drift check. Independent of enc_frame_source")
+    enc_az_modulus = _AzModulusRegister(0x1AC, bits=16, bitmask=0x0000ffff,
+                                        doc="ticks per turn T: the azimuth counter's "
+                                            "modulus in quadrature mode, the synthetic-turn "
+                                            "modulus (enc_frame_source='modulus') and the "
+                                            "bound on the latched azimuth in legacy mode "
+                                            "(ticks >= T land in the overflow bucket T, "
+                                            "dropped by the host); clamped to the cell "
+                                            "tick field 2^TKW-1. x4 quadrature quadruples "
+                                            "it (1024 -> 4096)")
+    enc_rev_hysteresis = IntRegister(0x1AC, bits=4, bitmask=0x000f0000,
+                                     doc="ticks the azimuth must move AGAINST the current "
+                                         "direction before a reversal is declared "
+                                         "(enc_frame_source='reversal'). At the turnaround "
+                                         "|w| -> 0 and the encoder dithers, so 0 (declare "
+                                         "on the first opposing tick) is only right for a "
+                                         "noiseless encoder")
+    enc_az_mark = IntRegister(0x1AC, bits=12, bitmask=0xfff00000,
+                              doc="azimuth whose arrival raises a frame when "
+                                  "enc_frame_source='az_mark' (either direction)")
     enc_tick_in_turn = IntRegister(0x1B0, bits=16, bitmask=0x0000ffff,
                                    doc="live 0-based azimuth tick counter (RO)")
     enc_turn_cnt = IntRegister(0x1B0, bits=16, bitmask=0xffff0000,
                                doc="live turn counter (RO, wraps at 2^16)")
     enc_ticks_last_turn = IntRegister(0x1B4, bits=16,
-                                      doc="ticks counted between the last two turn "
-                                          "pulses (RO; should equal T)")
+                                      doc="ticks counted between the last two frame "
+                                          "events, in either direction (RO): T per turn "
+                                          "in index mode, the path length of the last "
+                                          "sweep in reversal mode")
     enc_turn_period = IntRegister(0x1B8,
-                                  doc="adc_clk cycles of the last full turn (RO) "
-                                      "-> f_rev = 125e6 / enc_turn_period")
+                                  doc="adc_clk cycles between the last two frame events "
+                                      "(RO) -> f_rev = 125e6 / enc_turn_period, or the "
+                                      "half-swing period in reversal mode")
     enc_ticks_masked = IntRegister(0x1BC, bits=16, bitmask=0x0000ffff,
                                    doc="divider-eligible ticks masked by the busy "
                                        "gate (RO, wrapping)")
     enc_ticks_fired = IntRegister(0x1BC, bits=16, bitmask=0xffff0000,
                                   doc="ticks that fired the trigger chain (RO, wrapping)")
+    enc_sweep_lo = IntRegister(0x1C0, bits=16, bitmask=0x0000ffff,
+                               doc="lower turning point of the last completed sweep (RO) — "
+                                   "with enc_sweep_hi this is the real mechanical "
+                                   "amplitude including overshoot, i.e. exactly the "
+                                   "quantity the position-tagged cloud does not care about")
+    enc_sweep_hi = IntRegister(0x1C0, bits=16, bitmask=0xffff0000,
+                               doc="upper turning point of the last completed sweep (RO)")
+    enc_circle_repeat = IntRegister(0x1C4, bits=12,
+                                    doc="EXTRA gated trigger pulses emitted after each "
+                                        "fired tick, i.e. k-1 where k = L is one whole "
+                                        "MEMS circle per encoder tick (0 = one chirp per "
+                                        "tick, the v2 behaviour). The repeat is paced off "
+                                        "the busy gate, so at least one of enc_gate_asg / "
+                                        "enc_gate_fft MUST be set: with neither, a burst "
+                                        "stalls after its first pulse rather than flooding "
+                                        "asg3. Ticks arriving while a circle is still "
+                                        "being drawn count in enc_ticks_masked — that is "
+                                        "the 'the circle no longer fits inside N tick "
+                                        "intervals' diagnostic")
 
     fft_debug2 = IntRegister(0x174)
     fft_debug3 = IntRegister(0x178)

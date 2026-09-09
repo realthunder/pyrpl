@@ -1347,8 +1347,13 @@ class _ExtTriggerPinFreeMixin(object):
     # option names that route the external trigger through DIO0_P
     # (enc_tick is the Scanner360 encoder per-tick wire on the same pin)
     _EXT_PIN0_SOURCES = ('ext_positive_edge', 'ext_negative_edge', 'enc_tick')
-    # sources that ALSO need DIO0_N as an input (the encoder per-turn wire)
+    # sources that ALSO need DIO0_N as an input (the encoder index wire, I-)
     _EXT_PIN0N_SOURCES = ('enc_tick',)
+    # ... and DIO1_P (the encoder's B+ channel, Scanner360 v3 quadrature). It is
+    # freed unconditionally with the tick source rather than tracking
+    # scope.enc_quadrature: the pin is unused otherwise, and an input that is
+    # not being decoded costs nothing.
+    _EXT_PIN1_SOURCES = ('enc_tick',)
 
     def set_value(self, obj, value):
         result = super(_ExtTriggerPinFreeMixin, self).set_value(obj, value)
@@ -1356,6 +1361,8 @@ class _ExtTriggerPinFreeMixin(object):
             pins = ['P0']
             if value in self._EXT_PIN0N_SOURCES:
                 pins.append('N0')
+            if value in self._EXT_PIN1_SOURCES:
+                pins.append('P1')
             for pin in pins:
                 attr = 'expansion_%s_output' % pin
                 try:
@@ -1363,7 +1370,7 @@ class _ExtTriggerPinFreeMixin(object):
                     if hk is not None and getattr(hk, attr):
                         setattr(hk, attr, False)
                 except Exception:
-                    obj._logger.debug("could not free DIO0_%s (hk.%s) "
+                    obj._logger.debug("could not free DIO_%s (hk.%s) "
                                       "for the external trigger", pin, attr,
                                       exc_info=True)
         return result

@@ -617,6 +617,7 @@ red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .FSSR(FFT_SSR), .DSZ(FFT_WIDTH)
   .adc_rstn_i      (  adc_rstn                   ),  // reset - active low
   .trig_ext_i      (  exp_p_in[0]                ),  // external trigger / encoder per-tick
   .trig_extn_i     (  exp_n_in[0]                ),  // encoder per-turn (Scanner360)
+  .trig_quad_i     (  exp_p_in[1]                ),  // encoder channel B+ (Scanner360 v3 quadrature)
   .asg_busy_i      (  asg_play_active[2]         ),  // asg3 (chirp) playing — tick gate
   .trig_enc_o      (  enc_trig_tick              ),  // gated encoder tick -> ASG enc_tick source
   .trig_asg_i      (  trig_asg_out               ),  // ASG trigger
