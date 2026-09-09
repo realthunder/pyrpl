@@ -213,6 +213,16 @@ fi
 #             single-channel because natural_order reorder buffers make dual-channel N13 1
 #             BRAM tile over. natural order auto-on via frac8. Fits BRAM ~85% / LUT 53% /
 #             DSP 63%; closes pll_adc +0.148 (MT).
+#   ssr4n10   — IMPL=4 SSR=4 NFFT=10 (1024-pt) MIDDLE image, datapath identical to
+#             ssr4n9/ssr4n11. Full-ramp chirp ceiling 61.0 k/s at 1024 real samples
+#             per half — the rung between n11 (30.5 k / 2048) and n9 (122.1 k / 512).
+#             Worth building now that the TL-1P does external modulation (fw 4.0.9
+#             reg 0x19), so the chirp rate is free and every N's full-ramp point is
+#             reachable instead of only the laser's presets. DETERMINISTIC/PHYS_OPT
+#             below are UNSWEPT placeholders copied from ssr4n9 — N placement is
+#             noisy on this die, so SWEEP before trusting the numbers.
+#   ssr4n10scan360 — ssr4n10 for the scan360 branch (adds MODULE_FB_PIPELINE like
+#             ssr4n9scan360). Also unswept.
 #   ssr4n9    — IMPL=4 SSR=4 NFFT=9 (512-pt) fast image, dsz24/frac8/scaled2/approx + DSP
 #             fb pipeline. N9 @125 is placement-noisy — RE-SWEEP DETERMINISTIC after RTL
 #             edits. On mainline 6e794ba0 the best is ExtraNetDelay_high (DETERMINISTIC=2) x
@@ -409,6 +419,60 @@ case "${PROFILE:-}" in
         export DETERMINISTIC=${DETERMINISTIC:-6}
         export PHYS_OPT=${PHYS_OPT:-Explore}
         echo "==> PROFILE=fft178ssr8n11: SSR=8 NFFT=11 FFT@178.57MHz, fft_b disabled (FFT_SINGLE=1), place EarlyBlockPlacement (DETERMINISTIC=6), phys_opt Explore — EXPERIMENTAL"
+        ;;
+    ssr4n10)
+        # 1024-pt middle image: IMPL=4 (native xfft, natural order) SSR=4 NFFT=10,
+        # FFT on adc_clk @125 MHz. Datapath is bit-identical to ssr4n9/ssr4n11
+        # (dsz24 + sub-bin interp frac8 + scaled2 + approx mag + DSP fb pipeline);
+        # ONLY FFT_NFFT differs, and the host is self-describing (it reads FSZ/FRAC
+        # from descriptor 0x170), so no host change is needed.
+        #
+        # WHY: rate ladder at SSR=4/125, sequential (see docs/PointRateEstimates.md):
+        #   full-ramp chirp = f_adc/(2N):  n11 30.5 k | n10 61.0 k | n9 122.1 k
+        #   FFT-bound       = SSR*f_fft/(2N): n11 122.1 k | n10 244.1 k | n9 488.3 k
+        # Full-ramp is the max-resolution point for a given N (resolution follows the
+        # REAL sample count, not N). n10 sits exactly between the two shipped images
+        # at 1024 real samples/half. Reachable now that the TL-1P supports external
+        # modulation, which frees the chirp rate from its preset table.
+        #
+        # Guards: IDX = FFT_NFFT + PEAK_FRAC = 18, so 2*IDX + MSW = 46 <= 53 (DMA
+        # data word) holds. Resources should land between ssr4n9 (LUT 70% / DSP 67%)
+        # and ssr4n11 (LUT 86% / DSP 87%).
+        #
+        # NOT SWEPT: DETERMINISTIC/PHYS_OPT are copied from ssr4n9 as a starting
+        # point. N placement on this die is netlist-sensitive (both n9 and n11
+        # required re-sweeps after RTL churn) — sweep before quoting timing.
+        export FFT_IMPL=${FFT_IMPL:-4}
+        export FFT_SSR=${FFT_SSR:-4}
+        export FFT_NFFT=${FFT_NFFT:-10}
+        export FFT_WIDTH=${FFT_WIDTH:-24}
+        export PEAK_FRAC=${PEAK_FRAC:-8}
+        export FFT_SCALED=${FFT_SCALED:-2}
+        export FFT_USE_APPROX=${FFT_USE_APPROX:-1}
+        export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
+        export DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-1}
+        export DETERMINISTIC=${DETERMINISTIC:-2}
+        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
+        echo "==> PROFILE=ssr4n10: IMPL=4 SSR=4 NFFT=10 (1024-pt) FFT@125MHz on adc_clk, CA-CFAR, dsz24 frac8 scaled2 approx fbpipe, place ExtraNetDelay_high (DETERMINISTIC=2), phys_opt AggressiveExplore  [UNSWEPT placeholder timing dials]"
+        ;;
+    ssr4n10scan360)
+        # ssr4n10 for the scan360 branch. Same relationship ssr4n9scan360 has to
+        # ssr4n9: adds MODULE_FB_PIPELINE=1, which cuts the i_dsp sum1 -> dac_saturate
+        # -> pid/pidfilter feedback path that the scan360 die stretches into routing.
+        # Also UNSWEPT — see ssr4n10.
+        export FFT_IMPL=${FFT_IMPL:-4}
+        export FFT_SSR=${FFT_SSR:-4}
+        export FFT_NFFT=${FFT_NFFT:-10}
+        export FFT_WIDTH=${FFT_WIDTH:-24}
+        export PEAK_FRAC=${PEAK_FRAC:-8}
+        export FFT_SCALED=${FFT_SCALED:-2}
+        export FFT_USE_APPROX=${FFT_USE_APPROX:-1}
+        export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
+        export DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-1}
+        export MODULE_FB_PIPELINE=${MODULE_FB_PIPELINE:-1}
+        export DETERMINISTIC=${DETERMINISTIC:-2}
+        export PHYS_OPT=${PHYS_OPT:-Explore}
+        echo "==> PROFILE=ssr4n10scan360: IMPL=4 SSR=4 NFFT=10 (1024-pt) FFT@125MHz on adc_clk, scan360 chain, dsz24 frac8 scaled2 approx fbpipe+modpipe, place ExtraNetDelay_high (DETERMINISTIC=2), phys_opt Explore  [UNSWEPT placeholder timing dials]"
         ;;
     ssr4n9)
         # Default 512-pt fast image (IMPL=4 SSR=4 NFFT=9, default CA-CFAR detector): same
