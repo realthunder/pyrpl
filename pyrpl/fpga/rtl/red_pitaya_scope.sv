@@ -86,9 +86,15 @@ module red_pitaya_scope #(
    input      [ASZ-1: 0] adc_a_i         ,  // ADC data CHA
    input      [ASZ-1: 0] adc_b_i         ,  // ADC data CHB
    // trigger sources
-   input                 trig_ext_i      ,  // external trigger (Scanner360: encoder per-tick, DIO0_P)
-   input                 trig_extn_i     ,  // encoder per-turn input (DIO0_N)
-   input                 trig_quad_i     ,  // encoder channel B+ (DIO1_P, Scanner360 v3)
+   input                 trig_ext_i      ,  // external trigger ONLY (DIO0_P) — no longer the
+                                          // encoder tick, see trig_quadn_i below
+   input                 trig_extn_i     ,  // encoder index (DIO0_N)
+   input                 trig_quad_i     ,  // encoder channel B (DIO1_P, Scanner360 v3)
+   input                 trig_quadn_i    ,  // encoder channel A (DIO1_N). Moved off DIO0_P so the
+                                          // scope/ASG external trigger keeps that pin to itself:
+                                          // trig_ext_i drives ext_trig_in AND used to drive the
+                                          // encoder tick, so an external trigger and the encoder
+                                          // could not be used at the same time.
    input                 asg_busy_i      ,  // asg3 playing (dac_do) — encoder tick gate
    output                trig_enc_o      ,  // gated encoder tick pulse -> ASG enc_tick trigger
    input      [  4-1: 0] trig_asg_i      ,  // ASG trigger
@@ -830,7 +836,7 @@ wire enc_fft_busy = !((fft_state == S_IDLE) && (&fft_done) && (fft_reconf_wait =
 red_pitaya_enc #(.TW(ENC_TW), .KW(ENC_KW)) i_enc (
    .clk_i             (adc_clk_i),
    .rstn_i            (adc_rstn_i),
-   .tick_i            (trig_ext_i),
+   .tick_i            (trig_quadn_i),
    .quad_i            (trig_quad_i),
    .turn_i            (trig_extn_i),
    .asg_busy_i        (asg_busy_i),
