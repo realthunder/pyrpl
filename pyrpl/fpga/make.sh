@@ -198,10 +198,14 @@ fi
 #   ssr4n11 — IMPL=4 (native xfft) SSR=4 NFFT=11 (2048-pt) — single-clock version of
 #             fft178ssr4n11. dsz24/frac8/scaled2/approx + ramp/SO-CFAR, DSP+module+scope
 #             fb pipelines, lean knobs (ASG_ADVTRIG=0, ASG0=0, PID_FILTERSTAGES=2, guard 8 /
-#             train 63, opt ExploreSequentialArea), place ExtraNetDelay_high
-#             (DETERMINISTIC=2), phys_opt AggressiveExplore. LUT ~91% — at the placer's
+#             train 63, opt ExploreSequentialArea), place AltSpreadLogic_low
+#             (DETERMINISTIC=11), phys_opt AggressiveExplore. LUT ~90% — at the placer's
 #             cliff; N11@125 placement is netlist-sensitive, re-sweep DETERMINISTIC
-#             after RTL edits. History in docs/BuildLog.md (2026-07-22, 2026-09-01).
+#             after RTL edits. The 2026-09-09 11x2 sweep on scan360 v3 (3a37414f) made
+#             DET=11 the pin: adc +0.062 / WHS +0.015, the only 1 of 22 points with both
+#             margins positive; 6 of 22 NOFIT. Every rechecked placement inverted its
+#             July rank, so treat any remembered ordering as stale.
+#             History in docs/BuildLog.md (2026-07-22, 2026-09-01, 2026-09-09).
 #   ssr4n11-impl5 — LOWER-DR experiment, NOT for product. Same 2048-pt image as ssr4n11 but
 #             the direct hls::fft (FFT_IMPL=5). It only fits because it runs INTERNAL_W=16
 #             (16-bit *scaled* internal datapath) vs ssr4n11's unscaled 28-bit full-growth —
@@ -223,6 +227,14 @@ fi
 #             noisy on this die, so SWEEP before trusting the numbers.
 #   ssr4n10scan360 — ssr4n10 for the scan360 branch (adds MODULE_FB_PIPELINE like
 #             ssr4n9scan360). Also unswept.
+#   ssr4n10lean — ssr4n11 with FFT_NFFT=10 (1024-pt) and EVERY other dial identical,
+#             including the lean knobs and the DET=11 pin. Use this, not ssr4n10 /
+#             ssr4n10scan360, when the intent is "the shipping n11 image at half the
+#             transform" — those two predate the lean knobs and describe a different,
+#             larger die. Motivation: n11 sits at the packing cliff (6 of 22 sweep
+#             points NOFIT, short 40-104 slices), so a 1024-pt transform should relieve
+#             both the FFT datapath and the slice pressure. Timing dials inherited from
+#             the n11 winner and UNSWEPT for n10 — sweep if it does not close.
 #   ssr4n9    — IMPL=4 SSR=4 NFFT=9 (512-pt) fast image, dsz24/frac8/scaled2/approx + DSP
 #             fb pipeline. N9 @125 is placement-noisy — RE-SWEEP DETERMINISTIC after RTL
 #             edits. On mainline 6e794ba0 the best is ExtraNetDelay_high (DETERMINISTIC=2) x
@@ -347,13 +359,56 @@ case "${PROFILE:-}" in
         # only uses asg1 (mems cos), asg2 (mems sin) and asg3 (chirp). Buys back
         # more than the ramp costs, so the n11 die fits with PEAK_RAMP on.
         export ASG0=${ASG0:-0}
-        # DET=2 (ExtraNetDelay_high) won the 2026-07-22 ramp-slim 4-seed sweep
-        # (7/2/8/5 all PLACED; DET=2 closed at adc +0.023/+0.020 with the
-        # steping->scope multicycle now in sdc/red_pitaya.xdc). Re-sweep after
-        # RTL edits — the winner is netlist-sensitive.
-        export DETERMINISTIC=${DETERMINISTIC:-2}
+        # DET=11 (AltSpreadLogic_low) x AggressiveExplore won the 2026-09-09 11x2
+        # sweep on scan360 v3 (3a37414f): adc +0.062 / WHS +0.015, 0 failing
+        # endpoints, LUT 48107 — the ONLY one of 22 grid points with both margins
+        # positive at the +0.015 hold bar. The previous pin (DET=2,
+        # ExtraNetDelay_high) reproduces at -0.102 on this netlist, so a plain
+        # profile build was reproducibly producing an image that MISSES TIMING
+        # while printing a truthful "DETERMINISTIC build ... reproducible" banner.
+        # Hold is the binding constraint: det11 x Explore has the sweep's best
+        # setup (+0.088) and is disqualified by +0.008 of hold.
+        # 6 of 22 points NOFIT outright (det3/det7/det9 — short 104/40/104 slices).
+        # DETERMINISTIC=0 is NOT a fast-path option here: the MT placer's ~0.2 ns
+        # swing (see red_pitaya_vivado.tcl:12-22) exceeds this build's entire
+        # +0.062 setup margin. Re-sweep after RTL edits — the winner is strongly
+        # netlist-sensitive (DET=11 ranked LAST of 11 in the July sweep; DET=4 went
+        # best -> worst; 5 of 5 rechecked placements inverted their July rank).
+        export DETERMINISTIC=${DETERMINISTIC:-11}
         export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
-        echo "==> PROFILE=ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place ExtraNetDelay_high (DETERMINISTIC=2), phys_opt AggressiveExplore"
+        echo "==> PROFILE=ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place AltSpreadLogic_low (DETERMINISTIC=11), phys_opt AggressiveExplore"
+        ;;
+    ssr4n10lean)
+        # ssr4n11 with a 1024-pt transform: EVERY dial identical to PROFILE=ssr4n11
+        # except FFT_NFFT=10. Deliberately distinct from the older ssr4n10 /
+        # ssr4n10scan360, which predate the lean knobs (no scopepipe / pidfilt2 /
+        # advtrig / asg0 / CFAR caps) and are documented as UNSWEPT placeholders —
+        # they do not describe the die that ssr4n11 actually fits into at 90% LUT.
+        # Purpose: halving the transform should relieve both the FFT datapath and
+        # the slice-packing pressure that left 6 of 22 n11 sweep points NOFIT.
+        # Timing dials are INHERITED from the n11 winner (DET=11 AltSpreadLogic_low
+        # x AggressiveExplore) and are UNSWEPT for n10 — the n11 sweep showed the
+        # winner is strongly netlist-sensitive, so re-sweep if this does not close.
+        export FFT_IMPL=${FFT_IMPL:-4}
+        export FFT_SSR=${FFT_SSR:-4}
+        export FFT_NFFT=${FFT_NFFT:-10}
+        export FFT_WIDTH=${FFT_WIDTH:-24}
+        export PEAK_FRAC=${PEAK_FRAC:-8}
+        export FFT_SCALED=${FFT_SCALED:-2}
+        export FFT_USE_APPROX=${FFT_USE_APPROX:-1}
+        export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
+        export DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-1}
+        export MODULE_FB_PIPELINE=${MODULE_FB_PIPELINE:-1}
+        export PID_FILTERSTAGES=${PID_FILTERSTAGES:-2}
+        export SCOPE_FB_PIPELINE=${SCOPE_FB_PIPELINE:-1}
+        export CFAR_TRAIN_MAX=${CFAR_TRAIN_MAX:-63}
+        export CFAR_GUARD_MAX=${CFAR_GUARD_MAX:-8}
+        export OPT_DIRECTIVE=${OPT_DIRECTIVE:-ExploreSequentialArea}
+        export ASG_ADVTRIG=${ASG_ADVTRIG:-0}
+        export ASG0=${ASG0:-0}
+        export DETERMINISTIC=${DETERMINISTIC:-11}
+        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
+        echo "==> PROFILE=ssr4n10lean: IMPL=4 SSR=4 NFFT=10 (1024-pt) FFT@125MHz on adc_clk, = ssr4n11 with NFFT=10, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place AltSpreadLogic_low (DETERMINISTIC=11), phys_opt AggressiveExplore  [timing dials inherited from n11, UNSWEPT for n10]"
         ;;
     ssr4n11-impl5)
         # LOWER-DR experiment — NOT the product N11 image (use ssr4n11 / IMPL=4 for that).
@@ -556,7 +611,7 @@ case "${PROFILE:-}" in
         echo "==> PROFILE=ssr4n9-global: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, LEGACY global detector (PEAK_ALGO=global), dsz24 frac8 scaled2 approx fbpipe, place WLDrivenBlockPlacement (DETERMINISTIC=4), phys_opt AggressiveExplore"
         ;;
     *)
-        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 ssr2n13-125 fft178ssr4n11 ssr4n11 ssr4n11-impl5 ssr4n13-single fft178ssr8n11 ssr4n9 ssr4n9scan360 ssr4n9-global)" >&2; exit 1 ;;
+        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 ssr2n13-125 fft178ssr4n11 ssr4n11 ssr4n11-impl5 ssr4n13-single fft178ssr8n11 ssr4n10 ssr4n10scan360 ssr4n10lean ssr4n9 ssr4n9scan360 ssr4n9-global)" >&2; exit 1 ;;
 esac
 
 # ---- Active build defaults (override on the command line, e.g. FFT_IMPL=5 ./make.sh) ----
