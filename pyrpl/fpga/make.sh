@@ -235,6 +235,11 @@ fi
 #             points NOFIT, short 40-104 slices), so a 1024-pt transform should relieve
 #             both the FFT datapath and the slice pressure. Timing dials inherited from
 #             the n11 winner and UNSWEPT for n10 — sweep if it does not close.
+#   ssr4n9lean — ssr4n11 with FFT_NFFT=9 (512-pt), every other dial identical, DET=11 pin.
+#             Completes the lean ladder n11/n10/n9 (2048/1024/512-pt) — same image,
+#             only the transform size differs, so point rate trades against range
+#             resolution with nothing else moving. Prefer this over ssr4n9 /
+#             ssr4n9scan360 when the intent is "the shipping n11 image, shorter FFT".
 #   ssr4n9    — IMPL=4 SSR=4 NFFT=9 (512-pt) fast image, dsz24/frac8/scaled2/approx + DSP
 #             fb pipeline. N9 @125 is placement-noisy — RE-SWEEP DETERMINISTIC after RTL
 #             edits. On mainline 6e794ba0 the best is ExtraNetDelay_high (DETERMINISTIC=2) x
@@ -409,6 +414,40 @@ case "${PROFILE:-}" in
         export DETERMINISTIC=${DETERMINISTIC:-11}
         export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
         echo "==> PROFILE=ssr4n10lean: IMPL=4 SSR=4 NFFT=10 (1024-pt) FFT@125MHz on adc_clk, = ssr4n11 with NFFT=10, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place AltSpreadLogic_low (DETERMINISTIC=11), phys_opt AggressiveExplore  [timing dials inherited from n11, UNSWEPT for n10]"
+        ;;
+    ssr4n9lean)
+        # ssr4n11 with a 512-pt transform: EVERY dial identical to PROFILE=ssr4n11
+        # except FFT_NFFT=9. Same relationship to the legacy ssr4n9 / ssr4n9scan360
+        # that ssr4n10lean has to ssr4n10 — those predate the lean knobs (no
+        # scopepipe / pidfilt2 / advtrig / asg0 / CFAR caps; ssr4n9 also has no
+        # modpipe) and describe a larger die than the one ssr4n11 fits into.
+        # Completes the lean ladder: n11 2048-pt / n10 1024-pt / n9 512-pt, all
+        # otherwise identical, so point rate can be traded against range resolution
+        # without any other variable moving.
+        # Timing dials INHERITED from the n11 winner (DET=11 AltSpreadLogic_low x
+        # AggressiveExplore) and UNSWEPT for n9 — but n10 closed first try at
+        # +0.188/+0.045 on 76.4% LUT, so n9 has more headroom still. Sweep only if
+        # it does not close.
+        export FFT_IMPL=${FFT_IMPL:-4}
+        export FFT_SSR=${FFT_SSR:-4}
+        export FFT_NFFT=${FFT_NFFT:-9}
+        export FFT_WIDTH=${FFT_WIDTH:-24}
+        export PEAK_FRAC=${PEAK_FRAC:-8}
+        export FFT_SCALED=${FFT_SCALED:-2}
+        export FFT_USE_APPROX=${FFT_USE_APPROX:-1}
+        export FFT_CLK_SEL=${FFT_CLK_SEL:-0}
+        export DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-1}
+        export MODULE_FB_PIPELINE=${MODULE_FB_PIPELINE:-1}
+        export PID_FILTERSTAGES=${PID_FILTERSTAGES:-2}
+        export SCOPE_FB_PIPELINE=${SCOPE_FB_PIPELINE:-1}
+        export CFAR_TRAIN_MAX=${CFAR_TRAIN_MAX:-63}
+        export CFAR_GUARD_MAX=${CFAR_GUARD_MAX:-8}
+        export OPT_DIRECTIVE=${OPT_DIRECTIVE:-ExploreSequentialArea}
+        export ASG_ADVTRIG=${ASG_ADVTRIG:-0}
+        export ASG0=${ASG0:-0}
+        export DETERMINISTIC=${DETERMINISTIC:-11}
+        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
+        echo "==> PROFILE=ssr4n9lean: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, = ssr4n11 with NFFT=9, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place AltSpreadLogic_low (DETERMINISTIC=11), phys_opt AggressiveExplore  [timing dials inherited from n11, UNSWEPT for n9]"
         ;;
     ssr4n11-impl5)
         # LOWER-DR experiment — NOT the product N11 image (use ssr4n11 / IMPL=4 for that).
@@ -611,7 +650,7 @@ case "${PROFILE:-}" in
         echo "==> PROFILE=ssr4n9-global: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, LEGACY global detector (PEAK_ALGO=global), dsz24 frac8 scaled2 approx fbpipe, place WLDrivenBlockPlacement (DETERMINISTIC=4), phys_opt AggressiveExplore"
         ;;
     *)
-        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 ssr2n13-125 fft178ssr4n11 ssr4n11 ssr4n11-impl5 ssr4n13-single fft178ssr8n11 ssr4n10 ssr4n10scan360 ssr4n10lean ssr4n9 ssr4n9scan360 ssr4n9-global)" >&2; exit 1 ;;
+        echo "ERROR: unknown PROFILE='$PROFILE' (known: fft200ssr2 ssr2n13-125 fft178ssr4n11 ssr4n11 ssr4n11-impl5 ssr4n13-single fft178ssr8n11 ssr4n10 ssr4n10scan360 ssr4n10lean ssr4n9 ssr4n9scan360 ssr4n9lean ssr4n9-global)" >&2; exit 1 ;;
 esac
 
 # ---- Active build defaults (override on the command line, e.g. FFT_IMPL=5 ./make.sh) ----
