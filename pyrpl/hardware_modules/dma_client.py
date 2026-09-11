@@ -287,6 +287,13 @@ class DmaUdpClient:
         # tick*L + mems -> a DENSE ticks x L buffer the host can reshape
         # directly. 0 keeps the raw {tick,mems} cell.
         self._az_l = 0
+        # Sector window on the dense buffer (Scanner360 v3 swing): the row is
+        # ((tick - az_base) mod az_modulus) instead of the raw tick, so a
+        # buffer of sector_ticks x L covers just the swept sector and a sector
+        # straddling the encoder index (tick 0) stays contiguous. az_modulus 0
+        # = no wrap (row = tick - az_base); both 0 = the plain dense buffer.
+        self._az_base = 0
+        self._az_mod = 0
         self._refl_avg_tol = 1.0 # max |bin move| to keep averaging (bins)
         self._avg_cnt = [None, None]  # per-cell sample counts, lazy (n,2) uint16
         self.configure(fsz=fsz, frac=frac, hsz=hsz, dsz=dsz,
@@ -361,7 +368,7 @@ class DmaUdpClient:
 
     def configure(self, fsz=None, frac=None, hsz=None, hist_block_size=None,
                   dsz=None, intensity=None, msw=None, az_lcount=None,
-                  refl_alpha=None, refl_bin0=None, refl_cal=None,
+                  az_base=None, az_modulus=None, refl_alpha=None, refl_bin0=None, refl_cal=None,
                   refl_avg=None, refl_avg_tol=None,
                   max_interval=None, max_parse_rate=None, seq_bits=None,
                   zigzag_stride=None, zigzag_shift=None):
@@ -412,6 +419,11 @@ class DmaUdpClient:
             self._msw = int(msw)
         if az_lcount is not None:
             self._az_l = int(az_lcount)
+        if az_base is not None:
+            # may be negative (a sector starting just before the index)
+            self._az_base = int(az_base)
+        if az_modulus is not None:
+            self._az_mod = max(0, int(az_modulus))
         if hist_block_size is not None:
             self._hist_block_size = hist_block_size
         if max_interval is not None:
@@ -1361,8 +1373,7 @@ class DmaUdpClient:
             for c in range(nch):
                 col = grp[:, 2 * c if has_val else c]
                 mems = ((col >> m_lsb) & mmask).astype(np.int64)
-                pos = (tick * self._az_l + mems) if self._az_l \
-                    else ((tick << msw) | mems)
+                pos = self._az_pos(tick, mems, msw)
                 keep = (pos >= 0) & (pos < self._max_frame_size)
                 p = pos[keep].astype(np.int64)
                 up = (col & pmask).astype(np.int32)[keep]
@@ -1427,8 +1438,7 @@ class DmaUdpClient:
             seg_start_cs = cs[sh]
             tick = anchors_tick[seg_id] + (cs - seg_start_cs[seg_id])
             mems = mems_all[sel]
-            pos = (tick * self._az_l + mems) if self._az_l \
-                else ((tick << msw) | mems)      # header rows never emitted
+            pos = self._az_pos(tick, mems, msw)   # header rows never emitted
             for s in range(anchors_tick.size):
                 rows = idx_rows & (seg_id == s)
                 if not rows.any():
@@ -1634,6 +1644,21 @@ class DmaUdpClient:
         avg = np.where(keep, prev + (refl_new - prev) // c2, refl_new)
         cnt[p, col] = np.where(valid, c2, 0).astype(np.uint16)
         return avg
+
+    def _az_pos(self, tick, mems, msw):
+        """Buffer position of azimuth cells: the raw {tick, mems} cell, or with
+        az_lcount the dense row*L + mems where row = tick, offset by az_base
+        and wrapped at az_modulus when a sector window is configured (see
+        configure()). Rows outside the window come out negative or past the
+        buffer and are dropped by the caller's range check."""
+        if not self._az_l:
+            return (tick << msw) | mems
+        # int64 on purpose: the anchor tick arrives as an unsigned word and a
+        # base above it must go negative, not wrap
+        row = np.asarray(tick, dtype=np.int64) - self._az_base
+        if self._az_mod:
+            row = row % self._az_mod
+        return row * self._az_l + np.asarray(mems, dtype=np.int64)
 
     def _write_channel(self, ch, frame_cnt, p, up, down,
                        refl_up=None, refl_down=None):

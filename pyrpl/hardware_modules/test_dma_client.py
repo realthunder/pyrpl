@@ -1001,6 +1001,40 @@ def test_azimuth_tagged_intensity_v10():
     return True
 
 
+def test_azimuth_sector_window():
+    """az_base / az_modulus (Scanner360 v3 swing): the dense buffer covers only
+    a window of `rows` ticks starting at az_base, wrapped at the modulus so a
+    sector straddling the index (a NEGATIVE base) stays contiguous; ticks
+    outside the window are dropped, not aliased."""
+    fsz, frac, hsz, msw, hbs, T, L = 9, 8, 24, 10, 20, 1024, 129
+    idx = fsz + frac
+    base, rows = -8, 32          # window = ticks T-8..T-1, 0..23
+    points = _az_points(T, L, 2)
+    pkts = emit_packets_az(points, hsz=hsz, msw=msw, idx=idx,
+                           hist_block_size=hbs, nch=2, tagged=True)
+    c = DmaUdpClient(fsz=fsz, frac=frac, hsz=hsz, hist_block_size=hbs,
+                     max_frame_size=rows * L, max_interval=0.0)
+    c.configure(msw=msw, az_lcount=L, az_base=base, az_modulus=T)
+    for pkt in pkts:
+        c._process_packet(pkt)
+    inside = [(((t - base) % T), m, f, chv) for (t, m, f, chv) in points
+              if ((t - base) % T) < rows]
+    assert {r for r, _, _, _ in inside} >= {3, 7, 8, 31}, "window not exercised"
+    _check_az(c, inside, 2, L, msw)      # rows are the dense-buffer ticks
+    assert c._bad_count == 0
+    # no wrap: az_modulus 0 keeps a plain offset, so the pre-index ticks
+    # (negative rows) are dropped and only ticks 0..23 remain
+    c2 = DmaUdpClient(fsz=fsz, frac=frac, hsz=hsz, hist_block_size=hbs,
+                      max_frame_size=rows * L, max_interval=0.0)
+    c2.configure(msw=msw, az_lcount=L, az_base=base, az_modulus=0)
+    for pkt in pkts:
+        c2._process_packet(pkt)
+    inside = [((t - base), m, f, chv) for (t, m, f, chv) in points
+              if 0 <= (t - base) < rows]
+    _check_az(c2, inside, 2, L, msw)
+    return True
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:
