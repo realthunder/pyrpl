@@ -485,9 +485,12 @@ wire [2-1:0] fft_window;   // scope fft acq windows {down, up} -> dsp pid gating
 wire scope_sig_o;
 wire [ 4-1: 0] asg_play_active;   // per-ASG-channel playing (dac_do); [2] = asg3 chirp
 wire           enc_trig_tick;     // gated encoder tick (scope enc block -> ASG enc_tick)
+// x_step_0 / y_step_0 / scope_fft_o are still driven by the scope but no
+// longer routed anywhere: the hk scope-debug mux onto exp_p[3:0] was removed
+// (it defaulted ON and could drive the encoder/trigger pins). Re-add a
+// consumer here if the debug taps are ever needed again.
 wire x_step_0;
 wire y_step_0;
-wire [3:0] scope_sigs = {y_step_0, x_step_0, scope_sig_o, scope_fft_o};
 
 wire    [14-1: 0] scan_x;
 wire    [14-1: 0] scan_y;
@@ -510,7 +513,6 @@ red_pitaya_hk i_hk (
   .exp_n_dat_o     (  exp_n_out                  ),
   .exp_n_dir_o     (  exp_n_dir                  ),
 
-  .scope_sigs_i    (  scope_sigs                 ),
 
   .scan_x_i        (  scan_x                     ),
   .scan_x_step_i   (  scan_x_step                ),
@@ -616,9 +618,13 @@ red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .FSSR(FFT_SSR), .DSZ(FFT_WIDTH)
   .adc_clk_i       (  adc_clk                    ),  // clock
   .adc_rstn_i      (  adc_rstn                   ),  // reset - active low
   .trig_ext_i      (  exp_p_in[0]                ),  // external trigger ONLY (DIO0_P)
-  .trig_extn_i     (  exp_n_in[0]                ),  // encoder index (DIO0_N)
-  .trig_quad_i     (  exp_p_in[1]                ),  // encoder channel B (DIO1_P, Scanner360 v3)
-  .trig_quadn_i    (  exp_n_in[1]                ),  // encoder channel A (DIO1_N) — moved off
+  // Encoder moved off DIO0_N/DIO1_N: those are the laser serial-mux select
+  // lines (usel.py / MUX_CMD_GPIO). Sharing them drove the mux to position 3
+  // and made laser3 (TL-1P, ttyPS1) unreachable.
+  // NOTE: port names keep the old *n_i spelling; they no longer imply an N pin.
+  .trig_extn_i     (  exp_n_in[2]                ),  // encoder index I (DIO2_N)
+  .trig_quad_i     (  exp_p_in[1]                ),  // encoder channel B (DIO1_P)
+  .trig_quadn_i    (  exp_p_in[2]                ),  // encoder channel A (DIO2_P)
                                                      // DIO0_P to free it for the external trigger
   .asg_busy_i      (  asg_play_active[2]         ),  // asg3 (chirp) playing — tick gate
   .trig_enc_o      (  enc_trig_tick              ),  // gated encoder tick -> ASG enc_tick source
