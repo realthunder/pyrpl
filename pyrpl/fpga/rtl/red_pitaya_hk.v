@@ -50,6 +50,7 @@ module red_pitaya_hk #(
   output     [DWE-1:0] exp_n_dat_o,  //
   output reg [DWE-1:0] exp_n_dir_o,  //
 
+  input      [3:0]     scope_sigs_i,
 
   input      [ 14-1: 0] scan_x_i     ,  // scanner x value
   input      [RSZ-1: 0] scan_x_step_i,  // scanner x step
@@ -128,12 +129,9 @@ reg [DWE-1:0] _exp_n_dat_o;
 assign exp_n_dat_o = (_exp_n_dat_o & ~spi_cs_en) | (spi_cs_en & {DWE{exp_p_dat_i[4]}});
 
 reg [DWE-1:0] _exp_p_dat_o;
-// The scope-debug mux that used to steer {y_step_0,x_step_0,scope_sig_o,
-// scope_fft_o} onto exp_p[3:0] is GONE. It defaulted ENABLED at reset, so the
-// only thing keeping DIO0_P..DIO3_P as inputs was exp_p_dir_o staying 0 — one
-// host-writable bit (reg 0x10) between a scanner step pulse and whatever was
-// wired to those pins. The encoder and the external trigger live there.
-assign exp_p_dat_o = _exp_p_dat_o;
+assign exp_p_dat_o[7:4] = _exp_p_dat_o[7:4];
+reg scope_debug_en;
+assign exp_p_dat_o[3:0] = scope_debug_en ? scope_sigs_i : _exp_p_dat_o[3:0];
 
 reg [1:0] clk_out_en;
 reg [CSZ-1:0] clk_cnt_v;
@@ -162,6 +160,9 @@ if (rstn_i == 1'b0) begin
   clk_cnt2_v   <= {CSZ{CNT}};
   clk_cnt2     <= {CSZ{1'b0}};
   clk_out_en   <= 2'b1;
+  scope_debug_en <= 1'b0;   // was 1'b1 = armed out of reset; the mux drives
+                            // exp_p[3:0] (DIO0_P..DIO3_P) where the ext trigger
+                            // and encoder B live, so default it OFF.
 end else begin
   if (sys_wen) begin
     if (sys_addr[19:0]==20'h0c)   digital_loop <= sys_wdata[0];
@@ -179,6 +180,7 @@ end else begin
     if (sys_addr[19:0]==20'h34)   clk_cnt_v    <= sys_wdata[CSZ-1:0];
     if (sys_addr[19:0]==20'h38)   clk_cnt2_v   <= sys_wdata[CSZ-1:0];
 
+    if (sys_addr[19:0]==20'h3C)   scope_debug_en <= sys_wdata[0];
 
   end
 
@@ -233,6 +235,7 @@ end else begin
     20'h00034: begin sys_ack <= sys_en;  sys_rdata <= {{32-CSZ{1'b0}}, clk_cnt_v}         ; end
     20'h00038: begin sys_ack <= sys_en;  sys_rdata <= {{32-CSZ{1'b0}}, clk_cnt2_v}        ; end
 
+    20'h0003C: begin sys_ack <= sys_en;  sys_rdata <= {{32-1{1'b0}}, scope_debug_en}      ; end
 
       default: begin sys_ack <= sys_en;  sys_rdata <=  32'h0                              ; end
   endcase

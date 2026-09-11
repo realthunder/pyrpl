@@ -380,9 +380,19 @@ case "${PROFILE:-}" in
         # swing (see red_pitaya_vivado.tcl:12-22) exceeds this build's margin.
         # Re-sweep after RTL edits — the winner is strongly netlist-sensitive:
         # det11 went outright winner -> unroutable on one pin-assignment change.
-        export DETERMINISTIC=${DETERMINISTIC:-4}
-        export PHYS_OPT=${PHYS_OPT:-ExploreWithHoldFix}
-        echo "==> PROFILE=ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place WLDrivenBlockPlacement (DETERMINISTIC=4), phys_opt ExploreWithHoldFix"
+        # DET=10 (ExtraNetDelay_low) x AggressiveExplore, 2026-09-11, on the
+        # DIO3_N netlist: adc +0.069 / WHS +0.022, 0 failing endpoints, LUT 48131.
+        # SUPERSEDES DET=4 x ExploreWithHoldFix, which is now NOFIT by 15 slices
+        # (6783 required vs 6768 available) and cannot be recovered by directive.
+        # CONTEXT — read rtl/red_pitaya_top.v above `wire [3:0] scope_sigs`. The
+        # 2026-09-11 deletion of the hk scope-debug mux made EVERY directive fail
+        # (det1/det2/det8 unroutable, det10 -0.220, det4/det11 NOFIT): 0 of 18
+        # swept points closed. Restoring the mux fixed it. If n11 ever goes
+        # broadly unroutable again, suspect a change that removed IOB loads
+        # before suspecting the placer.
+        export DETERMINISTIC=${DETERMINISTIC:-10}
+        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
+        echo "==> PROFILE=ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place ExtraNetDelay_low (DETERMINISTIC=10), phys_opt AggressiveExplore"
         ;;
     ssr4n10lean)
         # ssr4n11 with a 1024-pt transform: EVERY dial identical to PROFILE=ssr4n11
