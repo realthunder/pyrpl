@@ -88,12 +88,14 @@ red_pitaya_enc #(.TW(TW), .KW(KW)) dut (
 
 // observers
 int n_trig = 0, n_frame = 0;
+int az_seen[$];                  // az_tick as latched by each emitted pulse
 always @(posedge clk) begin
    if (busy_model) begin
       if (trig_tick)        busy_cnt <= BUSY_CYC;
       else if (busy_cnt)    busy_cnt <= busy_cnt - 1;
    end
    if (trig_tick) n_trig  <= n_trig + 1;
+   if (trig_tick) az_seen.push_back(az_tick);
    if (turn_evt)  n_frame <= n_frame + 1;
 end
 
@@ -249,7 +251,7 @@ initial begin
    wait_n(4 * BUSY_CYC + 40);             // let the burst drain
    chk("pulses for one tick", n_trig, 4);
    chk("fired ticks", cnt_fired, 1);
-   chk("az held across the circle", az_tick, 0);
+   chk("az of the last pulse (live, tick 1 taken)", az_tick, 1);
 
    $display("\n== 7. a tick arriving mid-circle is masked, not lost ==");
    n_trig = 0;
@@ -260,6 +262,40 @@ initial begin
    chk("fired ticks", cnt_fired, 2);
    chk("the crowded tick is counted", cnt_masked, 1);
    chk("azimuth still advanced", tick_in_turn, 3);
+
+   // ---------------- live azimuth per pulse -------------------------------
+   $display("\n== 8. every pulse of a circle latches the LIVE azimuth ==");
+   reset_dut;
+   quad_en    = 1'b1;
+   frame_src  = 2'd2;                     // reversal frames (sector swing)
+   az_mod     = 16'd64;
+   krep       = 12'd3;                    // k = 4 pulses per fired tick
+   gate_asg   = 1'b1;
+   busy_model = 1'b1;
+   az_seen.delete();
+   qstep(1);                              // tick at azimuth 0 -> fires
+   qsteps(1, 2);                          // two more ticks land mid-circle
+   wait_n(4 * BUSY_CYC + 40);
+   chk("pulses for one tick", n_trig, 4);
+   chk("pulse 1 azimuth (the tick)", az_seen[0], 0);
+   chk("pulse 2 azimuth (live)", az_seen[1], 3);
+   chk("pulse 3 azimuth (live)", az_seen[2], 3);
+   chk("pulse 4 azimuth (live)", az_seen[3], 3);
+   chk("mid-circle ticks masked", cnt_masked, 2);
+   // return sweep: a down tick fires a circle whose first point still carries
+   // the pre-edge count (v2 convention), the rest the live counter
+   az_seen.delete();
+   n_trig = 0;
+   qstep(0);                              // 3 -> 2, fires at 3 (pre-edge)
+   wait_n(2 * BUSY_CYC);
+   qstep(0);                              // 2 -> 1 mid-circle
+   wait_n(4 * BUSY_CYC + 40);
+   chk("pulses for the down tick", n_trig, 4);
+   chk("down pulse 1 (pre-edge)", az_seen[0], 3);
+   chk("down pulse 2 (live)", az_seen[1], 2);
+   chk("down pulse 4 (live)", az_seen[3], 1);
+   chk("reversal frame raised", n_frame, 1);
+   chk("counter is live", tick_in_turn, 1);
 
    $display("\n%s (%0d error%s)", errors == 0 ? "PASS" : "FAIL",
             errors, errors == 1 ? "" : "s");

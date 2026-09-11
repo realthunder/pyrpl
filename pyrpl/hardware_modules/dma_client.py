@@ -294,22 +294,19 @@ class DmaUdpClient:
         # = no wrap (row = tick - az_base); both 0 = the plain dense buffer.
         self._az_base = 0
         self._az_mod = 0
-        # az_row_div: the encoder divider N — only every N-th tick fires, so
-        # the dense row is the window tick // N (a T/N-row buffer instead of
-        # T rows of which N-1 in N would stay empty). 1 = every tick.
+        # az_row_div: the encoder divider N — when every point of a circle
+        # carries the FIRED tick (older bitstreams, or circle360 with one
+        # chirp per tick) only multiples of N occur, so the dense row is the
+        # window tick // N (a T/N-row buffer instead of T rows of which N-1
+        # in N would stay empty). 1 = every tick (the live per-chirp tick of
+        # az_dt_signed bitstreams: a circle spans the ticks passed while it
+        # was drawn, so every row is populated).
         self._az_row_div = 1
-        # az_dir_rows: Scanner360 v3 'one frame per swing cycle' — the two
-        # sweep directions get their own row blocks (rows [0, n) forward,
-        # [n, 2n) return) so a cell is never overwritten by the opposite
-        # sweep. The direction is derived HERE from the tick sequence (the
-        # sign of the tick step between consecutive fired circles; the L
-        # points of one circle share a tick and inherit it), since the DMA
-        # cell carries none. 0 = off. az_frame_div divides the FPGA frame
-        # counter so a turnover publish happens once per cycle, not per sweep.
-        self._az_dir_rows = 0
-        self._az_frame_div = 1
-        self._az_last_tick = [None, None]
-        self._az_last_dir = [1, 1]
+        # az_dt_signed: the data word's 4-bit tick delta is two's complement
+        # (-8..+7; descriptor 0x1A4[24]) instead of unsigned 0..15, so a
+        # swinging prism's return sweep rides the same segment as forward
+        # motion. Same bitstreams latch the LIVE azimuth at every chirp.
+        self._az_dt_signed = False
         self._refl_avg_tol = 1.0 # max |bin move| to keep averaging (bins)
         self._avg_cnt = [None, None]  # per-cell sample counts, lazy (n,2) uint16
         self.configure(fsz=fsz, frac=frac, hsz=hsz, dsz=dsz,
@@ -385,7 +382,7 @@ class DmaUdpClient:
     def configure(self, fsz=None, frac=None, hsz=None, hist_block_size=None,
                   dsz=None, intensity=None, msw=None, az_lcount=None,
                   az_base=None, az_modulus=None, az_row_div=None,
-                  az_dir_rows=None, az_frame_div=None, refl_alpha=None, refl_bin0=None, refl_cal=None,
+                  az_dt_signed=None, refl_alpha=None, refl_bin0=None, refl_cal=None,
                   refl_avg=None, refl_avg_tol=None,
                   max_interval=None, max_parse_rate=None, seq_bits=None,
                   zigzag_stride=None, zigzag_shift=None):
@@ -443,12 +440,8 @@ class DmaUdpClient:
             self._az_mod = max(0, int(az_modulus))
         if az_row_div is not None:
             self._az_row_div = max(1, int(az_row_div))
-        if az_dir_rows is not None:
-            self._az_dir_rows = max(0, int(az_dir_rows))
-            self._az_last_tick = [None, None]
-            self._az_last_dir = [1, 1]
-        if az_frame_div is not None:
-            self._az_frame_div = max(1, int(az_frame_div))
+        if az_dt_signed is not None:
+            self._az_dt_signed = bool(az_dt_signed)
         if hist_block_size is not None:
             self._hist_block_size = hist_block_size
         if max_interval is not None:
@@ -1355,8 +1348,9 @@ class DmaUdpClient:
         """Azimuth combined formats v7/v9 (Scanner360). Same skeleton as the
         v3/v5 walk, but the scan cell is {tick, mems[msw-1:0]} and the position
         is NOT rebuilt from ±1 advance bits: each group's channel-0 word carries
-        a 4-bit unsigned TICK delta at [56:53] (0 after a header — the first
-        group is pinned at the header anchor), and every word carries its
+        a 4-bit TICK delta at [56:53] (unsigned 0..15, or two's complement
+        -8..7 with az_dt_signed; 0 after a header — the first group is pinned
+        at the header anchor), and every word carries its
         ABSOLUTE mems step at [52:53-msw] (self-contained: no wrap ambiguity,
         no header per MEMS circle). tick = anchor_tick + cumsum(dt);
         cell = tick << msw | mems. frame_cnt counts motor TURNS."""
@@ -1377,7 +1371,7 @@ class DmaUdpClient:
             nch = (hw >> 59) & 0xf
             if nch == 0 or nch > nchan:
                 continue                    # 0xF pad sentinel / unknown
-            frame_cnt = ((hw & fc_mask) >> self._seq_bits) // self._az_frame_div
+            frame_cnt = (hw & fc_mask) >> self._seq_bits
             anchor_tick = ((hw >> int(idx_lsb)) & hist_mask) >> msw
             seg_end = hdr_pos[si + 1] if si + 1 < hdr_pos.size else words.size
             seg = words[h + 1:seg_end]
@@ -1392,14 +1386,15 @@ class DmaUdpClient:
             grp = seg[:ngrp * gw].reshape(ngrp, gw)
 
             dt = ((grp[:, 0] >> np.uint64(53)) & np.uint64(0xf)).astype(np.int64)
+            if self._az_dt_signed:
+                dt -= (dt >> 3) << 4        # sign-extend the nibble
             dt[0] = 0                       # first group pinned at the anchor
             tick = anchor_tick + np.cumsum(dt)
 
             for c in range(nch):
                 col = grp[:, 2 * c if has_val else c]
                 mems = ((col >> m_lsb) & mmask).astype(np.int64)
-                dirs = self._az_dir(c, tick) if self._az_dir_rows else None
-                pos = self._az_pos(tick, mems, msw, dirs)
+                pos = self._az_pos(tick, mems, msw)
                 keep = (pos >= 0) & (pos < self._max_frame_size)
                 p = pos[keep].astype(np.int64)
                 up = (col & pmask).astype(np.int32)[keep]
@@ -1430,6 +1425,8 @@ class DmaUdpClient:
         data_tag = ((words >> np.uint64(57)) & np.uint64(0xf)).astype(np.int64)
         tag = np.where(is_header, hdr_tag, data_tag)
         dt_all = ((words >> np.uint64(53)) & np.uint64(0xf)).astype(np.int64)
+        if self._az_dt_signed:
+            dt_all -= (dt_all >> 3) << 4    # sign-extend the nibble
         mems_all = ((words >> np.uint64(53 - msw)) & mmask).astype(np.int64)
         hidx = ((words >> idx_lsb) & np.uint64(hist_mask)).astype(np.int64)
         fcnt = (words & np.uint64(fc_mask)) >> np.uint64(self._seq_bits)
@@ -1460,12 +1457,11 @@ class DmaUdpClient:
             step = np.where(idx_rows, dt_all[sel], 0)
             cs = np.cumsum(step)
             anchors_tick = hidx[sel][sh] >> msw
-            seg_fc = fcnt[sel][sh] // self._az_frame_div
+            seg_fc = fcnt[sel][sh]
             seg_start_cs = cs[sh]
             tick = anchors_tick[seg_id] + (cs - seg_start_cs[seg_id])
             mems = mems_all[sel]
-            dirs = self._az_dir(c, tick) if self._az_dir_rows else None
-            pos = self._az_pos(tick, mems, msw, dirs)   # header rows never emitted
+            pos = self._az_pos(tick, mems, msw)         # header rows never emitted
             for s in range(anchors_tick.size):
                 rows = idx_rows & (seg_id == s)
                 if not rows.any():
@@ -1672,39 +1668,13 @@ class DmaUdpClient:
         cnt[p, col] = np.where(valid, c2, 0).astype(np.uint16)
         return avg
 
-    def _az_dir(self, ch, tick):
-        """Per-point sweep direction (+1 / -1) of azimuth cells, from the sign
-        of the tick step between consecutive points; a zero step (the points
-        of one circle, or a re-anchor on the same tick) inherits the last
-        real move, across packets too (per-channel state). A step longer than
-        half the modulus is a wrap through the index and is read the short
-        way round."""
-        t = np.asarray(tick, dtype=np.int64)
-        if t.size == 0:
-            return t
-        last = self._az_last_tick[ch]
-        prev = t[0] if last is None else last
-        d = np.diff(np.concatenate(([prev], t)))
-        if self._az_mod:
-            half = self._az_mod // 2
-            d = (d + half) % self._az_mod - half
-        sgn = np.sign(d)
-        nz = sgn != 0
-        # forward-fill the last non-zero sign; the head takes the stored one
-        idx = np.maximum.accumulate(np.where(nz, np.arange(t.size), -1))
-        dirs = np.where(idx >= 0, sgn[np.maximum(idx, 0)], self._az_last_dir[ch])
-        self._az_last_tick[ch] = int(t[-1])
-        self._az_last_dir[ch] = int(dirs[-1])
-        return dirs
-
-    def _az_pos(self, tick, mems, msw, dirs=None):
+    def _az_pos(self, tick, mems, msw):
         """Buffer position of azimuth cells: the raw {tick, mems} cell, or with
         az_lcount the dense row*L + mems where row = tick, offset by az_base,
         wrapped at az_modulus when a sector window is configured and divided
-        by az_row_div (the encoder divider: one row per FIRED tick); with
-        az_dir_rows the return sweep's rows are shifted up by that many rows
-        (see configure()). Rows outside the window come out negative or past
-        the buffer and are dropped by the caller's range check."""
+        by az_row_div (see configure()). Rows outside the window come out
+        negative or past the buffer and are dropped by the caller's range
+        check."""
         if not self._az_l:
             return (tick << msw) | mems
         # int64 on purpose: the anchor tick arrives as an unsigned word and a
@@ -1714,8 +1684,6 @@ class DmaUdpClient:
             row = row % self._az_mod
         if self._az_row_div > 1:
             row = row // self._az_row_div
-        if self._az_dir_rows and dirs is not None:
-            row = row + np.where(dirs < 0, self._az_dir_rows, 0)
         return row * self._az_l + np.asarray(mems, dtype=np.int64)
 
     def _write_channel(self, ch, frame_cnt, p, up, down,

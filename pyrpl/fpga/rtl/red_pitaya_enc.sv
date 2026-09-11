@@ -27,10 +27,15 @@
  * red_pitaya_asg_ch.v cyc_cnt reload). Masked ticks still advance the azimuth
  * (position stays true) and are counted for diagnostics.
  *
- * The azimuth of the FIRED tick is latched here (az_tick_o/az_turn_o): the fft
- * trigger is delayed by fft_trig_delay while ticks keep arriving, so the value
- * must be pinned at the tick, not read live at fft_trig_accept. The gate keeps
- * it stable until the accept (no new tick can fire while the FFT is busy).
+ * The azimuth is latched here at EVERY emitted pulse (az_tick_o/az_turn_o):
+ * the fft trigger is delayed by fft_trig_delay while ticks keep arriving, so
+ * the value must be pinned at the pulse (= the chirp start), not read live at
+ * fft_trig_accept. The gate keeps it stable until the accept (no new pulse
+ * goes out while the FFT is busy). In a circle burst (k_repeat_i) every chirp
+ * therefore carries the LIVE azimuth at its own start, so a circle spans the
+ * ticks the prism really passed while it was drawn (Scanner360 v3: forward
+ * and return sweeps put the same {tick, mems} cell at the same true direction,
+ * no per-direction tables on the host).
  *
  * Design v3 (sector swing) adds, all off at reset so v2 behaviour is bit-exact:
  *
@@ -90,7 +95,7 @@ module red_pitaya_enc #(
    // trigger chain
    output logic          trig_tick_o    ,  // gated 1-cycle tick pulse (asg3 + scope trigger)
    output logic          turn_evt_o     ,  // 1-cycle frame pulse (mems_turn_kick)
-   // azimuth latched at the FIRED tick (consumed at fft_trig_accept)
+   // azimuth latched at every emitted pulse (consumed at fft_trig_accept)
    output logic [TW-1:0] az_tick_o      ,
    output logic [TW-1:0] az_turn_o      ,
    // live counters / diagnostics (read-only registers)
@@ -367,6 +372,12 @@ logic [KW-1:0] rep_cnt;
 logic          pulse_wait;   // a pulse is out, the gate has not asserted yet
 wire burst_active = burst_mode && ((rep_cnt != 0) || pulse_wait);
 wire fire_new     = tick_edge && div_hit && !gated && !burst_active;
+wire fire_rep     = !fire_new && !pulse_wait && (rep_cnt != 0) && !gated;
+// 0-based azimuth AT THIS CYCLE: on a tick edge tick_in_turn_o still holds
+// "ticks so far", i.e. exactly this tick's index (its own increment lands one
+// cycle later); an index-coincident tick is azimuth 0 of the new turn.
+wire [TW-1:0] az_live = az_zero ? {TW{1'b0}}
+                      : az_over ? az_modulus_i : tick_in_turn_o;   // bounded (see az_over)
 
 always @(posedge clk_i)
 if (!rstn_i) begin
@@ -385,22 +396,23 @@ end else begin
    if (az_zero || tick_edge)
       az_mod_n <= !tick_edge ? n_base : tick_up ? n_up : n_dn;
 
+   // Every pulse — the fired tick's and each repeat of the circle — latches
+   // the azimuth of ITS OWN instant (the cell is {tick, mems}; the scope
+   // samples the latch at fft_trig_accept, before the gate lets the next
+   // pulse out).
+   if (fire_new || fire_rep) begin
+      az_tick_o   <= az_live;
+      az_turn_o   <= frame_evt ? turn_cnt_o + 1'b1 : turn_cnt_o;
+   end
+
    if (fire_new) begin
       trig_tick_o <= 1'b1;
       rep_cnt     <= k_repeat_i;
       pulse_wait  <= burst_mode;
-      // 0-based azimuth OF THIS TICK: tick_in_turn_o still holds "ticks so
-      // far", i.e. exactly this tick's index (its own increment lands one
-      // cycle later); an index-coincident tick is azimuth 0 of the new turn.
-      // All L points of the circle this tick starts share this latch — the
-      // cell is {tick, mems} — so it must not move until the burst ends.
-      az_tick_o   <= az_zero ? {TW{1'b0}}
-                   : az_over ? az_modulus_i : tick_in_turn_o;   // bounded (see az_over)
-      az_turn_o   <= frame_evt ? turn_cnt_o + 1'b1 : turn_cnt_o;
       cnt_fired_o <= cnt_fired_o + 1'b1;
    end else if (pulse_wait) begin
       if (gated) pulse_wait <= 1'b0;      // the chirp/frame this pulse bought has started
-   end else if ((rep_cnt != 0) && !gated) begin
+   end else if (fire_rep) begin
       trig_tick_o <= 1'b1;                // next point of the same circle
       rep_cnt     <= rep_cnt - 1'b1;
       pulse_wait  <= 1'b1;

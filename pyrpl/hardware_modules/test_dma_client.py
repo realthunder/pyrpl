@@ -829,11 +829,13 @@ def test_seq_tracked_in_receiver():
 
 # --------------------------------------------------------------------------
 # Azimuth (Scanner360) formats v7-v10 = v3-v6 + 4. Scan cell = {tick, mems[msw]};
-# the data word carries an unsigned 4-bit TICK delta at [56:53] (combined: on
-# the channel-0 word only; tagged: on every channel's index word) and the
-# ABSOLUTE mems step at [52:53-msw]. A header re-anchors on dt > 15 (that
-# includes any backward jump, e.g. the turn wrap, which also changes frame_cnt),
-# a frame change, or a packet boundary. mems jumps never need a header.
+# the data word carries a 4-bit TICK delta at [56:53] (combined: on the
+# channel-0 word only; tagged: on every channel's index word) and the ABSOLUTE
+# mems step at [52:53-msw]. The delta is unsigned 0..15 on the first azimuth
+# bitstreams and two's complement -8..7 on the v3 swing ones (descriptor
+# 0x1A4[24], signed_dt below). A header re-anchors on a delta outside that
+# range (unsigned: any backward jump, e.g. the turn wrap, which also changes
+# frame_cnt), a frame change, or a packet boundary. mems jumps never need one.
 # --------------------------------------------------------------------------
 def _make_data_az(dt, mems, up, dn, idx, msw, tag=0):
     m = (1 << idx) - 1
@@ -843,7 +845,7 @@ def _make_data_az(dt, mems, up, dn, idx, msw, tag=0):
 
 
 def emit_packets_az(points, *, hsz, msw, idx, hist_block_size, nch=1,
-                    tagged=False, dsz=None):
+                    tagged=False, dsz=None, signed_dt=False):
     """Encode [(tick, mems, frame, [((up, dn), (vu, vd)), ...]), ...] into
     azimuth packets (v7 combined / v8 tagged; +2 with dsz = value words),
     mirroring the red_pitaya_scope.sv assembler."""
@@ -867,8 +869,13 @@ def emit_packets_az(points, *, hsz, msw, idx, hist_block_size, nch=1,
                 push(0xFFFFFFFFFFFFFFFF)
         cell = (tick << msw) | mems
         dt = (tick - st['prev_tick']) % (1 << tkw)
+        if signed_dt:
+            dt -= (dt >> (tkw - 1)) << tkw          # two's complement in tkw bits
+            fits = -8 <= dt <= 7
+        else:
+            fits = dt <= 15
         hdr_need = (st['need_hdr'] or st['frame'] is None or f != st['frame']
-                    or dt > 15)
+                    or not fits)
         if hdr_need:
             dt = 0
         # clear BEFORE pushing: a push that fills the packet exactly re-arms
@@ -1035,46 +1042,63 @@ def test_azimuth_sector_window():
     return True
 
 
-def test_azimuth_direction_blocks():
-    """az_row_div / az_dir_rows / az_frame_div (Scanner360 v3 'swing_cycle'):
-    one row per FIRED tick (tick // N), the return sweep in its own row
-    block, the direction derived from the tick sequence (a circle's points
-    share a tick and inherit it; a wrap through the index reads the short
-    way round), and the frame counter halved."""
-    fsz, frac, hsz, msw, hbs, T, L, N = 9, 8, 24, 10, 20, 1024, 4, 10
+def test_azimuth_live_ticks_signed_dt():
+    """az_dt_signed (Scanner360 v3 swing bitstreams): every chirp of a circle
+    carries the LIVE tick, so within a circle the tick creeps by 0/+1 on the
+    forward sweep and 0/-1 on the return, and the data word's 4-bit dt is
+    two's complement. The return sweep must ride the same segment (no header
+    per backward step), the sector window must place both sweeps on one
+    grid (last write wins per cell), and rows are per tick (az_row_div 1)."""
+    fsz, frac, hsz, msw, hbs, T, L = 9, 8, 24, 10, 20, 1024, 4
     idx = fsz + frac
-    base, rows = -20, 8                 # window ticks T-20..T-1, 0..59 -> 8 rows
-    fired = [1010, 1020, 0, 10, 20, 30, 40, 40, 30, 20, 10, 0, 1020, 1010]
-    dirs = [1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1, -1]   # 40 -> 40 inherits
-    pts, i, frame = [], 0, 0
-    for k, t in enumerate(fired):
-        if k == 8:
-            frame = 1                   # the FPGA frames the reversal
-        for m in range(L):              # one circle = L points on one tick
-            chv = [((100 + i, 200 + i), (0, 0))]
-            pts.append((t, m, frame, chv)); i += 1
-    pkts = emit_packets_az(pts, hsz=hsz, msw=msw, idx=idx,
-                           hist_block_size=hbs, nch=1, tagged=True)
+    base, rows = -6, 20                 # window ticks T-6..T-1, 0..13
+    # forward sweep: 5 circles of L points, the tick creeping +1 every 3
+    # points from T-4; return sweep: the same ground with -1 steps. Both
+    # straddle the encoder index (tick T-1 -> 0). A frame at the reversal.
+    fwd = [(T - 4 + k // 3) % T for k in range(3 * L * 5 // 3)]
+    ticks = fwd + fwd[::-1]
+    pts, i = [], 0
+    for k, t in enumerate(ticks):
+        chv = [((100 + i, 200 + i), (0, 0))]
+        pts.append((t, k % L, 1 if k >= len(fwd) else 0, chv)); i += 1
+    for tagged in (False, True):
+        pkts = emit_packets_az(pts, hsz=hsz, msw=msw, idx=idx,
+                               hist_block_size=hbs, nch=1, tagged=tagged,
+                               signed_dt=True)
+        words = np.frombuffer(b''.join(pkts), dtype='<u8')
+        hdrs = words[words != np.uint64(0xFFFFFFFFFFFFFFFF)] >> np.uint64(63)
+        nhdr = int(np.count_nonzero(hdrs))
+        # start + the reversal frame + the two index crossings (T-1 <-> 0 is
+        # a jump of T-1 in the tkw-bit tick field) + one per packet
+        # boundary; the -1 steps of the return sweep cost none
+        assert nhdr <= 4 + len(pkts), (tagged, nhdr, len(pkts))
+        c = DmaUdpClient(fsz=fsz, frac=frac, hsz=hsz, hist_block_size=hbs,
+                         max_frame_size=rows * L, max_interval=0.0)
+        c.configure(msw=msw, az_lcount=L, az_base=base, az_modulus=T,
+                    az_row_div=1, az_dt_signed=True)
+        for pkt in pkts:
+            c._process_packet(pkt)
+        fr = c.get_frame(0)
+        peak_down, peak_up = fr[0], fr[1]
+        expect = {}
+        for (t, m, _, chv) in pts:
+            expect[((t - base) % T) * L + m] = chv[0][0]
+        for pos, (up, dn) in expect.items():
+            assert peak_up[pos] == up, (tagged, pos, peak_up[pos], up)
+            assert peak_down[pos] == dn, (tagged, pos, peak_down[pos], dn)
+        nz = set(np.nonzero(peak_up)[0])
+        assert nz == set(expect), sorted(nz ^ set(expect))[:10]
+        assert c.frame_count(0) == 1, c.frame_count(0)
+        assert c._bad_count == 0
+    # the same stream decoded UNSIGNED must not silently pass: a -1 reads as
+    # +15, so the walker drifts and lands outside the window
     c = DmaUdpClient(fsz=fsz, frac=frac, hsz=hsz, hist_block_size=hbs,
-                     max_frame_size=2 * rows * L, max_interval=0.0)
+                     max_frame_size=rows * L, max_interval=0.0)
     c.configure(msw=msw, az_lcount=L, az_base=base, az_modulus=T,
-                az_row_div=N, az_dir_rows=rows, az_frame_div=2)
+                az_row_div=1, az_dt_signed=False)
     for pkt in pkts:
         c._process_packet(pkt)
-    fr = c.get_frame(0)
-    peak_down, peak_up = fr[0], fr[1]
-    expect = {}
-    for (t, m, _, chv), d in zip(pts, [d for d in dirs for _ in range(L)]):
-        row = ((t - base) % T) // N + (rows if d < 0 else 0)
-        expect[row * L + m] = chv[0][0]
-    assert {p // L for p in expect} == set(range(7)) | set(range(rows, rows + 6))
-    for pos, (up, dn) in expect.items():
-        assert peak_up[pos] == up, (pos, peak_up[pos], up)
-        assert peak_down[pos] == dn, (pos, peak_down[pos], dn)
-    nz = set(np.nonzero(peak_up)[0])
-    assert nz == set(expect), sorted(nz ^ set(expect))[:10]
-    assert c.frame_count(0) == 0, c.frame_count(0)     # frames 0,1 -> cycle 0
-    assert c._bad_count == 0
+    assert set(np.nonzero(c.get_frame(0)[1])[0]) != set(expect)
     return True
 
 

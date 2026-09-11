@@ -693,6 +693,11 @@ class Scope(HardwareModule, AcquisitionModule):
                              doc="azimuth data-word tick-delta field width (bits)")
     dma_az_tkw = IntRegister(0x1A4, bits=8, bitmask=0x00ff0000,
                              doc="azimuth cell tick sub-field width (= HSZ - MSW)")
+    dma_az_dt_signed = BoolRegister(0x1A4, 24,
+                                    doc="azimuth data-word tick delta is SIGNED (two's "
+                                        "complement -8..7) and every chirp of a circle "
+                                        "carries the LIVE azimuth (v3 swing bitstreams); "
+                                        "0 = unsigned dt, azimuth latched per fired tick")
 
     # ---- Scanner360 encoder block (0x1A8-0x1C4) ----
     enc_enable = BoolRegister(0x1A8, 0,
@@ -1056,8 +1061,9 @@ class Scope(HardwareModule, AcquisitionModule):
                     "format is fixed at version %d", self.dma_fmt_version)
             return
         self._dma_azimuth_en = value
-        # Keep the host decoder in step (cell split tick/mems).
-        self._dma_udp_client.configure(msw=self.dma_az_msw)
+        # Keep the host decoder in step (cell split tick/mems, dt coding).
+        self._dma_udp_client.configure(msw=self.dma_az_msw,
+                                       az_dt_signed=self.dma_az_dt_signed)
 
     @property
     def dma_refl_alpha(self):
@@ -1144,6 +1150,7 @@ class Scope(HardwareModule, AcquisitionModule):
             intensity=version in (5, 6, 9, 10),
             # Azimuth variants: cell = {tick, mems[msw-1:0]} (descriptor 0x1A4).
             msw=self.dma_az_msw if self._dma_azimuth_cap else None,
+            az_dt_signed=self.dma_az_dt_signed if self._dma_azimuth_cap else None,
         )
 
     def _ownership_changed(self, old, new):

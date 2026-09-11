@@ -800,8 +800,10 @@ assign fft_window_o = {fft_down, fft_up};
 // One encoder tick = one chirp (asg3 one-shot) = one FFT point = one MEMS
 // step; every point is tagged with the motor position. The enc block gates
 // ticks on asg3/FFT busy so a fired tick is GUARANTEED to become a point,
-// and latches the azimuth AT the fired tick (the fft trigger is delayed by
-// fft_trig_dly while ticks keep arriving).
+// and latches the azimuth AT every emitted pulse — the fired tick's and each
+// circle-repeat pulse's (v3: one tick draws a whole circle, every chirp of
+// it carries the live azimuth at its start) — because the fft trigger is
+// delayed by fft_trig_dly while ticks keep arriving.
 localparam ENC_TW = 16;
 localparam ENC_KW = 12;
 logic [25-1:0]     enc_ctrl;       // 0x1A8: [0] enable [1] gate asg3 [2] gate fft
@@ -877,9 +879,10 @@ if (2*IDX + MSW > 53) begin : gen_dma_az_width_check
     $error("DMA azimuth data word: 2*IDX + MSW exceeds the payload (<= 53 required)");
 end
 // The cell's tick field is HSZ-MSW bits wide and is sliced out of the ENC_TW-bit
-// latch (az_tick_lat[HSZ-MSW-1:0] below); it must fit, and MSW must leave room.
-if (MSW >= HSZ || HSZ - MSW > ENC_TW) begin : gen_dma_az_tick_width_check
-    $error("DMA azimuth cell: need 0 < HSZ-MSW <= ENC_TW (tick field vs the encoder latch width)");
+// latch (az_tick_lat[HSZ-MSW-1:0] below); it must fit, MSW must leave room, and
+// the signed-dt range test below slices asm_dtick[HSZ-MSW-1:3].
+if (MSW >= HSZ || HSZ - MSW > ENC_TW || HSZ - MSW < 4) begin : gen_dma_az_tick_width_check
+    $error("DMA azimuth cell: need 4 <= HSZ-MSW <= ENC_TW (tick field vs the encoder latch width)");
 end
 // The intensity VALUE word packs {val_down, val_up} (2*DSZ bits) from bit 0 and
 // the azimuth walkers read the tick delta at [56:53] of every tagged data row;
@@ -1373,10 +1376,17 @@ logic [63:0]        asm_tdata;
 logic               asm_tvalid, asm_tlast;
 
 wire [HSZ-1:0] asm_delta = dma_point_idx_a - asm_prev_idx;
-// Azimuth mode: position delta in TICKS (the cell's high field). Unsigned —
-// the motor never reverses; a backward/large jump (counter reset, >15 gated
-// ticks) re-anchors with a header instead.
+// Azimuth mode: position delta in TICKS (the cell's high field), two's
+// complement. The data word carries its low nibble as a SIGNED 4-bit dt
+// (-8..+7; descriptor 0x1A4[24]) so a swinging prism's return sweep, and the
+// live per-chirp azimuth of a circle drawn across a reversal, ride the same
+// segment as forward motion; a jump outside that range (counter reset, > 7
+// gated ticks, the modulus wrap) re-anchors with a header instead. (The
+// field used to be unsigned 0..15, when every backward step cost a header.)
 wire [HSZ-MSW-1:0] asm_dtick = dma_point_idx_a[HSZ-1:MSW] - asm_prev_idx[HSZ-1:MSW];
+// dt fits the 4-bit signed field iff the bits above the nibble all equal its
+// sign bit — an AND-reduce, no second adder in the asm_hdr_need cone.
+wire asm_dtick_fits = (asm_dtick[HSZ-MSW-1:3] == {(HSZ-MSW-3){asm_dtick[3]}});
 wire asm_inc = (asm_delta == 1);              // scan stepped +1
 wire asm_dec = (asm_delta == {HSZ{1'b1}});    // scan stepped -1 (two's-complement all-ones)
 // Frame boundary for the DMA header frame_cnt: the origin-wrap pulse (a real
@@ -1389,7 +1399,7 @@ wire asm_last_word  = (asm_wc == ASM_PKT-1);
 // single segment, instead of a re-anchor header per point when the scan runs
 // downward.
 wire asm_hdr_need   = asm_need_hdr || asm_frame_pend || asm_flush_rise ||
-                      (asm_az ? (asm_dtick > 15)
+                      (asm_az ? !asm_dtick_fits
                               : (asm_delta != 0 && !asm_inc && !asm_dec)) ||
                       (dma_nch != asm_nch_seg);
 
@@ -1502,9 +1512,10 @@ always @(posedge fft_input_clk) begin
                 // v3 combined: advance rides the channel-0 word only (shared pos);
                 // v4 tagged:   every word carries its channel tag and (after its own
                 //              header, pt_hdr) sits on the anchor with advance 0.
-                // az (v7-v10): [56:53] = dt (unsigned tick delta; every word in
-                //              tagged mode — each channel cumsums its own stream —
-                //              channel-0 only in combined mode), [52:53-MSW] =
+                // az (v7-v10): [56:53] = dt (SIGNED 4-bit tick delta, two's
+                //              complement; every word in tagged mode — each
+                //              channel cumsums its own stream — channel-0 only
+                //              in combined mode), [52:53-MSW] =
                 //              ABSOLUTE mems step (self-contained, no wrap
                 //              ambiguity), peaks at the bottom as before. The
                 //              old advance/direction bits read 0.
@@ -2516,7 +2527,10 @@ end else begin
 
      // ---- Scanner360 encoder / azimuth-mode registers ----
      // az packet-format descriptor: [7:0]=MSW [15:8]=DTW [23:16]=TKW
-     20'h001A4 : begin sys_ack <= sys_en;          sys_rdata <= {8'h0, 8'(HSZ-MSW), 8'd4, 8'(MSW)}  ; end
+     // [24] = dt is SIGNED (two's complement) and the azimuth is latched at
+     //        every chirp (live tick per circle point), not once per fired
+     //        tick; 0 on older bitstreams (unsigned dt, per-circle latch)
+     20'h001A4 : begin sys_ack <= sys_en;          sys_rdata <= {7'h0, 1'b1, 8'(HSZ-MSW), 8'd4, 8'(MSW)}  ; end
      20'h001A8 : begin sys_ack <= sys_en;          sys_rdata <= { 7'h0, enc_ctrl}                   ; end
      20'h001AC : begin sys_ack <= sys_en;          sys_rdata <= az_cfg                              ; end
      20'h001B0 : begin sys_ack <= sys_en;          sys_rdata <= {enc_turn_cnt, enc_tick_in_turn}    ; end
