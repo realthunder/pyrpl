@@ -354,9 +354,14 @@ set_multicycle_path 1 -hold  -from $dsp_cfg
 # fft_acq2_cnt, scope_sig_dly, plus the Scanner360 config: enc_ctrl (0x1A8:
 # enable/gates/divider/glitch/kick), az_modulus (0x1AC, ticks per turn) and
 # dma_az_en (0x9C[1], azimuth scan-cell mode). All are written once by the host
-# before a scan; enc_ctrl/az_modulus fan into i_enc's compare/reload logic and
+# before a scan; enc_ctrl/az_cfg fan into i_enc's compare/reload logic and
 # dma_az_en into the hist-index DSP (RSTA/C mux) and the ASM (packet-sampled
 # through xpm_cdc), so a 2-cycle settle is invisible.
+# (az_cfg is the 0x1AC register itself; az_modulus/rev_hyst/az_mark are wire
+#  slices of it, so the register cell is az_cfg_reg[*]. This list said
+#  az_modulus_reg[*], which matched no cell — Vivado warned [12-180] and
+#  skipped just that entry, leaving the azimuth config path at 1 cycle while
+#  its neighbours got 2. Over-constrained, so never a correctness risk.)
 # (Input-filter set_*_filt_* and AXI-DMA set_*_axi_* are commented out in scope.sv
 #  — registers undriven/optimized away, so they are NOT constrained here.)
 set scope_cfg [get_cells {
@@ -367,7 +372,7 @@ set scope_cfg [get_cells {
     i_scope/fft_wait1_cnt_reg[*]  i_scope/fft_wait2_cnt_reg[*]
     i_scope/fft_acq1_cnt_reg[*]   i_scope/fft_acq2_cnt_reg[*]
     i_scope/scope_sig_dly_reg[*]
-    i_scope/enc_ctrl_reg[*]     i_scope/az_modulus_reg[*]
+    i_scope/enc_ctrl_reg[*]     i_scope/az_cfg_reg[*]
     i_scope/dma_az_en_reg
 }]
 set_multicycle_path 2 -setup -from $scope_cfg
