@@ -3,16 +3,17 @@
  *
  * Conditions the prism encoder wires into the tick-driven trigger chain.
  *
- * A moved from DIO0_P to DIO1_N so the scope/ASG external trigger keeps DIO0_P
- * to itself — previously trig_ext_i drove BOTH ext_trig_in and the encoder tick,
- * so an external trigger and the encoder could not be used simultaneously.
+ * Pins (red_pitaya_top.v, since 8e628869): A on DIO3_N, B on DIO1_P, I on
+ * DIO2_N. A left DIO0_P so the scope/ASG external trigger keeps that pin to
+ * itself, and A/I stay off DIO0_N/DIO1_N (the laser serial-mux select lines)
+ * and off the exp_p[3:0] range the scope-debug mux can drive.
  * Polarity is free: x4 decode counts edges and quad_up = a^b is invariant under
  * inverting A and B together, so wiring the minus legs needs no RTL/config change
  * (the index has turn_inv_i in any case).
  *
- *   A  (DIO1_N) ─┐
+ *   A  (DIO3_N) ─┐
  *   B  (DIO1_P) ─┼─ sync ─ glitch filter ─ x4 quadrature decode ─ tick + dir
- *   I  (DIO0_N) ─┘                                    │
+ *   I  (DIO2_N) ─┘                                    │
  *                                                     ├─► azimuth up/down counter (EVERY tick)
  *                                                     ├─► frame event (index / modulus /
  *                                                     │              reversal / az_mark)
@@ -39,7 +40,7 @@
  *
  * Design v3 (sector swing) adds, all off at reset so v2 behaviour is bit-exact:
  *
- *   - QUADRATURE (quad_en_i). A/B on the DIO1 pair give x4 decode and, more importantly,
+ *   - QUADRATURE (quad_en_i). The B channel gives x4 decode and, more importantly,
  *     DIRECTION: a swinging prism counts back down on the return sweep. The
  *     azimuth becomes a mod-az_modulus up/down counter (physically right, and
  *     required — a sector straddling the index would otherwise underflow past 0
@@ -67,9 +68,9 @@ module red_pitaya_enc #(
    input             clk_i          ,  // adc clock
    input             rstn_i         ,  // reset - active low
    // raw pins
-   input             tick_i         ,  // encoder channel A (DIO1_N)
+   input             tick_i         ,  // encoder channel A (DIO3_N)
    input             quad_i         ,  // encoder channel B (DIO1_P), quadrature only
-   input             turn_i         ,  // encoder index I (DIO0_N)
+   input             turn_i         ,  // encoder index I (DIO2_N)
    // busy gating
    input             asg_busy_i     ,  // asg3 playing (dac_do)
    input             fft_busy_i     ,  // FFT frame in flight (incl. trigger delay)
