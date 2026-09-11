@@ -6,9 +6,8 @@
  * Pins (red_pitaya_top.v): B on DIO1_P, A on DIO2_P, I on DIO2_N — the
  * harness wiring. A left DIO0_P so the scope/ASG external trigger keeps that
  * pin to itself, and A/I stay off DIO0_N/DIO1_N (the laser serial-mux select
- * lines). DIO2_P is in the exp_p[3:0] range the scope-debug mux can drive:
- * hk scope_debug_en (0x3C) resets to 0 and must stay 0 while the encoder is
- * wired, or x_step_0 is driven into A.
+ * lines). The scope-debug tap that used to share DIO2_P was moved to DIO3_N
+ * (red_pitaya_hk.v), so no debug mode can drive into A.
  * Polarity is free: x4 decode counts edges and quad_up = a^b is invariant under
  * inverting A and B together, so wiring the minus legs needs no RTL/config change
  * (the index has turn_inv_i in any case).

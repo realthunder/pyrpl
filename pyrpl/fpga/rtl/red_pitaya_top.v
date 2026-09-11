@@ -494,7 +494,9 @@ wire y_step_0;
 // area-bound — the mux-less netlist was 38 LUT SMALLER and 0.2 ns WORSE.
 // Restoring it took det10 x AggressiveExplore from -0.220 to +0.160.
 // scope_debug_en now resets to 0 (red_pitaya_hk.v), so the taps are wired but
-// not driving pins unless the host opts in.
+// not driving pins unless the host opts in. Pins: DIO3_P / DIO3_N / DIO1_P /
+// DIO0_P — the x_step_0 tap moved from DIO2_P to DIO3_N so it can never drive
+// encoder A (DIO2_P; see red_pitaya_hk.v).
 wire [3:0] scope_sigs = {y_step_0, x_step_0, scope_sig_o, scope_fft_o};
 
 wire    [14-1: 0] scan_x;
@@ -627,8 +629,8 @@ red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .FSSR(FFT_SSR), .DSZ(FFT_WIDTH)
   .trig_extn_i     (  exp_n_in[2]                ),  // encoder index I (DIO2_N)
   .trig_quad_i     (  exp_p_in[1]                ),  // encoder channel B (DIO1_P, Scanner360 v3)
   .trig_quadn_i    (  exp_p_in[2]                ),  // encoder channel A (DIO2_P) — the
-                                                     // harness pin (B P1 / A P2 / I N2);
-                                                     // 8e628869's DIO3_N did not match it
+                                                     // harness pin (B P1 / A P2 / I N2); the
+                                                     // scope-debug tap that was here is on DIO3_N
                                                      // DIO0_P to free it for the external trigger
   .asg_busy_i      (  asg_play_active[2]         ),  // asg3 (chirp) playing — tick gate
   .trig_enc_o      (  enc_trig_tick              ),  // gated encoder tick -> ASG enc_tick source

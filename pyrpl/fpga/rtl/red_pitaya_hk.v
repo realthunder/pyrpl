@@ -126,12 +126,24 @@ assign id_value[ 3: 0] =  4'h1; // board type   1 - release 1
 // input, which will be AND to spi_cs_en to produce gated SPI CS
 reg [DWE-1:0] spi_cs_en;
 reg [DWE-1:0] _exp_n_dat_o;
-assign exp_n_dat_o = (_exp_n_dat_o & ~spi_cs_en) | (spi_cs_en & {DWE{exp_p_dat_i[4]}});
+wire [DWE-1:0] exp_n_dat_plain = (_exp_n_dat_o & ~spi_cs_en) | (spi_cs_en & {DWE{exp_p_dat_i[4]}});
 
+// Scope-debug taps (scope_debug_en, reg 0x3C): {y_step_0, x_step_0,
+// scope_sig_o, scope_fft_o} on DIO3_P / DIO3_N / DIO1_P / DIO0_P. The x_step_0
+// tap sat on DIO2_P until the Scanner360 encoder A took that pin (harness:
+// B DIO1_P, A DIO2_P, I DIO2_N), so it swapped places with DIO3_N: a debug
+// tap must never be able to drive an encoder input. The taps stay wired
+// (they anchor scope logic to the die-edge IOBs, see red_pitaya_top.v) and
+// only reach a pin when the host sets scope_debug_en AND the pin's direction.
 reg [DWE-1:0] _exp_p_dat_o;
-assign exp_p_dat_o[7:4] = _exp_p_dat_o[7:4];
 reg scope_debug_en;
-assign exp_p_dat_o[3:0] = scope_debug_en ? scope_sigs_i : _exp_p_dat_o[3:0];
+assign exp_p_dat_o[7:4] = _exp_p_dat_o[7:4];
+assign exp_p_dat_o[3]   = scope_debug_en ? scope_sigs_i[3] : _exp_p_dat_o[3];
+assign exp_p_dat_o[2]   = _exp_p_dat_o[2];                       // encoder A lives here
+assign exp_p_dat_o[1:0] = scope_debug_en ? scope_sigs_i[1:0] : _exp_p_dat_o[1:0];
+assign exp_n_dat_o[7:4] = exp_n_dat_plain[7:4];
+assign exp_n_dat_o[3]   = scope_debug_en ? scope_sigs_i[2] : exp_n_dat_plain[3];
+assign exp_n_dat_o[2:0] = exp_n_dat_plain[2:0];
 
 reg [1:0] clk_out_en;
 reg [CSZ-1:0] clk_cnt_v;
