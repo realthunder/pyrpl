@@ -626,7 +626,9 @@ red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .FSSR(FFT_SSR), .DSZ(FFT_WIDTH)
   .trig_ext_i      (  exp_p_in[0]                ),  // external trigger ONLY (DIO0_P)
   .trig_extn_i     (  exp_n_in[2]                ),  // encoder index I (DIO2_N)
   .trig_quad_i     (  exp_p_in[1]                ),  // encoder channel B (DIO1_P, Scanner360 v3)
-  .trig_quadn_i    (  exp_n_in[3]                ),  // encoder channel A (DIO3_N)
+  .trig_quadn_i    (  exp_p_in[2]                ),  // encoder channel A (DIO2_P) — the
+                                                     // harness pin (B P1 / A P2 / I N2);
+                                                     // 8e628869's DIO3_N did not match it
                                                      // DIO0_P to free it for the external trigger
   .asg_busy_i      (  asg_play_active[2]         ),  // asg3 (chirp) playing — tick gate
   .trig_enc_o      (  enc_trig_tick              ),  // gated encoder tick -> ASG enc_tick source

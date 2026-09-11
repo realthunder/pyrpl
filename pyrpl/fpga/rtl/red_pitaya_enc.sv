@@ -3,15 +3,17 @@
  *
  * Conditions the prism encoder wires into the tick-driven trigger chain.
  *
- * Pins (red_pitaya_top.v, since 8e628869): A on DIO3_N, B on DIO1_P, I on
- * DIO2_N. A left DIO0_P so the scope/ASG external trigger keeps that pin to
- * itself, and A/I stay off DIO0_N/DIO1_N (the laser serial-mux select lines)
- * and off the exp_p[3:0] range the scope-debug mux can drive.
+ * Pins (red_pitaya_top.v): B on DIO1_P, A on DIO2_P, I on DIO2_N — the
+ * harness wiring. A left DIO0_P so the scope/ASG external trigger keeps that
+ * pin to itself, and A/I stay off DIO0_N/DIO1_N (the laser serial-mux select
+ * lines). DIO2_P is in the exp_p[3:0] range the scope-debug mux can drive:
+ * hk scope_debug_en (0x3C) resets to 0 and must stay 0 while the encoder is
+ * wired, or x_step_0 is driven into A.
  * Polarity is free: x4 decode counts edges and quad_up = a^b is invariant under
  * inverting A and B together, so wiring the minus legs needs no RTL/config change
  * (the index has turn_inv_i in any case).
  *
- *   A  (DIO3_N) ─┐
+ *   A  (DIO2_P) ─┐
  *   B  (DIO1_P) ─┼─ sync ─ glitch filter ─ x4 quadrature decode ─ tick + dir
  *   I  (DIO2_N) ─┘                                    │
  *                                                     ├─► azimuth up/down counter (EVERY tick)
@@ -68,7 +70,7 @@ module red_pitaya_enc #(
    input             clk_i          ,  // adc clock
    input             rstn_i         ,  // reset - active low
    // raw pins
-   input             tick_i         ,  // encoder channel A (DIO3_N)
+   input             tick_i         ,  // encoder channel A (DIO2_P)
    input             quad_i         ,  // encoder channel B (DIO1_P), quadrature only
    input             turn_i         ,  // encoder index I (DIO2_N)
    // busy gating
