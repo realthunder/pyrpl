@@ -1035,6 +1035,49 @@ def test_azimuth_sector_window():
     return True
 
 
+def test_azimuth_direction_blocks():
+    """az_row_div / az_dir_rows / az_frame_div (Scanner360 v3 'swing_cycle'):
+    one row per FIRED tick (tick // N), the return sweep in its own row
+    block, the direction derived from the tick sequence (a circle's points
+    share a tick and inherit it; a wrap through the index reads the short
+    way round), and the frame counter halved."""
+    fsz, frac, hsz, msw, hbs, T, L, N = 9, 8, 24, 10, 20, 1024, 4, 10
+    idx = fsz + frac
+    base, rows = -20, 8                 # window ticks T-20..T-1, 0..59 -> 8 rows
+    fired = [1010, 1020, 0, 10, 20, 30, 40, 40, 30, 20, 10, 0, 1020, 1010]
+    dirs = [1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1, -1]   # 40 -> 40 inherits
+    pts, i, frame = [], 0, 0
+    for k, t in enumerate(fired):
+        if k == 8:
+            frame = 1                   # the FPGA frames the reversal
+        for m in range(L):              # one circle = L points on one tick
+            chv = [((100 + i, 200 + i), (0, 0))]
+            pts.append((t, m, frame, chv)); i += 1
+    pkts = emit_packets_az(pts, hsz=hsz, msw=msw, idx=idx,
+                           hist_block_size=hbs, nch=1, tagged=True)
+    c = DmaUdpClient(fsz=fsz, frac=frac, hsz=hsz, hist_block_size=hbs,
+                     max_frame_size=2 * rows * L, max_interval=0.0)
+    c.configure(msw=msw, az_lcount=L, az_base=base, az_modulus=T,
+                az_row_div=N, az_dir_rows=rows, az_frame_div=2)
+    for pkt in pkts:
+        c._process_packet(pkt)
+    fr = c.get_frame(0)
+    peak_down, peak_up = fr[0], fr[1]
+    expect = {}
+    for (t, m, _, chv), d in zip(pts, [d for d in dirs for _ in range(L)]):
+        row = ((t - base) % T) // N + (rows if d < 0 else 0)
+        expect[row * L + m] = chv[0][0]
+    assert {p // L for p in expect} == set(range(7)) | set(range(rows, rows + 6))
+    for pos, (up, dn) in expect.items():
+        assert peak_up[pos] == up, (pos, peak_up[pos], up)
+        assert peak_down[pos] == dn, (pos, peak_down[pos], dn)
+    nz = set(np.nonzero(peak_up)[0])
+    assert nz == set(expect), sorted(nz ^ set(expect))[:10]
+    assert c.frame_count(0) == 0, c.frame_count(0)     # frames 0,1 -> cycle 0
+    assert c._bad_count == 0
+    return True
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:
