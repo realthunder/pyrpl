@@ -364,24 +364,25 @@ case "${PROFILE:-}" in
         # only uses asg1 (mems cos), asg2 (mems sin) and asg3 (chirp). Buys back
         # more than the ramp costs, so the n11 die fits with PEAK_RAMP on.
         export ASG0=${ASG0:-0}
-        # DET=11 (AltSpreadLogic_low) x AggressiveExplore won the 2026-09-09 11x2
-        # sweep on scan360 v3 (3a37414f): adc +0.062 / WHS +0.015, 0 failing
-        # endpoints, LUT 48107 — the ONLY one of 22 grid points with both margins
-        # positive at the +0.015 hold bar. The previous pin (DET=2,
-        # ExtraNetDelay_high) reproduces at -0.102 on this netlist, so a plain
-        # profile build was reproducibly producing an image that MISSES TIMING
-        # while printing a truthful "DETERMINISTIC build ... reproducible" banner.
-        # Hold is the binding constraint: det11 x Explore has the sweep's best
-        # setup (+0.088) and is disqualified by +0.008 of hold.
-        # 6 of 22 points NOFIT outright (det3/det7/det9 — short 104/40/104 slices).
+        # DET=4 (WLDrivenBlockPlacement) x ExploreWithHoldFix won the 2026-09-10
+        # 11x3 sweep on the enc-pin netlist (801fcb03): adc +0.167 / WHS +0.050,
+        # LUT 48125 — one of only 2 of 33 grid points clearing the +0.015 hold bar
+        # (det4 x Explore is the other, +0.136 / +0.050). Every other point that
+        # scored at all pinned at WHS +0.011..+0.013 regardless of placement.
+        # SUPERSEDES the DET=11 pin from the 2026-09-09 sweep on 3a37414f: on this
+        # netlist det11 does not route at all — all three phys_opt directives hit
+        # the 90-minute router-stuck guard, as did det2 (6 timeouts total). A
+        # further 12 of 33 were NOFIT (det3/det6/det7/det9, ~6.8k slices short);
+        # those die in placement, so all three phys variants fail identically.
+        # Hold is still the binding constraint, and +0.050 looks structural: it is
+        # the best hold achieved on n11, n10 AND n9 on this netlist.
         # DETERMINISTIC=0 is NOT a fast-path option here: the MT placer's ~0.2 ns
-        # swing (see red_pitaya_vivado.tcl:12-22) exceeds this build's entire
-        # +0.062 setup margin. Re-sweep after RTL edits — the winner is strongly
-        # netlist-sensitive (DET=11 ranked LAST of 11 in the July sweep; DET=4 went
-        # best -> worst; 5 of 5 rechecked placements inverted their July rank).
-        export DETERMINISTIC=${DETERMINISTIC:-11}
-        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
-        echo "==> PROFILE=ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place AltSpreadLogic_low (DETERMINISTIC=11), phys_opt AggressiveExplore"
+        # swing (see red_pitaya_vivado.tcl:12-22) exceeds this build's margin.
+        # Re-sweep after RTL edits — the winner is strongly netlist-sensitive:
+        # det11 went outright winner -> unroutable on one pin-assignment change.
+        export DETERMINISTIC=${DETERMINISTIC:-4}
+        export PHYS_OPT=${PHYS_OPT:-ExploreWithHoldFix}
+        echo "==> PROFILE=ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place WLDrivenBlockPlacement (DETERMINISTIC=4), phys_opt ExploreWithHoldFix"
         ;;
     ssr4n10lean)
         # ssr4n11 with a 1024-pt transform: EVERY dial identical to PROFILE=ssr4n11
@@ -391,9 +392,14 @@ case "${PROFILE:-}" in
         # they do not describe the die that ssr4n11 actually fits into at 90% LUT.
         # Purpose: halving the transform should relieve both the FFT datapath and
         # the slice-packing pressure that left 6 of 22 n11 sweep points NOFIT.
-        # Timing dials are INHERITED from the n11 winner (DET=11 AltSpreadLogic_low
-        # x AggressiveExplore) and are UNSWEPT for n10 — the n11 sweep showed the
-        # winner is strongly netlist-sensitive, so re-sweep if this does not close.
+        # SWEPT for n10 on the enc-pin netlist (801fcb03), 2026-09-10 11x3:
+        # DET=7 (AltSpreadLogic_medium) x AggressiveExplore wins at adc +0.193 /
+        # WHS +0.050, LUT 40753. All 33 grid points placed and routed — no NOFIT
+        # and no router stall, against n11's 12 NOFIT + 6 timeouts on the same
+        # netlist: exactly the slice-packing relief the halved transform buys.
+        # All three det7 phys variants tie at the +0.050 hold ceiling, so the pick
+        # is on setup (+0.193 vs +0.151 Explore / +0.136 ExploreWithHoldFix).
+        # 7 of 33 clear the +0.015 hold bar, so do re-sweep after RTL edits.
         export FFT_IMPL=${FFT_IMPL:-4}
         export FFT_SSR=${FFT_SSR:-4}
         export FFT_NFFT=${FFT_NFFT:-10}
@@ -411,9 +417,9 @@ case "${PROFILE:-}" in
         export OPT_DIRECTIVE=${OPT_DIRECTIVE:-ExploreSequentialArea}
         export ASG_ADVTRIG=${ASG_ADVTRIG:-0}
         export ASG0=${ASG0:-0}
-        export DETERMINISTIC=${DETERMINISTIC:-11}
+        export DETERMINISTIC=${DETERMINISTIC:-7}
         export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
-        echo "==> PROFILE=ssr4n10lean: IMPL=4 SSR=4 NFFT=10 (1024-pt) FFT@125MHz on adc_clk, = ssr4n11 with NFFT=10, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place AltSpreadLogic_low (DETERMINISTIC=11), phys_opt AggressiveExplore  [timing dials inherited from n11, UNSWEPT for n10]"
+        echo "==> PROFILE=ssr4n10lean: IMPL=4 SSR=4 NFFT=10 (1024-pt) FFT@125MHz on adc_clk, = ssr4n11 with NFFT=10, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place AltSpreadLogic_medium (DETERMINISTIC=7), phys_opt AggressiveExplore"
         ;;
     ssr4n9lean)
         # ssr4n11 with a 512-pt transform: EVERY dial identical to PROFILE=ssr4n11
@@ -424,10 +430,15 @@ case "${PROFILE:-}" in
         # Completes the lean ladder: n11 2048-pt / n10 1024-pt / n9 512-pt, all
         # otherwise identical, so point rate can be traded against range resolution
         # without any other variable moving.
-        # Timing dials INHERITED from the n11 winner (DET=11 AltSpreadLogic_low x
-        # AggressiveExplore) and UNSWEPT for n9 — but n10 closed first try at
-        # +0.188/+0.045 on 76.4% LUT, so n9 has more headroom still. Sweep only if
-        # it does not close.
+        # SWEPT for n9 on the enc-pin netlist (801fcb03), 2026-09-10 11x3:
+        # DET=4 (WLDrivenBlockPlacement) x ExploreWithHoldFix wins at adc +0.168 /
+        # WHS +0.050, LUT 37804. All 33 placed and routed, 7 of them clearing the
+        # +0.015 hold bar. det3 x AggressiveExplore ties it on hold at +0.050 but
+        # carries only +0.050 of setup vs det4's +0.168, so the setup tiebreak
+        # decides — a plain max-worst-slack sort would pick either. 3 points
+        # returned NEGATIVE hold (-0.001)
+        # despite healthy setup — the smallest transform is not automatically the
+        # safest, so re-sweep after RTL edits rather than assuming headroom.
         export FFT_IMPL=${FFT_IMPL:-4}
         export FFT_SSR=${FFT_SSR:-4}
         export FFT_NFFT=${FFT_NFFT:-9}
@@ -445,9 +456,9 @@ case "${PROFILE:-}" in
         export OPT_DIRECTIVE=${OPT_DIRECTIVE:-ExploreSequentialArea}
         export ASG_ADVTRIG=${ASG_ADVTRIG:-0}
         export ASG0=${ASG0:-0}
-        export DETERMINISTIC=${DETERMINISTIC:-11}
-        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
-        echo "==> PROFILE=ssr4n9lean: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, = ssr4n11 with NFFT=9, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place AltSpreadLogic_low (DETERMINISTIC=11), phys_opt AggressiveExplore  [timing dials inherited from n11, UNSWEPT for n9]"
+        export DETERMINISTIC=${DETERMINISTIC:-4}
+        export PHYS_OPT=${PHYS_OPT:-ExploreWithHoldFix}
+        echo "==> PROFILE=ssr4n9lean: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, = ssr4n11 with NFFT=9, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place WLDrivenBlockPlacement (DETERMINISTIC=4), phys_opt ExploreWithHoldFix"
         ;;
     ssr4n11-impl5)
         # LOWER-DR experiment — NOT the product N11 image (use ssr4n11 / IMPL=4 for that).
