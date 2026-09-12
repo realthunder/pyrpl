@@ -427,9 +427,17 @@ case "${PROFILE:-}" in
         export OPT_DIRECTIVE=${OPT_DIRECTIVE:-ExploreSequentialArea}
         export ASG_ADVTRIG=${ASG_ADVTRIG:-0}
         export ASG0=${ASG0:-0}
-        export DETERMINISTIC=${DETERMINISTIC:-7}
-        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
-        echo "==> PROFILE=ssr4n10lean: IMPL=4 SSR=4 NFFT=10 (1024-pt) FFT@125MHz on adc_clk, = ssr4n11 with NFFT=10, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place AltSpreadLogic_medium (DETERMINISTIC=7), phys_opt AggressiveExplore"
+        # DET=8 (Default) x ExploreWithHoldFix, 2026-09-12, on the harness-pinout
+        # netlist (54ea559d): adc +0.211 / WHS +0.051, 0 failing endpoints, LUT
+        # 40685. Won an 11x3 sweep in which only 6 of 33 points cleared the +0.015
+        # hold bar and every other one topped out at +0.018 — hold is the binding
+        # constraint for n10 and is strongly placement-determined, so RE-SWEEP
+        # after any RTL/pin edit. SUPERSEDES DET=7 x AggressiveExplore, which was
+        # fitted to the pre-DIO-fix netlist and gives +0.286/+0.008 here: fine
+        # setup, hold under the bar.
+        export DETERMINISTIC=${DETERMINISTIC:-8}
+        export PHYS_OPT=${PHYS_OPT:-ExploreWithHoldFix}
+        echo "==> PROFILE=ssr4n10lean: IMPL=4 SSR=4 NFFT=10 (1024-pt) FFT@125MHz on adc_clk, = ssr4n11 with NFFT=10, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place Default (DETERMINISTIC=8), phys_opt ExploreWithHoldFix"
         ;;
     ssr4n9lean)
         # ssr4n11 with a 512-pt transform: EVERY dial identical to PROFILE=ssr4n11
@@ -466,8 +474,16 @@ case "${PROFILE:-}" in
         export OPT_DIRECTIVE=${OPT_DIRECTIVE:-ExploreSequentialArea}
         export ASG_ADVTRIG=${ASG_ADVTRIG:-0}
         export ASG0=${ASG0:-0}
+        # DET=4 (WLDrivenBlockPlacement) x AggressiveExplore, 2026-09-12, on the
+        # harness-pinout netlist (54ea559d): adc +0.188 / WHS +0.020, 0 failing
+        # endpoints, LUT 37784. Won an 11x3 sweep; 12 of 33 cleared the +0.015
+        # hold bar (n9 is the roomiest of the three images), but only det4 and
+        # det7 got hold ABOVE +0.015 — the other 8 sat exactly ON it, i.e. zero
+        # margin. det4 x ExploreWithHoldFix ties at +0.188/+0.020 (17 LUT larger).
+        # The old pin (det4 x ExploreWithHoldFix on the pre-DIO netlist) gives
+        # +0.287/+0.012 here: fine setup, hold under the bar.
         export DETERMINISTIC=${DETERMINISTIC:-4}
-        export PHYS_OPT=${PHYS_OPT:-ExploreWithHoldFix}
+        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
         echo "==> PROFILE=ssr4n9lean: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, = ssr4n11 with NFFT=9, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place WLDrivenBlockPlacement (DETERMINISTIC=4), phys_opt ExploreWithHoldFix"
         ;;
     ssr4n11-impl5)
