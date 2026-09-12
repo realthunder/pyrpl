@@ -408,9 +408,23 @@ case "${PROFILE:-}" in
         # det9xAE +0.113/+0.019 and det9xEWHF +0.172/+0.015 also clear the bar,
         # det2xExplore has the widest hold margin and the smallest LUT.
         # Results: sweep_ssr4n11_encpin_results.txt.
-        export DETERMINISTIC=${DETERMINISTIC:-2}
-        export PHYS_OPT=${PHYS_OPT:-Explore}
-        echo "==> PROFILE=ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, xfft realtime throttle, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place ExtraNetDelay_high (DETERMINISTIC=2), phys_opt Explore"
+        # The pin is per throttle scheme so the two netlists can be compared with
+        # `FFT_THROTTLE=nonrealtime PROFILE=ssr4n11 ./make.sh`:
+        #   realtime    DET=2  x Explore            +0.130 / +0.036  LUT 45523 (0198f996)
+        #   nonrealtime DET=2  x AggressiveExplore  -0.138 / +0.016  LUT 48112 (f48eb3a3,
+        #               best of 0/33 on the harness pinout, bit-exact reproducible;
+        #               the previous pin DET=10 x AggressiveExplore closed only on the
+        #               DIO3_N netlist 54ea559d, +0.069/+0.022, and hits the router-
+        #               stuck timeout on f48eb3a3)
+        export FFT_THROTTLE=${FFT_THROTTLE:-realtime}
+        if [ "$FFT_THROTTLE" = nonrealtime ]; then
+            export DETERMINISTIC=${DETERMINISTIC:-2}
+            export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
+        else
+            export DETERMINISTIC=${DETERMINISTIC:-2}
+            export PHYS_OPT=${PHYS_OPT:-Explore}
+        fi
+        echo "==> PROFILE=ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, xfft throttle=$FFT_THROTTLE, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place DETERMINISTIC=$DETERMINISTIC, phys_opt $PHYS_OPT"
         ;;
     ssr4n10lean)
         # ssr4n11 with a 1024-pt transform: EVERY dial identical to PROFILE=ssr4n11
