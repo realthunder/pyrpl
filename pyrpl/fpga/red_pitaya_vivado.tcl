@@ -66,6 +66,10 @@ set fft_single     [expr {[info exists env(FFT_SINGLE)]     ? $env(FFT_SINGLE)  
 #             2=saturating 20-bit (default, fits xc7z020, ~90 dB small-signal detection)
 set fft_scaled     [expr {[info exists env(FFT_SCALED)]     ? $env(FFT_SCALED)     : 2}]
 set fft_use_approx    [expr {[info exists env(FFT_USE_APPROX)]    ? $env(FFT_USE_APPROX)    : 1}]
+# FFT_THROTTLE (IMPL=4 only): xfft AXIS throttle scheme, realtime (default) or
+# nonrealtime. See ip/fft_ssr_native_bd.tcl; fft_proc.sv's full-half feed gating
+# is what makes realtime safe and is always built.
+set fft_throttle   [expr {[info exists env(FFT_THROTTLE)]   ? $env(FFT_THROTTLE)   : "realtime"}]
 # FFT_RUNTIME_NFFT (IMPL=5 only): run-time configurable FFT transform length.
 # Off by default — adds ~2700 LUTs and regresses adc/dac fabric timing on the
 # 88%-full xc7z020. When on, drives the nfft port on the BD + a Verilog define so
@@ -592,6 +596,7 @@ if {![catch {open $path_out/BUILD_INFO.txt a} bi]} {
             fft_nfft $fft_nfft  fft_width $fft_width  fft_scaled $fft_scaled \
             fft_internal_w $fft_internal_w  fft_single $fft_single \
             fft_use_approx $fft_use_approx  fft_runtime_nfft $fft_runtime_nfft \
+            fft_throttle $fft_throttle \
             fft_clk_period $fft_clk_period  fft_clk_sel $fft_clk_sel \
             fft_clk_200 $fft_clk_200  fft_clk_178 $fft_clk_178 \
             hist_block_size $hist_block_size  dsp_lean $dsp_lean \

@@ -286,19 +286,16 @@ end
 
 localparam READ_DELAY = (3-1);
 localparam FFT_RDELAY = (7-1);
-// fifo_in depth. Reads are blocked during zero-padding; peak occupancy =
-// min(acq_samples, padding_duration_in_adc_cycles). The two bounds cross at
-// peak = N/(1 + r*FSSR), where r = fft_clk/adc_clk: r=2 (fft_clk_sel=1, fft on
-// ser_clk) gives N/(1+2*FSSR); r=1 (fft_clk_sel=0, fft on adc_clk) gives the
-// LARGER N/(1+FSSR). fft_clk_sel is a runtime BUFGMUX choice, so the FIFO must
-// cover the r=1 worst case: with FSSR < 1+FSSR < 2*FSSR,
-// ceil(log2(N/(1+FSSR))) = FSZ - SSR_BITS, hence QSZ = FSZ - SSR_BITS (= N/FSSR
-// deep). NOTE: the old FSZ-SSR_BITS-1 sized only for r=2 and OVERFLOWED at
-// fft_clk_sel=0 when the acquisition started early (small wait1): the up-ramp
-// samples piled up during the (N-acq)/FSSR padding beats faster than the engine
-// drained them -> dropped beats -> the FFT engine under-fed and fft_done wedged
-// low -> FFT hang. Sizing for r=1 makes any wait1 (incl. 0) safe.
-localparam QSZ = FSZ - $clog2(FSSR);
+// fifo_in depth (samples). The feed engine buffers a WHOLE half before it opens
+// the half to the xfft (realtime throttle, see fft_proc.sv "FULL-HALF INPUT
+// BUFFERING"), so the FIFO must hold one complete acquisition window (<= N
+// samples) PLUS whatever the next window writes while that half is being fed:
+// the up half is fed (N/FSSR clk_i cycles) while WAIT2/FFT_DOWN are already
+// writing. Two windows of N samples bound that for every wait1/wait2/acq and
+// both fft_clk ratios, hence 2N deep: QSZ = FSZ + 1 (2 x RAMB36 per engine at
+// N=2048). The old streaming-feed sizing (N/FSSR, see git history) is far too
+// small for this scheme and would drop most of every window.
+localparam QSZ = FSZ + 1;
 
 // Scan-index queue depth (2^IQSZ) handed to both fft_proc engines. Holds one entry
 // per in-flight FFT frame; production/consumption are rate-matched and flush-reset
@@ -654,6 +651,7 @@ logic [ IDX-1: 0]   dma_point_up_b, dma_point_down_b;
 logic [ DSZ-1: 0]   dma_point_val_up_a, dma_point_val_down_a;
 logic [ DSZ-1: 0]   dma_point_val_up_b, dma_point_val_down_b;
 logic [ HSZ-1: 0]   dma_point_idx_a, dma_point_idx_b;
+logic [ HSZ-1: 0]   dma_point_idx_pre_a;   // idx of the next point, 1 cycle early (see fft_proc)
 // NCH = number of active DMA channels (0=off, 1=ch0, 2=ch0+ch1). Set via the
 // control register; bounded to the channels physically present.
 logic [ 3:0]        dma_nch;
@@ -1164,6 +1162,7 @@ fft_a (
    .dma_point_val_up_o   (dma_point_val_up_a),
    .dma_point_val_down_o (dma_point_val_down_a),
    .dma_point_idx_o   (dma_point_idx_a),
+   .dma_point_idx_pre_o (dma_point_idx_pre_a),
 
    .status_o (fft_status[0]),
    .fft_done_o (fft_done[0]),
@@ -1268,6 +1267,7 @@ fft_proc #(.ASZ(ASZ),
    .dma_point_val_up_o   (dma_point_val_up_b),
    .dma_point_val_down_o (dma_point_val_down_b),
    .dma_point_idx_o   (dma_point_idx_b),
+   .dma_point_idx_pre_o (),                 // both engines share the scan pipeline; the asm uses a's
 
    .status_o (fft_status[1]),
    .fft_done_o (fft_done[1]),
@@ -1375,7 +1375,27 @@ logic [3:0]         pt_nch;
 logic [63:0]        asm_tdata;
 logic               asm_tvalid, asm_tlast;
 
-wire [HSZ-1:0] asm_delta = dma_point_idx_a - asm_prev_idx;
+// Position deltas, PIPELINED: computed every cycle from the engine's early index
+// (dma_point_idx_pre_a — the same value dma_point_idx_a carries on the valid
+// cycle, one cycle ahead) minus asm_prev_idx, and registered, so the capture
+// cycle's asm_hdr_need cone is a compare/AND-reduce + OR tree instead of
+// subtract + reduce + OR: `asm_prev_idx -> asm_dtick_fits -> asm_state` was the
+// worst path of the n11 die (-0.138 ns). A point can be captured the cycle
+// right after the previous point's last word, i.e. on the edge asm_prev_idx is
+// rewritten — the registered deltas are stale then; asm_prev_stale detects that
+// (asm_prev_idx changed on the edge the deltas were registered) and forces a
+// header, which re-anchors the position and zeroes the stale advance/dt fields
+// (S_HDR clears pt_dt/pt_adv/pt_dir, pt_hdr masks them in tagged mode).
+logic [HSZ-1:0]     asm_delta_r;
+logic [HSZ-MSW-1:0] asm_dtick_r;
+logic [HSZ-1:0]     asm_prev_idx_d;
+always @(posedge fft_input_clk) begin
+    asm_delta_r    <= dma_point_idx_pre_a - asm_prev_idx;
+    asm_dtick_r    <= dma_point_idx_pre_a[HSZ-1:MSW] - asm_prev_idx[HSZ-1:MSW];
+    asm_prev_idx_d <= asm_prev_idx;
+end
+wire asm_prev_stale = (asm_prev_idx_d != asm_prev_idx);
+wire [HSZ-1:0] asm_delta = asm_delta_r;
 // Azimuth mode: position delta in TICKS (the cell's high field), two's
 // complement. The data word carries its low nibble as a SIGNED 4-bit dt
 // (-8..+7; descriptor 0x1A4[24]) so a swinging prism's return sweep, and the
@@ -1383,7 +1403,7 @@ wire [HSZ-1:0] asm_delta = dma_point_idx_a - asm_prev_idx;
 // segment as forward motion; a jump outside that range (counter reset, > 7
 // gated ticks, the modulus wrap) re-anchors with a header instead. (The
 // field used to be unsigned 0..15, when every backward step cost a header.)
-wire [HSZ-MSW-1:0] asm_dtick = dma_point_idx_a[HSZ-1:MSW] - asm_prev_idx[HSZ-1:MSW];
+wire [HSZ-MSW-1:0] asm_dtick = asm_dtick_r;
 // dt fits the 4-bit signed field iff the bits above the nibble all equal its
 // sign bit — an AND-reduce, no second adder in the asm_hdr_need cone.
 wire asm_dtick_fits = (asm_dtick[HSZ-MSW-1:3] == {(HSZ-MSW-3){asm_dtick[3]}});
@@ -1398,7 +1418,7 @@ wire asm_last_word  = (asm_wc == ASM_PKT-1);
 // signed advance bits encode). The signed step lets BOTH scan directions ride a
 // single segment, instead of a re-anchor header per point when the scan runs
 // downward.
-wire asm_hdr_need   = asm_need_hdr || asm_frame_pend || asm_flush_rise ||
+wire asm_hdr_need   = asm_need_hdr || asm_frame_pend || asm_flush_rise || asm_prev_stale ||
                       (asm_az ? !asm_dtick_fits
                               : (asm_delta != 0 && !asm_inc && !asm_dec)) ||
                       (dma_nch != asm_nch_seg);

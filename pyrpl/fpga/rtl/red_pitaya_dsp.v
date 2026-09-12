@@ -195,9 +195,22 @@ assign asg_step_i[3] = asg4_step_i;
 
 reg [2-1:0] scan_select [1:0];
 assign scan_x_o = asg_i[scan_select[0]];
-assign scan_x_step_o = asg_step_i[scan_select[0]];
 assign scan_y_o = asg_i[scan_select[1]];
-assign scan_y_step_o = asg_step_i[scan_select[1]];
+// Scan step indices to the scope are REGISTERED (one clk_i cycle late relative
+// to the asg's step_o): the mux output fanned straight into the scope's
+// fft_hist_step adder / DSP CE (asg step_o -> this mux -> i_scope, -0.090 ns on
+// the n11 die). Alignment is unaffected: the scope samples x/y_step_i one cycle
+// after a trigger accept (fft_index_valid[0]), while the scope-triggered asg
+// one-shot advances step_o no earlier than ~5 cycles after that accept
+// (scope_sig register -> asg 2-FF scope_trig -> ch trig_in -> dac_trig), so
+// both the delayed and the undelayed view sample the pre-kick position.
+reg [RSZ-1: 0] scan_x_step_r, scan_y_step_r;
+always @(posedge clk_i) begin
+    scan_x_step_r <= asg_step_i[scan_select[0]];
+    scan_y_step_r <= asg_step_i[scan_select[1]];
+end
+assign scan_x_step_o = scan_x_step_r;
+assign scan_y_step_o = scan_y_step_r;
 
 //connect scope
 assign scope1_o = input_signal[SCOPE1];

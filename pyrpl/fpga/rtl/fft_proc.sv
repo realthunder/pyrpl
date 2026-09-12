@@ -70,6 +70,12 @@ module fft_proc #(
   output logic [ DSZ-1:0] dma_point_val_up_o,
   output logic [ DSZ-1:0] dma_point_val_down_o,
   output logic [ HSZ-1:0] dma_point_idx_o,
+  // The scan index of the point about to be emitted, ONE cycle before
+  // dma_point_valid_o (it is the fft_hist_index register, loaded at the peak-
+  // ready pre-trigger, two cycles before the point word). Lets the scope's DMA
+  // assembler pipeline its position-delta / header decision on the registered
+  // value and use the result on the valid cycle. Stable between points.
+  output logic [ HSZ-1:0] dma_point_idx_pre_o,
 
   output logic [  6-1: 0] status_o,
   output logic            fft_done_o,
@@ -130,6 +136,16 @@ endfunction
 localparam READ_A_DELAY = READ_DELAY - 3;
 localparam READ_B_DELAY = READ_DELAY - 3;
 
+// xfft event pins. ev_* are the LIVE core outputs (driven per FFT_IMPL below,
+// tied 0 where the wrapper has no such pin); fft_*_halt / fft_tlast_* are their
+// STICKY latches (set on any pulse, cleared only by the engine reset rstn_i =
+// conf change / scan flush) so a one-cycle event is visible to the host through
+// status_o. With the xfft in REALTIME throttle mode (ip/fft_ssr_native_bd.tcl)
+// a data_in halt means the feed let tvalid drop mid-frame and that frame is
+// corrupt; a data_out halt means the mag/peak sink stalled the core — both are
+// design errors the full-half input buffering below is meant to make impossible.
+logic           ev_in_halt, ev_out_halt, ev_status_halt;
+logic           ev_tlast_missing, ev_tlast_unexp;
 logic           fft_in_halt, fft_out_halt, fft_status_halt;
 logic           fft_frame_start, fft_tlast_missing, fft_tlast_unexp;
 
@@ -180,8 +196,11 @@ logic [FSZ-1:0]     acq_up, acq_up_, acq_down, acq_down_;
 
 logic [ 2-1: 0]     fft_peak_ready;
 logic               peak_up, peak_ready;
-logic               peak_ready_pretrig = {fft_peak_ready[0], peak_ready} == 2'b01;
-logic               peak_ready_trig = fft_peak_ready == 2'b01;
+// Continuous assigns (not `logic x = expr;` initializers: Vivado synthesis reads
+// those as assigns, but per the LRM they are one-time initial values — xsim
+// then leaves them X forever, which is why fft_proc could not be simulated).
+wire                peak_ready_pretrig = {fft_peak_ready[0], peak_ready} == 2'b01;
+wire                peak_ready_trig = fft_peak_ready == 2'b01;
 
 logic [ IDX-1:0]    fft_peak_index_up, fft_peak_index_up_;
 logic [ IDX-1:0]    fft_peak_index_down, fft_peak_index_down_;
@@ -601,7 +620,7 @@ end
 xpm_cdc_gray #(
     .WIDTH        (32),
     .DEST_SYNC_FF (SYNC_FF)
-) (
+) point_cnt_sync (
     .src_clk      (clk_i),
     .src_in_bin   (point_cnt),
     .dest_clk     (adc_clk_i),
@@ -611,7 +630,7 @@ xpm_cdc_gray #(
 xpm_cdc_gray #(
     .WIDTH        (32),
     .DEST_SYNC_FF (SYNC_FF)
-) (
+) scan_point_cnt_sync (
     .src_clk      (clk_i),
     .src_in_bin   (scan_point_cnt),
     .dest_clk     (adc_clk_i),
@@ -634,7 +653,7 @@ assign diag_o = {rst_drop_cnt, zero_frame_cnt_sys};
 
 logic           fft_conf_dvalid;
 
-logic [16+FSZ+FSZ-1:0] fft_conf_input = {fft_acq_up_i>>SSR_BITS, fft_acq_down_i>>SSR_BITS, fft_conf_data_i};
+wire  [16+FSZ+FSZ-1:0] fft_conf_input = {fft_acq_up_i>>SSR_BITS, fft_acq_down_i>>SSR_BITS, fft_conf_data_i};
 logic [16+FSZ+FSZ-1:0] fft_conf_reg, conf_data;
 
 xpm_cdc_handshake #(
@@ -642,7 +661,7 @@ xpm_cdc_handshake #(
     .DEST_EXT_HSK   (0),
     .SRC_SYNC_FF    (SYNC_FF),
     .DEST_SYNC_FF   (SYNC_FF)
-) (
+) conf_sync (
     .src_clk        (adc_clk_i),
     .src_in         (fft_conf_reg),
     .src_rcv        (conf_recv),
@@ -663,7 +682,7 @@ end
 
 localparam RESET_DELAY = 4-1;
 logic [RESET_DELAY : 0]  fft_rstn;
-logic                    fft_rstn_i = fft_rstn[RESET_DELAY];
+wire                     fft_rstn_i = fft_rstn[RESET_DELAY];
 assign                   rstn_i = fft_rstn_i;
 
 logic [ FSZ-1:0] padding_up, padding_down;
@@ -777,12 +796,20 @@ always @(posedge adc_clk_i)
 // (rd_en) nor feed (fft_saxi_valid/fft_data_i) a beat — pop and consume stay atomic.
 wire fin_dvalid_g = fin_dvalid && !fin_rd_rst_busy;
 
+// Read-side occupancy in FSSR-sample words: the full-half feed gate (half_open,
+// below) waits until the whole acquisition window of the half about to be fed
+// is sitting in the FIFO, so the xfft input stream never starves mid-frame.
+localparam RDC_W = QSZ - SSR_BITS + 1;
+logic [RDC_W-1:0] fin_rd_count;
+logic             half_open;
+
 xpm_fifo_async #(
     .FIFO_WRITE_DEPTH(1<<QSZ),
     .WRITE_DATA_WIDTH(ASZ),
     .READ_DATA_WIDTH (ASZ*FSSR),
+    .RD_DATA_COUNT_WIDTH(RDC_W),
     .FIFO_READ_LATENCY(0),
-    .USE_ADV_FEATURES("1001"), // enables data_valid and overflow
+    .USE_ADV_FEATURES("1401"), // data_valid, rd_data_count, overflow
     .READ_MODE       ("fwft")
 ) fifo_in (
     .rst             (fin_rst),
@@ -792,7 +819,8 @@ xpm_fifo_async #(
     .wr_rst_busy     (fin_wr_rst_busy),
 
     .rd_clk          (clk_i),
-    .rd_en           (padding_done & fft_saxi_rdy & fin_rd & fin_dvalid_g),
+    .rd_en           (padding_done & fft_saxi_rdy & fin_rd & fin_dvalid_g & half_open),
+    .rd_data_count   (fin_rd_count),
     .dout            (fin_dout),
     .data_valid      (fin_dvalid),
     .rd_rst_busy     (fin_rd_rst_busy),
@@ -843,7 +871,76 @@ assign fft_saxi_last = fft_we_one || fft_we_length_plus_one;
 // During live acquisition (acq_done low) a transient empty still stalls/waits,
 // so real samples are never replaced by zeros prematurely.
 wire fft_postpad = padding_done && acq_done && !fin_dvalid_g;
-assign fft_saxi_valid = (!padding_done || fin_dvalid_g || fft_postpad) && fin_rd;
+
+// FULL-HALF INPUT BUFFERING (xfft REALTIME throttle). In realtime mode the core
+// has no input flow control: once a frame has started, s_axis_data_tvalid must
+// stay high on every beat until tlast or the core raises event_data_in_channel_
+// halt and the frame is garbage (and it has no output back-pressure either, see
+// fifo_peak_in). The feed therefore no longer streams a half while the ADC is
+// still filling the FIFO; it OPENS a half only once every data beat of that
+// half is already buffered:
+//   * primary:  fin_rd_count >= acq beats of this half (exact, race-free: the
+//               count is monotone until we start reading, and fifo_in is
+//               flushed at every frame end so no stale words inflate it);
+//   * fallback: the half's acquisition window has closed (acq_done, armed by
+//               having seen it LOW since this frame's trigger so a stale flag
+//               from the previous frame cannot open an empty half) — covers
+//               ADC samples lost to a FIFO overflow, which the post-pad then
+//               replaces with zeros exactly as before.
+// The condition must hold for 4 consecutive cycles before the half opens, which
+// absorbs the async FIFO's write-pointer / fwft prefetch latency so the first
+// data beat is guaranteed readable. Padding beats are generated locally, so
+// from the opening beat to tlast tvalid is continuous by construction.
+// Consequences: fifo_in must hold a whole half (QSZ = FSZ+1 in the scope, two
+// halves deep for the up-half feed overlapping the down-half acquisition), and
+// each half is fed N/FSSR clk_i cycles AFTER its window closes instead of
+// during it (fft_done, hence the next trigger, moves later by that much).
+// Minimum idle gap between two xfft input frames. The core has no output
+// flow control in realtime mode, and its output frame spacing mirrors the input
+// spacing (pipelined streaming), so the sink must be ready on every output beat.
+// The HLS magnitude block (fft_native_mag) drops s_axis TREADY for a few cycles
+// while it re-enters its per-frame loop; with the two halves fed back-to-back
+// (a short down window already buffered when the up half finishes) those beats
+// were lost (sim/tb_fft_chain.sv, 64-sample windows: 8 stalled output beats,
+// one frame short). Holding the next half closed for HALF_GAP cycles after a
+// tlast keeps every inter-frame gap longer than that bubble.
+localparam      HALF_GAP = 16;
+logic [4:0]     half_gap_cnt;
+logic [1:0]     acq_armed;
+logic [3:0]     half_rdy_sr;
+wire [FSZ-1:0]  acq_beats  = up_in ? acq_up : acq_down;
+wire            half_ready = (fin_rd_count >= acq_beats)
+                          || (acq_done && acq_armed[up_in ? 0 : 1]);
+wire            half_last  = !fft_done && fft_saxi_valid && fft_saxi_rdy
+                          && (fft_we_one || fft_we_length_plus_one);
+
+always @(posedge clk_i)
+if (rstn_i == 1'b0) begin
+    half_open    <= 0;
+    half_rdy_sr  <= 0;
+    acq_armed    <= 0;
+    half_gap_cnt <= HALF_GAP;
+end else if (fft_trig && fft_done && up_in) begin
+    // frame trigger: both halves re-qualify, done flags must be seen low first
+    half_open   <= 0;
+    half_rdy_sr <= 0;
+    acq_armed   <= 2'b00;
+end else begin
+    acq_armed <= acq_armed | ~acq_done_clk;
+    if (half_last) begin
+        half_open    <= 0;     // half closed on its tlast beat; the next one re-qualifies
+        half_rdy_sr  <= 0;
+        half_gap_cnt <= HALF_GAP;
+    end else if (!half_open) begin
+        if (half_gap_cnt != 0)
+            half_gap_cnt <= half_gap_cnt - 1'b1;
+        half_rdy_sr <= {half_rdy_sr[2:0], half_ready};
+        if (&half_rdy_sr && half_gap_cnt == 0)
+            half_open <= 1;
+    end
+end
+
+assign fft_saxi_valid = (!padding_done || fin_dvalid_g || fft_postpad) && fin_rd && half_open;
 assign fft_data_i = (padding_done && fin_dvalid_g) ? fin_dout : '0;
 
 // Frame halves that completed with ZERO real data beats (all writes lost — the
@@ -969,6 +1066,7 @@ end
 // FSSR*DSZ-wide FIFO between FFT output and HLS peak detector.
 // FSSR*DSZ must be a multiple of 8; satisfied for even FSSR and DSZ=16.
 localparam PEAK_IN_WIDTH = FSSR * DSZ;
+localparam PD_CNT_W = 14;   // peak_detector count_t / BD port width (ip/peak_detector_bd.tcl)
 
 logic [PEAK_IN_WIDTH-1:0] peak_in_data;
 logic                     peak_in_valid;
@@ -1013,14 +1111,18 @@ peak_detector_bd_wrapper pd_i (
     .ap_done         (),
 
     .threshold_k_sq  (fft_threshold_k_arg),
-    .start_index     (fft_peak_start_arg),
-    .end_index       (fft_end_idx[FSZ:1]),
+    // The detector's count_t ports are PD_CNT_W (14) bits whatever FSZ is.
+    // Zero-extend EXPLICITLY: a narrower net on a wider port leaves the top
+    // bits Z in simulation (synthesis grounds them), which poisons the CFAR
+    // loop bounds and hangs the detect stage in xsim.
+    .start_index     (PD_CNT_W'(fft_peak_start_arg)),
+    .end_index       (PD_CNT_W'(fft_end_idx[FSZ:1])),
     .data_min        (fft_peak_minimum_arg),
-    .nfft            (fft_nfft+SSR_BITS)
+    .nfft            (4'(fft_nfft+SSR_BITS))
 `ifdef PEAK_CFAR
     // CA-CFAR build: the BD wrapper exposes these extra control ports.
-    ,.guard_cells    (fft_cfar_guard_arg)
-    ,.train_cells    (fft_cfar_train_arg)
+    ,.guard_cells    (PD_CNT_W'(fft_cfar_guard_arg))
+    ,.train_cells    (PD_CNT_W'(fft_cfar_train_arg))
     ,.onesided       (fft_cfar_onesided_arg)
     ,.so_mode        (fft_cfar_so_arg)
 `ifdef PEAK_RAMP
@@ -1031,7 +1133,7 @@ peak_detector_bd_wrapper pd_i (
 `endif
 );
 
-logic  fft_peak_valid = peak_out_data[DSZ];
+wire   fft_peak_valid = peak_out_data[DSZ];
 // k_interp occupies [DSZ+IDX : DSZ+1] (IDX = FSZ+FRAC bits), value in [DSZ-1:0].
 assign fft_peak_idx   = fft_peak_valid ? peak_out_data[DSZ + IDX : DSZ + 1] : 0;
 assign fft_peak       = peak_out_data[DSZ-1 : 0];
@@ -1048,6 +1150,7 @@ assign peak_ready     = peak_out_valid;
 // Emit condition: sequential (up_toggle=1) → after the down chirp (both peaks fresh);
 //                 parallel  (up_toggle=0) → every frame.
 wire dma_emit       = peak_ready_trig && (peak_up || !up_toggle);
+assign dma_point_idx_pre_o = fft_hist_index;
 // One registered point per detected scan position. Both fft_proc instances
 // share the scan pipeline, so fft_a/fft_b assert dma_point_valid_o on the same
 // cycle; red_pitaya_scope.sv captures both and assembles the interleaved packet
@@ -1090,12 +1193,12 @@ if (FFT_IMPL == 1) begin : gen_fft_single
        .S_AXIS_DATA_0_tvalid        (fft_saxi_valid   ),
        .aclk_0                      (clk_i            ),
        .aresetn_0                   (fft_rstn_i       ),
-       .event_data_in_channel_halt_0(fft_in_halt      ),
-       .event_data_out_channel_halt_0(fft_out_halt    ),
-       .event_status_channel_halt_0 (fft_status_halt  ),
+       .event_data_in_channel_halt_0(ev_in_halt       ),
+       .event_data_out_channel_halt_0(ev_out_halt     ),
+       .event_status_channel_halt_0 (ev_status_halt   ),
        .event_frame_started_0       (fft_frame_start  ),
-       .event_tlast_missing_0       (fft_tlast_missing),
-       .event_tlast_unexpected_0    (fft_tlast_unexp  )
+       .event_tlast_missing_0       (ev_tlast_missing ),
+       .event_tlast_unexpected_0    (ev_tlast_unexp   )
     );
 
 end else if (FFT_IMPL == 3) begin : gen_fft_ip_ssr
@@ -1118,6 +1221,8 @@ end else if (FFT_IMPL == 3) begin : gen_fft_ip_ssr
 
         .event_frame_started    (fft_frame_start)
     );
+    assign ev_in_halt = 1'b0; assign ev_out_halt = 1'b0; assign ev_status_halt = 1'b0;
+    assign ev_tlast_missing = 1'b0; assign ev_tlast_unexp = 1'b0;
 
 end else if (FFT_IMPL == 5) begin : gen_fft_hls_direct
     // Direct hls::fft: one HLS IP instantiates the LogiCORE sub-FFTs internally,
@@ -1150,6 +1255,8 @@ end else if (FFT_IMPL == 5) begin : gen_fft_hls_direct
 
         .event_frame_started    (fft_frame_start)
     );
+    assign ev_in_halt = 1'b0; assign ev_out_halt = 1'b0; assign ev_status_halt = 1'b0;
+    assign ev_tlast_missing = 1'b0; assign ev_tlast_unexp = 1'b0;
 
 end else if (FFT_IMPL == 4) begin : gen_fft_native
     // Native-SSR xfft (Vivado 2025.2 CONFIG.super_sample_rates): single SSR xfft
@@ -1172,8 +1279,15 @@ end else if (FFT_IMPL == 4) begin : gen_fft_native
         .m_axis_tready          (fft_maxi_rdy),
         .m_axis_tlast           (fft_maxi_last),
 
-        .event_frame_started    (fft_frame_start)
+        .event_frame_started         (fft_frame_start),
+        // Live halt/tlast events (ip/fft_ssr_native_bd.tcl exports them; pins the
+        // core does not have in the selected throttle mode are tied 0 there).
+        .event_data_in_channel_halt  (ev_in_halt),
+        .event_data_out_channel_halt (ev_out_halt),
+        .event_tlast_missing         (ev_tlast_missing),
+        .event_tlast_unexpected      (ev_tlast_unexp)
     );
+    assign ev_status_halt = 1'b0;
 
 end else begin : gen_fft_ssr
     // DIT SSR FFT (Vitis xf::dsp::fft): lane 0 = lower-half bins, lane 1 = upper-half.
@@ -1194,12 +1308,32 @@ end else begin : gen_fft_ssr
 
         .event_frame_started    (fft_frame_start)
     );
+    assign ev_in_halt = 1'b0; assign ev_out_halt = 1'b0; assign ev_status_halt = 1'b0;
+    assign ev_tlast_missing = 1'b0; assign ev_tlast_unexp = 1'b0;
 
 end
 endgenerate
 
 //---------------------------------------------------------------------------------
 //  System bus connection
+
+// Sticky xfft event latches (see the ev_* declaration). Cleared with the engine
+// (rstn_i: conf change or scan flush), so a bit reads "seen since the last
+// flush"; the host polls them through status_o (scope reg 0x0 [21:16]/[29:24]).
+always @(posedge clk_i)
+if (rstn_i == 1'b0) begin
+    fft_in_halt       <= 1'b0;
+    fft_out_halt      <= 1'b0;
+    fft_status_halt   <= 1'b0;
+    fft_tlast_missing <= 1'b0;
+    fft_tlast_unexp   <= 1'b0;
+end else begin
+    if (ev_in_halt)       fft_in_halt       <= 1'b1;
+    if (ev_out_halt)      fft_out_halt      <= 1'b1;
+    if (ev_status_halt)   fft_status_halt   <= 1'b1;
+    if (ev_tlast_missing) fft_tlast_missing <= 1'b1;
+    if (ev_tlast_unexp)   fft_tlast_unexp   <= 1'b1;
+end
 
 xpm_cdc_array_single #(
     .WIDTH          (6),

@@ -158,6 +158,13 @@ fi
 #   5 = direct hls::fft (default; SSR=4 @ 125 MHz, see active defaults below)
 #export FFT_IMPL=3
 
+# FFT_THROTTLE (FFT_IMPL=4 only): xfft AXIS throttle scheme. realtime (default)
+#   removes the core's input/output throttle FIFOs (~-844 LUT / -315 FF per FFT
+#   core at SSR4/2048); fft_proc buffers each acquisition half completely before
+#   feeding it so the stream never starves (costs N/FSSR fft cycles of latency
+#   per half and 2N-sample input FIFOs). nonrealtime = the pre-2026-09 core.
+#export FFT_THROTTLE=nonrealtime
+
 # HIST_BLOCK_SIZE: DMA packet size in detection words (excluding the 1-word header).
 #   Total UDP payload = (HIST_BLOCK_SIZE + 1) * 8 bytes.
 #   Default 183 → 184 * 8 = 1472 B = one standard Ethernet MTU (no fragmentation).
@@ -390,9 +397,20 @@ case "${PROFILE:-}" in
         # swept points closed. Restoring the mux fixed it. If n11 ever goes
         # broadly unroutable again, suspect a change that removed IOB loads
         # before suspecting the placer.
-        export DETERMINISTIC=${DETERMINISTIC:-10}
-        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
-        echo "==> PROFILE=ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place ExtraNetDelay_low (DETERMINISTIC=10), phys_opt AggressiveExplore"
+        # DET=2 (ExtraNetDelay_high) x Explore, 2026-09-12, on the xfft REALTIME
+        # throttle netlist (FFT_THROTTLE=realtime + fft_proc full-half feed gating
+        # + asm-header/awaddr-MCP/scan-step path fixes): adc +0.130 / WHS +0.036,
+        # 0 failing endpoints, LUT 45523 (85.6%, -2.6k vs the nonrealtime core).
+        # SUPERSEDES DET=10 x AggressiveExplore: on the harness pinout (f48eb3a3,
+        # nonrealtime) that pin and all 32 others FAILED setup (best -0.138). On
+        # the realtime netlist every one of the 9 probe points (det2/3/9 x AE/
+        # Explore/EWHF) has positive setup; hold is the discriminator again —
+        # det9xAE +0.113/+0.019 and det9xEWHF +0.172/+0.015 also clear the bar,
+        # det2xExplore has the widest hold margin and the smallest LUT.
+        # Results: sweep_ssr4n11_encpin_results.txt.
+        export DETERMINISTIC=${DETERMINISTIC:-2}
+        export PHYS_OPT=${PHYS_OPT:-Explore}
+        echo "==> PROFILE=ssr4n11: IMPL=4 SSR=4 NFFT=11 (2048-pt) FFT@125MHz on adc_clk, xfft realtime throttle, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place ExtraNetDelay_high (DETERMINISTIC=2), phys_opt Explore"
         ;;
     ssr4n10lean)
         # ssr4n11 with a 1024-pt transform: EVERY dial identical to PROFILE=ssr4n11

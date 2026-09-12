@@ -205,9 +205,17 @@ void fft_native_mag(
 #pragma HLS INTERFACE ap_ctrl_none port=return
 
     const int BEATS = FFT_SIZE / FFT_SSR;
+    // FLUSHABLE pipeline (style=flp). As the only loop in the function HLS
+    // rewinds it, and a rewound non-flushable pipeline blocks on the next
+    // frame's first read while the previous frame's last ~5 beats are still in
+    // flight: they only left when the NEXT frame arrived, so every half-frame's
+    // magnitudes (and peak) were delayed by one half and the last point of a
+    // scan was held until the next trigger (seen in sim/tb_fft_chain.sv). With
+    // the xfft in realtime mode the sink must also drain promptly. flp drains
+    // the pipeline when the input stream is empty.
     MAG:
     for (int i = 0; i < BEATS; i++) {
-#pragma HLS PIPELINE II=1
+#pragma HLS PIPELINE II=1 style=flp
         axis_xout_t pkt = s_axis.read();
 
         axis_out_t out;

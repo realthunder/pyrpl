@@ -261,6 +261,18 @@ set_multicycle_path 2 -setup -from [get_cells -hierarchical -filter {NAME =~ *ax
 set_multicycle_path 1 -hold  -from [get_cells -hierarchical -filter {NAME =~ *axi_slave_gp0/wr_wdata_reg*}]
 set_multicycle_path 2 -setup -to   [get_cells -hierarchical -filter {NAME =~ *sys_rdata_reg*}]
 set_multicycle_path 1 -hold  -to   [get_cells -hierarchical -filter {NAME =~ *sys_rdata_reg*}]
+# Write ADDRESS decode, same argument as wr_wdata: axi_slave latches wr_awaddr on
+# the AW handshake (the edge wr_do is set) and holds it until the ack; sys_wen_o
+# rises two registers later (sys_wen_d -> sys_wen_o), so every sys_wen-qualified
+# capture (config-register CEs, write acks) sees >= 2 settled cycles of the
+# address. Reads never overlap a write (rd_do/wr_do exclusive, arready needs
+# !wr_do), so a read's address (rd_araddr, NOT relaxed) is never in flight while
+# wr_awaddr changes; the unqualified per-cycle readback address pipelines
+# (fft buf_*_raddr etc.) only carry meaningful data during reads. sys_addr fans
+# out ~1.2k from the rd/wr mux; the wr_awaddr -> i_scope fft_cfar_* CE paths
+# were 3 of the 5 failing endpoints of the n11 die (-0.078, 86 % route).
+set_multicycle_path 2 -setup -from [get_cells -hierarchical -filter {NAME =~ *axi_slave_gp0/wr_awaddr_reg*}]
+set_multicycle_path 1 -hold  -from [get_cells -hierarchical -filter {NAME =~ *axi_slave_gp0/wr_awaddr_reg*}]
 
 # fft_nfft is the runtime FFT-size config (log2 N), set once at configuration and
 # static while the FFT streams.  In each FFT instance it is registered on the ser
