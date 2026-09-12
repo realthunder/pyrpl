@@ -525,9 +525,20 @@ case "${PROFILE:-}" in
         # margin. det4 x ExploreWithHoldFix ties at +0.188/+0.020 (17 LUT larger).
         # The old pin (det4 x ExploreWithHoldFix on the pre-DIO netlist) gives
         # +0.287/+0.012 here: fine setup, hold under the bar.
-        export DETERMINISTIC=${DETERMINISTIC:-4}
-        export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
-        echo "==> PROFILE=ssr4n9lean: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, = ssr4n11 with NFFT=9, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place WLDrivenBlockPlacement (DETERMINISTIC=4), phys_opt ExploreWithHoldFix"
+        # Per throttle scheme (see ssr4n11):
+        #   realtime    DET=8 x AggressiveExplore  +0.116 / +0.017  LUT 37087 (3aac238d,
+        #               2026-09-12 probe det2/8/9/11 x 3: the only point above the +0.015
+        #               hold bar; det2 x ExploreWithHoldFix is +0.404 / +0.015 exactly)
+        #   nonrealtime DET=4 x AggressiveExplore  +0.188 / +0.020  LUT ~38.6k (54ea559d)
+        export FFT_THROTTLE=${FFT_THROTTLE:-realtime}
+        if [ "$FFT_THROTTLE" = nonrealtime ]; then
+            export DETERMINISTIC=${DETERMINISTIC:-4}
+            export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
+        else
+            export DETERMINISTIC=${DETERMINISTIC:-8}
+            export PHYS_OPT=${PHYS_OPT:-AggressiveExplore}
+        fi
+        echo "==> PROFILE=ssr4n9lean: IMPL=4 SSR=4 NFFT=9 (512-pt) FFT@125MHz on adc_clk, = ssr4n11 with NFFT=9, xfft throttle=$FFT_THROTTLE, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place DETERMINISTIC=$DETERMINISTIC, phys_opt $PHYS_OPT"
         ;;
     ssr4n11-impl5)
         # LOWER-DR experiment — NOT the product N11 image (use ssr4n11 / IMPL=4 for that).
