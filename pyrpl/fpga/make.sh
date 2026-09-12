@@ -467,9 +467,20 @@ case "${PROFILE:-}" in
         # after any RTL/pin edit. SUPERSEDES DET=7 x AggressiveExplore, which was
         # fitted to the pre-DIO-fix netlist and gives +0.286/+0.008 here: fine
         # setup, hold under the bar.
-        export DETERMINISTIC=${DETERMINISTIC:-8}
-        export PHYS_OPT=${PHYS_OPT:-ExploreWithHoldFix}
-        echo "==> PROFILE=ssr4n10lean: IMPL=4 SSR=4 NFFT=10 (1024-pt) FFT@125MHz on adc_clk, = ssr4n11 with NFFT=10, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place Default (DETERMINISTIC=8), phys_opt ExploreWithHoldFix"
+        # Per throttle scheme (see ssr4n11):
+        #   realtime    DET=11 x Explore             +0.264 / +0.015  LUT 39016 (be0cbe95,
+        #               2026-09-12 probe det2/8/9/11 x 3: hold pinned at +0.007..+0.015
+        #               on every point, only det11xExplore and det9xEWHF reach the bar)
+        #   nonrealtime DET=8  x ExploreWithHoldFix  +0.211 / +0.051  LUT 40685 (54ea559d)
+        export FFT_THROTTLE=${FFT_THROTTLE:-realtime}
+        if [ "$FFT_THROTTLE" = nonrealtime ]; then
+            export DETERMINISTIC=${DETERMINISTIC:-8}
+            export PHYS_OPT=${PHYS_OPT:-ExploreWithHoldFix}
+        else
+            export DETERMINISTIC=${DETERMINISTIC:-11}
+            export PHYS_OPT=${PHYS_OPT:-Explore}
+        fi
+        echo "==> PROFILE=ssr4n10lean: IMPL=4 SSR=4 NFFT=10 (1024-pt) FFT@125MHz on adc_clk, = ssr4n11 with NFFT=10, xfft throttle=$FFT_THROTTLE, dsz24 frac8 scaled2 approx fbpipe+modpipe+scopepipe+lean(advtrig/asg0/pidfilt2/guard8/train63), place DETERMINISTIC=$DETERMINISTIC, phys_opt $PHYS_OPT"
         ;;
     ssr4n9lean)
         # ssr4n11 with a 512-pt transform: EVERY dial identical to PROFILE=ssr4n11
