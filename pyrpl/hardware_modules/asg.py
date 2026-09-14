@@ -39,7 +39,27 @@ class WaveformAttribute(SelectProperty):
         waveform = waveform.lower()
         if not waveform in instance.waveforms:
             raise ValueError("waveform shourd be one of " + instance.waveforms)
-        elif waveform == 'custom':
+        # on_waveform_change(stage): optional owner callback around a REAL
+        # waveform change ('before' the new table is written, 'after' it), e.g.
+        # to park a scanner driven by this ASG. Re-applying the same waveform
+        # (_setup) does not call it.
+        hook = getattr(instance, 'on_waveform_change', None)
+        if hook is None or waveform == getattr(instance, '_waveform', None):
+            return self._set_waveform(instance, waveform)
+        try:
+            hook('before')
+        except Exception:
+            instance._logger.exception('on_waveform_change(before) failed')
+        try:
+            return self._set_waveform(instance, waveform)
+        finally:
+            try:
+                hook('after')
+            except Exception:
+                instance._logger.exception('on_waveform_change(after) failed')
+
+    def _set_waveform(self, instance, waveform):
+        if waveform == 'custom':
             instance.__class__.waveform_file.load(instance)
             instance._waveform = waveform
         else:
