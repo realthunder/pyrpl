@@ -302,14 +302,16 @@ class DmaUdpClient:
         # az_dt_signed bitstreams: a circle spans the ticks passed while it
         # was drawn, so every row is populated).
         self._az_row_div = 1
-        # az_row_age: with a dense rows x L azimuth buffer, blank the rows a
-        # sweep has not written for this many 2D frames (0 = never). The
-        # buffer only ever overwrites, so a tick row the prism stopped
-        # reaching (origin shift, a narrower swing, start-up transient) kept
-        # its cells forever — visibly 'stuck' points. Rows written this frame
-        # are recorded per channel in _az_row_last (frame counter per row).
+        # az_row_age: with a dense rows x L azimuth buffer, blank every CELL
+        # not rewritten for this many 2D frames (0 = never). The buffer only
+        # ever overwrites, so a cell the scan stopped reaching kept its point
+        # forever - visibly 'stuck' points. Per CELL, not per row: a sweep
+        # writes only a few dozen of a row's L phases, so a row-level stamp
+        # kept the rest of a freshly written row alive. The frame counter of
+        # each cell's last write is in _az_cell_frame (-1 = empty); the 2D
+        # view reads it too (az_cell_stamps).
         self._az_row_age = 2
-        self._az_row_last = [None, None]
+        self._az_cell_frame = [None, None]
         # az_dt_signed: the data word's 4-bit tick delta is two's complement
         # (-8..+7; descriptor 0x1A4[24]) instead of unsigned 0..15, so a
         # swinging prism's return sweep rides the same segment as forward
@@ -440,9 +442,10 @@ class DmaUdpClient:
             self._refl_avg_tol = max(0.0, float(refl_avg_tol))
         if msw is not None:
             self._msw = int(msw)
+        az_layout = (getattr(self, '_az_l', 0), getattr(self, '_az_base', 0),
+                     getattr(self, '_az_mod', 0), getattr(self, '_az_row_div', 1))
         if az_lcount is not None:
             self._az_l = int(az_lcount)
-            self._az_row_last = [None, None]     # rows re-keyed
         if az_row_age is not None:
             self._az_row_age = max(0, int(az_row_age))
         if az_base is not None:
@@ -454,6 +457,14 @@ class DmaUdpClient:
             self._az_row_div = max(1, int(az_row_div))
         if az_dt_signed is not None:
             self._az_dt_signed = bool(az_dt_signed)
+        if hasattr(self, '_live') and az_layout != (
+                self._az_l, self._az_base, self._az_mod, self._az_row_div):
+            # the cells are re-keyed: what the buffer holds now sits at the
+            # wrong cells and would never be rewritten or aged there. A
+            # re-apply of the SAME layout (any knob-only re-setup) keeps it.
+            n = self._max_frame_size
+            self._max_frame_size = -1   # force the rebuild (clears + stamps)
+            self.set_max_frame_size(n)
         if hist_block_size is not None:
             self._hist_block_size = hist_block_size
         if max_interval is not None:
@@ -543,6 +554,8 @@ class DmaUdpClient:
                 self._max_pos[ch] = -1
                 self._seen[ch] = False
                 self._avg_cnt[ch] = None   # sized to the buffer; re-alloc lazily
+                if getattr(self, '_az_cell_frame', None) is not None:
+                    self._az_cell_frame[ch] = None   # stamps of the old cells
 
     def start(self):
         """Start the background receive thread."""
@@ -1215,18 +1228,17 @@ class DmaUdpClient:
         else:
             self._seq_pend = seq          # unconfirmed; keep the old baseline
 
-    def _az_age_rows(self, ch, frame_cnt):
-        """Blank the dense-buffer rows not written for az_row_age frames
+    def _az_age_cells(self, ch, frame_cnt):
+        """Blank the dense-buffer cells not rewritten for az_row_age frames
         (caller holds the lock; called at a 2D-frame turnover, before the new
         frame's first points). Copy-on-write like a normal write, so a held
-        snapshot is never mutated. Rows never written stay untouched (they
-        are zero already); the frame counter may wrap, so the age is taken
-        modulo 2**31."""
-        last = self._az_row_last[ch]
-        if last is None:
+        snapshot is never mutated. Empty cells stay untouched; the frame
+        counter may wrap, so the age is taken modulo 2**31."""
+        st = self._az_cell_frame[ch]
+        if st is None:
             return
-        age = (frame_cnt - last) & 0x7fffffff
-        stale = np.nonzero((last >= 0) & (age > self._az_row_age))[0]
+        age = (frame_cnt - st) & 0x7fffffff
+        stale = np.nonzero((st >= 0) & (age > self._az_row_age))[0]
         if stale.size == 0:
             return
         if id(self._live[ch]) in self._out[ch]:
@@ -1234,11 +1246,15 @@ class DmaUdpClient:
             fresh = self._take_buffer(ch)
             fresh[:m] = self._live[ch][:m]
             self._live[ch] = fresh
-        L = self._az_l
-        idx = (stale[:, None] * L + np.arange(L)[None, :]).ravel()
-        idx = idx[idx < self._max_frame_size]
-        self._live[ch][idx, :] = 0
-        last[stale] = -1
+        stale = stale[stale < self._live[ch].shape[0]]
+        self._live[ch][stale, :] = 0
+        st[stale] = -1
+
+    def az_cell_stamps(self, ch):
+        """Frame counter of the last write of every dense azimuth cell (-1 =
+        empty), or None outside the azimuth mode / before the first write.
+        The live array: read it, do not modify it."""
+        return self._az_cell_frame[ch] if self._az_l else None
 
     def _publish(self, ch):
         """Snapshot the live buffer into the published frame (caller holds lock).
@@ -1736,7 +1752,7 @@ class DmaUdpClient:
                     and frame_cnt != self._frame_cnt[ch]):
                 self._publish(ch)
             if frame_cnt != self._frame_cnt[ch] and self._az_l and self._az_row_age:
-                self._az_age_rows(ch, frame_cnt)
+                self._az_age_cells(ch, frame_cnt)
             self._frame_cnt[ch] = frame_cnt
             if p.size == 0:
                 return
@@ -1768,13 +1784,12 @@ class DmaUdpClient:
                 self._live[ch][p, 3] = refl_down
             self._live[ch][p, 0] = up
             self._live[ch][p, 1] = down
-            if self._az_l and self._az_row_age:
-                last = self._az_row_last[ch]
-                nrows = self._max_frame_size // self._az_l + 1
-                if last is None or last.size != nrows:
-                    last = np.full(nrows, -1, dtype=np.int64)
-                    self._az_row_last[ch] = last
-                last[np.unique(p // self._az_l)] = frame_cnt
+            if self._az_l:
+                st = self._az_cell_frame[ch]
+                if st is None or st.size != self._max_frame_size:
+                    st = np.full(self._max_frame_size, -1, dtype=np.int64)
+                    self._az_cell_frame[ch] = st
+                st[p] = frame_cnt
             self._max_pos[ch] = max(self._max_pos[ch], int(p.max()))
             self._seen[ch] = True
             self._update_seq[ch] += 1

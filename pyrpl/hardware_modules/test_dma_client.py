@@ -1102,6 +1102,41 @@ def test_azimuth_live_ticks_signed_dt():
     return True
 
 
+def test_azimuth_cell_ageing():
+    """Stuck points (swing): a cell not rewritten for az_row_age frames is
+    blanked even while other cells of its tick row keep being written (the
+    old per-row stamp kept the whole row alive); re-applying the SAME azimuth
+    layout keeps the buffer, a changed layout clears buffer and stamps."""
+    L, rows = 8, 4
+    c = DmaUdpClient(fsz=9, frac=8, hsz=24, hist_block_size=20,
+                     max_frame_size=rows * L, max_interval=0.0)
+    c.configure(msw=10, az_lcount=L, az_base=0, az_modulus=1024, az_row_age=2)
+
+    def w(frame, cells, val):
+        p = np.array(cells, dtype=np.int64)
+        v = np.full(p.size, val, dtype=np.int32)
+        c._write_channel(0, frame, p, v, v)
+
+    w(0, [0, 1, 9], 5)             # row 0 cells 0 and 1, row 1 cell 1
+    w(1, [0], 7)
+    w(2, [0], 7)
+    assert c._live[0][1, 0] == 5, "age 2 is still within az_row_age"
+    w(3, [0], 7)                   # row 0 still written, but only its cell 0
+    live = c._live[0]
+    assert live[0, 0] == 7
+    assert live[1, 0] == 0, "an unrevisited cell of a written row must age out"
+    assert live[9, 0] == 0
+    st = c.az_cell_stamps(0)
+    assert st[0] == 3 and st[1] == -1 and st[9] == -1
+    w(4, [2], 9)
+    c.configure(msw=10, az_lcount=L, az_base=0, az_modulus=1024)
+    assert c._live[0][2, 0] == 9, "a same-layout re-apply must keep the buffer"
+    c.configure(az_base=3)
+    assert not c._live[0].any(), "a changed layout must clear the buffer"
+    assert c.az_cell_stamps(0) is None
+    return True
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:
