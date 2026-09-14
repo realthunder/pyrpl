@@ -483,7 +483,7 @@ wire  [  8-1: 0] exp_p_dir, exp_n_dir;
 wire scope_fft_o;
 wire [2-1:0] fft_window;   // scope fft acq windows {down, up} -> dsp pid gating
 wire scope_sig_o;
-wire [ 4-1: 0] asg_play_active;   // per-ASG-channel playing (dac_do); [2] = asg3 chirp
+wire [ 4-1: 0] asg_play_active;   // per-ASG-channel playing (dac_do); [3] = pyrpl asg3 (RTL channel d) = the chirp
 wire           enc_trig_tick;     // gated encoder tick (scope enc block -> ASG enc_tick)
 wire x_step_0;
 wire y_step_0;
@@ -632,7 +632,7 @@ red_pitaya_scope #(.ASZ(ADC_SZ), .FSZ(FFT_NFFT), .FSSR(FFT_SSR), .DSZ(FFT_WIDTH)
                                                      // harness pin (B P1 / A P2 / I N2); the
                                                      // scope-debug tap that was here is on DIO3_N
                                                      // DIO0_P to free it for the external trigger
-  .asg_busy_i      (  asg_play_active[2]         ),  // asg3 (chirp) playing — tick gate
+  .asg_busy_i      (  asg_play_active[3]         ),  // pyrpl asg3 = channel d (chirp) playing — tick gate; [2] is asg2, the MEMS sine (free-running)
   .trig_enc_o      (  enc_trig_tick              ),  // gated encoder tick -> ASG enc_tick source
   .trig_asg_i      (  trig_asg_out               ),  // ASG trigger
   .trig_dsp_i      (  dsp_trigger                ),
