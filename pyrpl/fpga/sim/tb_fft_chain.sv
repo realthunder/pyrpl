@@ -12,10 +12,18 @@
 //   3. no event_data_in/out_channel_halt / tlast_missing / tlast_unexpected
 //      pulse, and the sticky status_o bits stay 0;
 //   4. every frame's up AND down peak lands on the injected tone bin, for
-//      NFRAMES back-to-back frames, at the selected acq/wait geometry.
+//      NFRAMES back-to-back frames, at the selected acq/wait geometry, and each
+//      point carries the scan index pushed at ITS trigger (association check);
+//   5. with PERIOD != 0 (free-running chirps every PERIOD cycles, accepted with
+//      the scope's rule: FSM idle && engine fft_ready_o) NO chirp is missed —
+//      the frame-pipelining contract (the realtime feed finishes a frame after
+//      the next chirp; the engine must take that chirp anyway). ALLOW_MISS=1
+//      turns a miss into a report-only number (for over-rate geometries).
 // Knobs (-d): ACQ_UP ACQ_DOWN (samples, <= N), WAIT1 WAIT2 (cycles), NFRAMES,
 //             TONE_K (up tone bin), TONE_K2 (down tone bin), GAP (idle cycles
-//             between fft_done and the next trigger).
+//             between fft_done and the next trigger, PERIOD==0 mode only),
+//             PERIOD (chirp period in cycles, 0 = trigger GAP after fft_done),
+//             ALLOW_MISS.
 // Prints "RESULT ... : PASS" or "RESULT ... : FAIL <reasons>".
 `timescale 1ns/1ps
 `ifndef ACQ_UP
@@ -42,6 +50,12 @@
 `ifndef GAP
   `define GAP 0
 `endif
+`ifndef PERIOD
+  `define PERIOD 0
+`endif
+`ifndef ALLOW_MISS
+  `define ALLOW_MISS 0
+`endif
 
 module tb_fft_chain;
     localparam int ASZ = 14, DSZ = 24, FSZ = 11, FRAC = 8, FSSR = 4;
@@ -50,6 +64,7 @@ module tb_fft_chain;
     localparam int N = 1 << FSZ, BEATS = N / FSSR, IDX = FSZ + FRAC;
     localparam int ACQ_UP = `ACQ_UP, ACQ_DOWN = `ACQ_DOWN;
     localparam int WAIT1 = `WAIT1, WAIT2 = `WAIT2, NFRAMES = `NFRAMES, GAP = `GAP;
+    localparam int PERIOD = `PERIOD, ALLOW_MISS = `ALLOW_MISS;
     localparam int K1 = `TONE_K, K2 = `TONE_K2;
     localparam real AMP = 4000.0, PI = 3.14159265358979;
 
@@ -70,7 +85,7 @@ module tb_fft_chain;
     logic [DSZ-1:0] dma_point_val_up, dma_point_val_down;
     logic [HSZ-1:0] dma_point_idx;
     logic [5:0]     status;
-    logic           fft_done_o, peak_ready_o;
+    logic           fft_done_o, fft_ready_o, peak_ready_o;
     logic [IDX-1:0] peak_index_up, peak_index_down;
     logic [DSZ-1:0] peak_value_up, peak_value_down;
     logic [31:0]    we_cnt, point_cnt, scan_point_cnt, overflow_cnt, diag;
@@ -95,7 +110,7 @@ module tb_fft_chain;
         .dma_point_valid_o(dma_point_valid), .dma_point_up_o(dma_point_up), .dma_point_down_o(dma_point_down),
         .dma_point_val_up_o(dma_point_val_up), .dma_point_val_down_o(dma_point_val_down),
         .dma_point_idx_o(dma_point_idx),
-        .status_o(status), .fft_done_o(fft_done_o), .fft_peak_ready_o(peak_ready_o),
+        .status_o(status), .fft_done_o(fft_done_o), .fft_ready_o(fft_ready_o), .fft_peak_ready_o(peak_ready_o),
         .fft_peak_index_up_o(peak_index_up), .fft_peak_index_down_o(peak_index_down),
         .fft_peak_value_up_o(peak_value_up), .fft_peak_value_down_o(peak_value_down),
         .fft_we_cnt(we_cnt), .point_cnt_o(point_cnt), .scan_point_cnt_o(scan_point_cnt),
@@ -114,25 +129,46 @@ module tb_fft_chain;
     // ---- scope acquisition-FSM model ----
     typedef enum logic [2:0] {W_IDLE, W_WAIT1, W_UP, W_WAIT2, W_DOWN} wst_t;
     wst_t wst = W_IDLE; integer wcnt = 0, frame = 0, gap = 0;
+    // Free-running chirp source (PERIOD mode): a pulse every PERIOD cycles, like
+    // the ASG one-shot; the FSM model accepts it exactly as red_pitaya_scope.sv
+    // does (S_IDLE && &fft_ready). Chirps fired while a frame is still wanted
+    // (frame < NFRAMES) but not accepted are MISSED chirps.
+    integer chirp_cnt = 0, chirps_fired = 0, chirps_missed = 0;
+    wire chirp = (PERIOD != 0) && (chirp_cnt == PERIOD - 1);
+    logic want_frame = 0;   // registered: $time in a continuous assign is not re-evaluated
+    always @(posedge clk) want_frame <= rstn && dut.rstn_i && frame < NFRAMES && $time > 1000;
+    // trigger rule: PERIOD mode = scope rule on a chirp; GAP mode = GAP idle
+    // cycles after fft_done (the pre-pipelining bench: never overlaps frames).
+    wire trig_ok = (PERIOD != 0) ? (chirp && fft_ready_o) : (fft_done_o && gap >= GAP);
     function automatic logic [ASZ-1:0] tone(input int k, input int n);
         return ASZ'($rtoi($cos(2.0*PI*k*n/N)*AMP));
     endfunction
     always @(posedge clk) if (!rstn) begin
         wst <= W_IDLE; wcnt <= 0; frame <= 0; trig_in <= 0; index_valid <= 0; enable_in <= 0; gap <= 0;
+        chirp_cnt <= 0; chirps_fired <= 0; chirps_missed <= 0;
     end else begin
         trig_in <= 0; index_valid <= 0; enable_in <= 0;
+        chirp_cnt <= (PERIOD != 0 && chirp_cnt == PERIOD - 1) ? 0 : chirp_cnt + 1;
+        if (chirp && want_frame) begin
+            chirps_fired <= chirps_fired + 1;
+            if (!(wst == W_IDLE && fft_ready_o)) begin
+                chirps_missed <= chirps_missed + 1;
+                $display("  [%0t] CHIRP MISSED (wst=%0d fft_ready=%0d fft_done=%0d)", $time, wst, fft_ready_o, fft_done_o);
+            end
+        end
         case (wst)
-        W_IDLE: if (fft_done_o && dut.rstn_i && frame < NFRAMES && $time > 1000) begin
-                    if (gap >= GAP) begin
+        W_IDLE: if (want_frame) begin
+                    if (trig_ok) begin
                         trig_in <= 1; index_valid <= 1; hist_index <= HSZ'(frame);
-                        acq_up_done <= 0; acq_down_done <= 0;
                         wst <= W_WAIT1; wcnt <= 0; gap <= 0;
                     end else gap <= gap + 1;
                 end
-        W_WAIT1: if (wcnt >= WAIT1) begin wst <= W_UP; wcnt <= 0; end else wcnt <= wcnt + 1;
+        // acq done flags clear when THIS frame's window opens (scope FSM), not at
+        // the trigger: the engine may still be feeding the previous frame's half.
+        W_WAIT1: if (wcnt >= WAIT1) begin wst <= W_UP; wcnt <= 0; acq_up_done <= 0; end else wcnt <= wcnt + 1;
         W_UP:    if (wcnt >= ACQ_UP) begin wst <= W_WAIT2; wcnt <= 0; acq_up_done <= 1; end
                  else begin enable_in <= 1; data_in <= tone(K1, wcnt); wcnt <= wcnt + 1; end
-        W_WAIT2: if (wcnt >= WAIT2) begin wst <= W_DOWN; wcnt <= 0; end else wcnt <= wcnt + 1;
+        W_WAIT2: if (wcnt >= WAIT2) begin wst <= W_DOWN; wcnt <= 0; acq_down_done <= 0; end else wcnt <= wcnt + 1;
         W_DOWN:  if (wcnt >= ACQ_DOWN) begin wst <= W_IDLE; wcnt <= 0; acq_down_done <= 1; frame <= frame + 1; end
                  else begin enable_in <= 1; data_in <= tone(K2, wcnt); wcnt <= wcnt + 1; end
         endcase
@@ -229,7 +265,7 @@ module tb_fft_chain;
     end
 
     // ---- peak capture per frame ----
-    integer pk_frames = 0, bad_peaks = 0;
+    integer pk_frames = 0, bad_peaks = 0, bad_idx = 0;
     integer max_count = 0;
     always @(posedge clk) if (rstn) begin
         if (dut.fin_rd_count > max_count) max_count <= dut.fin_rd_count;
@@ -241,6 +277,7 @@ module tb_fft_chain;
             $display("  [t=%0t] point %0d (idx %0d): up bin %0d (val %0d)  down bin %0d (val %0d)",
                      $time, pk_frames, dma_point_idx, ku, dma_point_val_up, kd, dma_point_val_down);
             if (ku < K1-1 || ku > K1+1 || kd < K2-1 || kd > K2+1) bad_peaks <= bad_peaks + 1;
+            if (dma_point_idx != HSZ'(pk_frames)) bad_idx <= bad_idx + 1;   // scan index must be the one pushed at this frame's trigger
         end
     end
 
@@ -254,8 +291,8 @@ module tb_fft_chain;
     end
     initial begin
         #4000000;
-        $display("TIMEOUT: frames_started=%0d xin_frames=%0d pk_frames=%0d wst=%0d fft_done=%0d half_open=%0d fin_rd=%0d fin_rd_count=%0d acq_beats=%0d we_cnt=%0d",
-                 frames_started, xin_frames, pk_frames, wst, fft_done_o, dut.half_open, dut.fin_rd, dut.fin_rd_count, dut.acq_beats, we_cnt);
+        $display("TIMEOUT: frames_started=%0d xin_frames=%0d pk_frames=%0d wst=%0d fft_done=%0d fft_ready=%0d trig_pend=%0d half_open=%0d fin_rd=%0d fin_rd_count=%0d acq_beats=%0d we_cnt=%0d",
+                 frames_started, xin_frames, pk_frames, wst, fft_done_o, fft_ready_o, dut.trig_pend, dut.half_open, dut.fin_rd, dut.fin_rd_count, dut.acq_beats, we_cnt);
         report();
         $finish;
     end
@@ -268,9 +305,11 @@ module tb_fft_chain;
         if (bad_peaks)   why = {why, " wrong-peaks"};
         if (overflow_cnt) why = {why, " fifo-overflow"};
         if (pk_frames < NFRAMES) why = {why, " missing-frames"};
-        $display("RESULT ACQ_UP=%0d ACQ_DOWN=%0d WAIT1=%0d WAIT2=%0d GAP=%0d NFRAMES=%0d : %s%s | xin_frames=%0d frames_started=%0d pk_frames=%0d in_gaps=%0d feed_gaps=%0d out_stalls=%0d ev_in=%0d ev_out=%0d ev_tm=%0d ev_tu=%0d status=%b overflow=%0d diag=%h bad_peaks=%0d max_fifo_words=%0d/%0d",
-                 ACQ_UP, ACQ_DOWN, WAIT1, WAIT2, GAP, NFRAMES, (why == "") ? "PASS" : "FAIL", why,
-                 xin_frames, frames_started, pk_frames, in_gaps, feed_gaps, out_stalls,
-                 ev_in, ev_out, ev_tm, ev_tu, status, overflow_cnt, diag, bad_peaks, max_count, (1<<QSZ)/FSSR);
+        if (bad_idx)     why = {why, " scan-index-mismatch"};
+        if (chirps_missed && !ALLOW_MISS) why = {why, " missed-chirps"};
+        $display("RESULT ACQ_UP=%0d ACQ_DOWN=%0d WAIT1=%0d WAIT2=%0d GAP=%0d PERIOD=%0d NFRAMES=%0d : %s%s | chirps=%0d missed=%0d xin_frames=%0d frames_started=%0d pk_frames=%0d in_gaps=%0d feed_gaps=%0d out_stalls=%0d ev_in=%0d ev_out=%0d ev_tm=%0d ev_tu=%0d status=%b overflow=%0d diag=%h bad_peaks=%0d bad_idx=%0d max_fifo_words=%0d/%0d",
+                 ACQ_UP, ACQ_DOWN, WAIT1, WAIT2, GAP, PERIOD, NFRAMES, (why == "") ? "PASS" : "FAIL", why,
+                 chirps_fired, chirps_missed, xin_frames, frames_started, pk_frames, in_gaps, feed_gaps, out_stalls,
+                 ev_in, ev_out, ev_tm, ev_tu, status, overflow_cnt, diag, bad_peaks, bad_idx, max_count, (1<<QSZ)/FSSR);
     endtask
 endmodule

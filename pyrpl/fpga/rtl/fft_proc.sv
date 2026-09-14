@@ -79,6 +79,13 @@ module fft_proc #(
 
   output logic [  6-1: 0] status_o,
   output logic            fft_done_o,
+  // Frame pipelining: high while the engine can take ANOTHER frame trigger, i.e.
+  // every accepted trigger has already started feeding (none pending). The scope
+  // gates its trigger accept on this, NOT on fft_done_o: a chirp may be accepted
+  // (and its samples buffered in fifo_in) while the previous frame is still being
+  // fed, which is what keeps the point rate at the chirp rate now that the
+  // realtime feed defers each half until its window is fully buffered.
+  output logic            fft_ready_o,
   output logic            fft_peak_ready_o,
 
   output logic [ IDX-1:0] fft_peak_index_up_o,
@@ -359,6 +366,7 @@ xpm_cdc_single #(
     .dest_out  (fft_done_o)
 );
 
+
 // Flush (ASG sync-reset) crossed adc_clk -> clk_i so the peak chain can be reset
 // COHERENTLY with the scan-index FIFO / peak_up toggle (both already flush-reset).
 // Without this the CFAR detector's DATAFLOW ping-pong holds 1-2 in-flight frames
@@ -391,6 +399,47 @@ xpm_cdc_array_single #(
 wire acq_done = up_in ? acq_done_clk[0] : acq_done_clk[1];
 
 logic rstn_i;
+
+// FRAME PIPELINING. The scope accepts a chirp trigger while this engine is still
+// feeding the previous frame (it gates on fft_ready_o, below, not fft_done_o).
+// The accept pulse (trig_in, one adc cycle; edge-detected here because clk_i may
+// be faster than adc_clk) is latched in trig_pend until the running frame's
+// last beat, then the next frame starts from the samples the scope has meanwhile
+// been writing into fifo_in (each window is exactly acq samples, see the scope
+// FSM, so the FIFO stays word-aligned across frames without a per-frame flush).
+// trig_pend is a 2-bit saturating count only for safety: fft_ready_o drops as
+// soon as one trigger is pending, and the scope FSM is busy for a whole
+// acquisition after every accept, so a second pending trigger cannot occur.
+logic       fft_trig_d;
+logic [1:0] trig_pend;
+wire        trig_edge   = fft_trig && !fft_trig_d;
+wire        frame_start = fft_done && (trig_edge || trig_pend != 0);
+
+always @(posedge clk_i)
+if (rstn_i == 1'b0) begin
+    fft_trig_d <= 1'b0;
+    trig_pend  <= 2'd0;
+end else begin
+    fft_trig_d <= fft_trig;
+    if (frame_start)   // the started frame consumes one pending trigger (or this very edge)
+        trig_pend <= (trig_pend != 0) ? trig_pend - 1'b1 + trig_edge : 2'd0;
+    else if (trig_edge && trig_pend != 2'd3)
+        trig_pend <= trig_pend + 1'b1;
+end
+
+// registered CDC source (no combinational decode into the synchronizer)
+logic fft_ready_src;
+always @(posedge clk_i)
+    fft_ready_src <= (trig_pend == 2'd0);
+
+xpm_cdc_single #(
+    .DEST_SYNC_FF (SYNC_FF)
+) ready_sync (
+    .src_clk   (clk_i),
+    .src_in    (fft_ready_src),
+    .dest_clk  (adc_clk_i),
+    .dest_out  (fft_ready_o)
+);
 
 xpm_cdc_pulse #(
     .DEST_SYNC_FF (SYNC_FF)
@@ -754,30 +803,36 @@ logic                   fin_rd, fin_dvalid;
 logic                   padding_done;
 logic [ FSZ-1:0]        padding_cnt;
 
-// Per-frame flush of fifo_in (clears sample residue when the acq counts aren't
-// beat-aligned), made XPM-legal per UG974: rst is a REGISTERED multi-cycle pulse
-// synchronous to wr_clk, launched at FEED COMPLETION (fft_done_o rising edge) —
-// the earliest instant of the inter-frame quiet window: the residue is final,
-// writes stopped when the acq window closed, and the feed engine released
-// fin_rd one done-CDC lag earlier. Launching here (not at the next trigger
-// accept, as the pre-fix combinational reset did) absorbs the reset SHADOW
-// (rst + rst_busy propagation, ~30 wr cycles in the XPM model) into the
-// done->next-trigger gap instead of eating into wait1: a trigger can't be
-// accepted before fft_done_o is high, so the shadow has (gap + wait1) cycles
-// to clear before the next frame's first write. Both FIFO sides are
-// additionally gated on the FIFO's own wr_rst_busy/rd_rst_busy so an enable
-// can never be active while the reset propagates through either clock domain:
-// a violating write is rejected and counted (rst_drop_cnt, diag_o) instead of
-// silently corrupting the FIFO state.
+// fifo_in reset. There is NO per-frame flush any more: with frame pipelining the
+// FIFO legitimately holds the next chirp's samples while the current frame is
+// still being fed, so a flush at fft_done would destroy them. Alignment is kept
+// by exact counting instead: the scope FSM writes exactly acq samples per window,
+// with the active acq counts masked to FSSR multiples, and the engine reads
+// exactly acq/FSSR words per half — no residue can accumulate. The FIFO is reset
+// only with the engine (rstn_i: conf change / scan flush, crossed back into the
+// adc domain; the engine restarts empty and in phase with the scan-index queue),
+// as a REGISTERED multi-cycle pulse synchronous to wr_clk per UG974. Both FIFO
+// sides are gated on their rst_busy so an enable can never be active while the
+// reset propagates; a write in that shadow is rejected and counted (rst_drop_cnt,
+// diag_o) instead of corrupting the FIFO state (the scope holds triggers for
+// RECONF_CYCLES after a conf change, which covers the shadow).
+logic eng_rst_adc, eng_rst_adc_d;
+xpm_cdc_single #(
+    .DEST_SYNC_FF (SYNC_FF)
+) eng_rst_sync (
+    .src_clk   (clk_i),
+    .src_in    (!rstn_i),
+    .dest_clk  (adc_clk_i),
+    .dest_out  (eng_rst_adc)
+);
 localparam FIN_RST_CYC = 2;
 logic [FIN_RST_CYC-1:0] fin_rst_sr;
-logic fft_done_o_d;
 always @(posedge adc_clk_i) begin
-    fft_done_o_d <= fft_done_o;
+    eng_rst_adc_d <= eng_rst_adc;
     if (!adc_rstn_i)
         fin_rst_sr <= '1;
     else
-        fin_rst_sr <= {fin_rst_sr[FIN_RST_CYC-2:0], fft_done_o && !fft_done_o_d};
+        fin_rst_sr <= {fin_rst_sr[FIN_RST_CYC-2:0], eng_rst_adc && !eng_rst_adc_d};
 end
 wire fin_rst = |fin_rst_sr;
 wire fin_wr_rst_busy, fin_rd_rst_busy;
@@ -833,14 +888,16 @@ xpm_fifo_async #(
 logic  [ HSZ-1:0] fft_hist_index_o;
 
 // Scan-index queue: one entry per in-flight FFT frame. The write side (adc clk)
-// pushes the scan cell on every acquisition trigger (fft_index_valid_i, which is
-// gated by `fft_trig && &fft_done` — a new frame can't be triggered until the
-// previous feed completes and the FFT->peak->DMA chain isn't stalled). The read
-// side (clk_i) pops one per peak-ready, exactly rate-matched in steady state. The
-// only depth requirement is to cover the frames in flight between a frame's
-// trigger and its peak readout = (FFT+peak pipeline latency) / (per-frame feed
-// period) — a handful of frames even for the smallest transform, and the queue is
-// flush-reset every 2D frame. Depth is therefore decoupled into IQSZ (default 32,
+// pushes the scan cell on every acquisition trigger accept (fft_index_valid_i,
+// gated in the scope by `&fft_ready` — at most one frame pending behind the one
+// being fed, see trig_pend). The read side (clk_i) pops one per peak-ready,
+// exactly rate-matched in steady state; frames complete strictly in trigger
+// order, so the scan cell latched at a chirp's accept always meets that chirp's
+// peaks whatever the feed latency. The only depth requirement is to cover the
+// frames in flight between a frame's trigger and its peak readout = (FFT+peak
+// pipeline latency + one pending frame) / (per-frame feed period) — a handful of
+// frames even for the smallest transform, and the queue is flush-reset on every
+// scan re-sync. Depth is therefore decoupled into IQSZ (default 32,
 // ~8x margin over the realistic in-flight count; was a hardcoded 128).
 xpm_fifo_async #(
     // .FIFO_MEMORY_TYPE("block"),
@@ -894,7 +951,11 @@ wire fft_postpad = padding_done && acq_done && !fin_dvalid_g;
 // Consequences: fifo_in must hold a whole half (QSZ = FSZ+1 in the scope, two
 // halves deep for the up-half feed overlapping the down-half acquisition), and
 // each half is fed N/FSSR clk_i cycles AFTER its window closes instead of
-// during it (fft_done, hence the next trigger, moves later by that much).
+// during it — so fft_done lands ~N/FSSR cycles after the down window, i.e.
+// typically AFTER the next chirp's trigger. That is why the scope no longer
+// gates triggers on fft_done: the next chirp is accepted and buffered while
+// this frame finishes (frame_start / trig_pend above). Throughput bound:
+// 2 x (N/FSSR + HALF_GAP + 4) clk_i cycles per chirp period.
 // Minimum idle gap between two xfft input frames. The core has no output
 // flow control in realtime mode, and its output frame spacing mirrors the input
 // spacing (pipelined streaming), so the sink must be ready on every output beat.
@@ -920,8 +981,8 @@ if (rstn_i == 1'b0) begin
     half_rdy_sr  <= 0;
     acq_armed    <= 0;
     half_gap_cnt <= HALF_GAP;
-end else if (fft_trig && fft_done && up_in) begin
-    // frame trigger: both halves re-qualify, done flags must be seen low first
+end else if (frame_start) begin
+    // frame start: both halves re-qualify, done flags must be seen low first
     half_open   <= 0;
     half_rdy_sr <= 0;
     acq_armed   <= 2'b00;
@@ -973,7 +1034,7 @@ end else begin
         overflow_cnt <= overflow_cnt + 1;
     end
 
-    if (fft_trig && fft_done && up_in) begin
+    if (frame_start) begin
         fft_we_cnt <= fft_length2;
         fft_we_one <= 0;
         fft_we_length_plus_one <= 0;

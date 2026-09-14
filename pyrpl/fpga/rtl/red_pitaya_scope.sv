@@ -588,6 +588,8 @@ logic [ FSZ-1: 0]   fft_state_cnt;
 // until that handshake+reset has settled before feeding the next frame.
 logic [ FSZ-1: 0]   fft_wait1_cnt_act, fft_wait2_cnt_act;
 logic [ FSZ-1: 0]   fft_acq1_cnt_act,  fft_acq2_cnt_act;
+wire  [ FSZ-1: 0]   fft_acq1_cnt_al = fft_acq1_cnt & ~FSZ'(FSSR-1);
+wire  [ FSZ-1: 0]   fft_acq2_cnt_al = fft_acq2_cnt & ~FSZ'(FSSR-1);
 logic [  8-1: 0]    fft_reconf_wait;
 localparam [7:0]    RECONF_CYCLES = 8'd64;  // > adc->clk_i handshake + RESET_DELAY + done resync
 // Per-half "acquisition window complete" -> fft_proc, so the feed engine can
@@ -633,6 +635,13 @@ logic [22:0]    fft_ramp_step, fft_a_ramp_step, fft_b_ramp_step;
 
 logic [ 6-1 :  0]   fft_status[0:1];
 logic [ 2-1 :  0]   fft_done;
+// Per-engine "can take another trigger" (fft_proc fft_ready_o): the feed engine
+// has no frame pending behind the one it is feeding. Trigger accept keys off
+// this, not fft_done: with the realtime xfft feed a frame's fft_done lands
+// ~N/FSSR cycles after its down window, i.e. after the next chirp trigger, so
+// gating on fft_done halved the point rate. Frames are pipelined instead:
+// the next chirp is acquired into the engine's input FIFO while it finishes.
+logic [ 2-1 :  0]   fft_ready;
 // (* mark_debug = "true" *)
 logic [ IDX-1: 0]   fft_peak_index_up_a;
 logic [ IDX-1: 0]   fft_peak_index_down_a;
@@ -775,12 +784,24 @@ end
 
 logic fft_up = fft_state == S_FFT_UP;
 logic fft_down = fft_state == S_FFT_DOWN;
+// Sample-write enables for the feed engines: EXACTLY acq samples per window.
+// The FSM sits in S_FFT_UP/DOWN for one extra cycle (the one where the count
+// reaches acq and it leaves), which used to write acq+1 samples; that residue
+// is what the per-frame input-FIFO flush cleaned up. With frame pipelining the
+// FIFO may not be flushed (it holds the next chirp), so the window count must
+// match the engine's acq/FSSR word reads exactly: the active acq counts are
+// masked to FSSR multiples at the frame boundary (S_IDLE) and the extra
+// cycle is excluded here.
+logic fft_up_wr   = fft_up   && (fft_state_cnt < fft_acq1_cnt_act);
+logic fft_down_wr = fft_down && (fft_state_cnt < fft_acq2_cnt_act);
 
 // Canonical per-frame trigger ACCEPT: exactly the FSM's S_IDLE -> S_WAIT1
 // condition below. Every per-frame consumer (fft_proc feed engines, scan-index
 // queue push, scan-step trigger) must key off THIS pulse, not the raw
-// fft_trig_i && &fft_done: the feed engine's own done is the clk_i-domain
-// SOURCE of the adc-domain fft_done here, so it rises 2-3 CDC cycles EARLIER.
+// fft_trig_i && &fft_ready: the feed engine's own readiness is the clk_i-domain
+// SOURCE of the adc-domain fft_ready here, so it changes 2-3 CDC cycles EARLIER.
+// (fft_ready replaced fft_done in this gate for frame pipelining — see the
+// fft_ready declaration; the hazard below is the same for either signal.)
 // A chirp landing in that lag window used to be rejected by the FSM (no
 // acquisition, no index push) while still STARTING both feed engines — which
 // then post-padded a whole frame of zeros (acq_done still set from the frame
@@ -788,7 +809,7 @@ logic fft_down = fft_state == S_FFT_DOWN;
 // peak_ready popping the index FIFO out of phase. Whether chirp edges precess
 // through the 2-3-cycle window depends on the exact fractional chirp period —
 // hence the extreme wait1/frequency sensitivity of the observed dips.
-logic fft_trig_accept = (fft_state == S_IDLE) && fft_trig_i && (&fft_done)
+logic fft_trig_accept = (fft_state == S_IDLE) && fft_trig_i && (&fft_ready)
                         && (fft_reconf_wait == 0);
 // export the acq windows for PID gating (EO-PLL locks only inside them)
 assign fft_window_o = {fft_down, fft_up};
@@ -830,7 +851,7 @@ logic [ENC_TW-1:0] az_turn_prev;   // previous point's turn (frame-pulse compare
 
 // FFT busy = the exact complement of fft_trig_accept's readiness, plus a
 // trigger delay in flight — a tick passing this gate is guaranteed accepted.
-wire enc_fft_busy = !((fft_state == S_IDLE) && (&fft_done) && (fft_reconf_wait == 0))
+wire enc_fft_busy = !((fft_state == S_IDLE) && (&fft_ready) && (fft_reconf_wait == 0))
                     || fft_trig_dly_do;
 
 red_pitaya_enc #(.TW(ENC_TW), .KW(ENC_KW)) i_enc (
@@ -1122,7 +1143,7 @@ fft_a (
    .clk_i (fft_input_clk),
 
    .data_in (adc_a_dat),
-   .enable_in (fft_up || (fft_down && !fft_parallel)),
+   .enable_in (fft_up_wr || (fft_down_wr && !fft_parallel)),
    .dvalid_in (fft_dvalid),
    .trig_in (fft_trig_accept),
 
@@ -1166,6 +1187,7 @@ fft_a (
 
    .status_o (fft_status[0]),
    .fft_done_o (fft_done[0]),
+   .fft_ready_o (fft_ready[0]),
    .fft_peak_ready_o (fft_peak_ready_a),
    .fft_peak_index_up_o (fft_peak_index_up_a[IDX-1:0]),
    .fft_peak_index_down_o (fft_peak_index_down_a[IDX-1:0]),
@@ -1193,6 +1215,7 @@ if (FFT_SINGLE) begin : gen_no_fft_b
    assign fft_status[1]          = '0;
    assign fft_diag[1]            = '0;
    assign fft_done[1]            = 1'b1;
+   assign fft_ready[1]           = 1'b1;
    assign fft_peak_ready_b       = 1'b1;
    assign fft_peak_index_up_b    = '0;
    assign fft_peak_index_down_b  = '0;
@@ -1227,7 +1250,7 @@ fft_proc #(.ASZ(ASZ),
    .clk_i (fft_input_clk),
 
    .data_in (fft_parallel ? adc_a_dat : adc_b_dat),
-   .enable_in ((!fft_parallel && fft_up) || fft_down),
+   .enable_in ((!fft_parallel && fft_up_wr) || fft_down_wr),
    .dvalid_in (fft_dvalid),
    .trig_in (fft_trig_accept),
 
@@ -1271,6 +1294,7 @@ fft_proc #(.ASZ(ASZ),
 
    .status_o (fft_status[1]),
    .fft_done_o (fft_done[1]),
+   .fft_ready_o (fft_ready[1]),
    .fft_peak_ready_o (fft_peak_ready_b),
    .fft_peak_index_up_o (fft_peak_index_up_b[IDX-1:0]),
    .fft_peak_index_down_o (fft_peak_index_down_b[IDX-1:0]),
@@ -1745,12 +1769,15 @@ end else begin
         // for the whole WAIT1..FFT_DOWN frame (not reassigned in the other states).
         fft_wait1_cnt_act <= fft_wait1_cnt;
         fft_wait2_cnt_act <= fft_wait2_cnt;
-        fft_acq1_cnt_act  <= fft_acq1_cnt;
-        fft_acq2_cnt_act  <= fft_acq2_cnt;
+        // acq counts masked to FSSR multiples (see fft_up_wr): the window then
+        // writes exactly the acq/FSSR words the engine reads per half.
+        fft_acq1_cnt_act  <= fft_acq1_cnt_al;
+        fft_acq2_cnt_act  <= fft_acq2_cnt_al;
         // An acq change re-arms the engine's conf handshake + reset; hold here
-        // until it settles (fft_done is forced high through that reset, so it
-        // cannot gate us). A wait-only change touches the FSM alone -> no hold.
-        if (fft_acq1_cnt != fft_acq1_cnt_act || fft_acq2_cnt != fft_acq2_cnt_act)
+        // until it settles (fft_ready/fft_done are forced high through that
+        // reset, so they cannot gate us). A wait-only change touches the FSM
+        // alone -> no hold.
+        if (fft_acq1_cnt_al != fft_acq1_cnt_act || fft_acq2_cnt_al != fft_acq2_cnt_act)
             fft_reconf_wait <= RECONF_CYCLES;
         else if (fft_reconf_wait != 0)
             fft_reconf_wait <= fft_reconf_wait - 1'b1;
@@ -1758,10 +1785,12 @@ end else begin
         if (fft_trig_accept) begin
             fft_state_cnt <= 0;
             fft_state <= S_WAIT1;
-            // new frame: clear both half-done flags so the engine doesn't post-pad
-            // until each half's acquisition window has actually ended below.
-            fft_acq_up_done   <= 0;
-            fft_acq_down_done <= 0;
+            // The half-done flags are NOT cleared here: the engine may still be
+            // feeding the previous frame's down half (frame pipelining) and
+            // relies on its done flag for the post-pad fallback. Each flag is
+            // cleared when ITS window of this frame starts (below); the engine's
+            // acq_armed logic ignores a flag that was already high at its frame
+            // start, so the stale previous-frame level cannot open an empty half.
         end else
             fft_active_o <= 0;
     end
@@ -1769,6 +1798,7 @@ end else begin
         if (fft_state_cnt >= fft_wait1_cnt_act) begin
             fft_state_cnt <= 0;
             fft_state <= S_FFT_UP;
+            fft_acq_up_done <= 0;   // this frame's up window opens
         end else if (fft_dvalid)
             fft_state_cnt <= fft_state_cnt + 1;
     S_FFT_UP:
@@ -1785,6 +1815,7 @@ end else begin
         if (fft_state_cnt >= fft_wait2_cnt_act) begin
             fft_state_cnt <= 0;
             fft_state <= S_FFT_DOWN;
+            fft_acq_down_done <= 0;   // this frame's down window opens
         end else if (fft_dvalid)
             fft_state_cnt <= fft_state_cnt + 1;
     S_FFT_DOWN:
