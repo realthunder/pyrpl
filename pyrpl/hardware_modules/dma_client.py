@@ -302,6 +302,14 @@ class DmaUdpClient:
         # az_dt_signed bitstreams: a circle spans the ticks passed while it
         # was drawn, so every row is populated).
         self._az_row_div = 1
+        # az_row_age: with a dense rows x L azimuth buffer, blank the rows a
+        # sweep has not written for this many 2D frames (0 = never). The
+        # buffer only ever overwrites, so a tick row the prism stopped
+        # reaching (origin shift, a narrower swing, start-up transient) kept
+        # its cells forever — visibly 'stuck' points. Rows written this frame
+        # are recorded per channel in _az_row_last (frame counter per row).
+        self._az_row_age = 2
+        self._az_row_last = [None, None]
         # az_dt_signed: the data word's 4-bit tick delta is two's complement
         # (-8..+7; descriptor 0x1A4[24]) instead of unsigned 0..15, so a
         # swinging prism's return sweep rides the same segment as forward
@@ -382,7 +390,8 @@ class DmaUdpClient:
     def configure(self, fsz=None, frac=None, hsz=None, hist_block_size=None,
                   dsz=None, intensity=None, msw=None, az_lcount=None,
                   az_base=None, az_modulus=None, az_row_div=None,
-                  az_dt_signed=None, refl_alpha=None, refl_bin0=None, refl_cal=None,
+                  az_dt_signed=None, az_row_age=None,
+                  refl_alpha=None, refl_bin0=None, refl_cal=None,
                   refl_avg=None, refl_avg_tol=None,
                   max_interval=None, max_parse_rate=None, seq_bits=None,
                   zigzag_stride=None, zigzag_shift=None):
@@ -433,6 +442,9 @@ class DmaUdpClient:
             self._msw = int(msw)
         if az_lcount is not None:
             self._az_l = int(az_lcount)
+            self._az_row_last = [None, None]     # rows re-keyed
+        if az_row_age is not None:
+            self._az_row_age = max(0, int(az_row_age))
         if az_base is not None:
             # may be negative (a sector starting just before the index)
             self._az_base = int(az_base)
@@ -1203,6 +1215,31 @@ class DmaUdpClient:
         else:
             self._seq_pend = seq          # unconfirmed; keep the old baseline
 
+    def _az_age_rows(self, ch, frame_cnt):
+        """Blank the dense-buffer rows not written for az_row_age frames
+        (caller holds the lock; called at a 2D-frame turnover, before the new
+        frame's first points). Copy-on-write like a normal write, so a held
+        snapshot is never mutated. Rows never written stay untouched (they
+        are zero already); the frame counter may wrap, so the age is taken
+        modulo 2**31."""
+        last = self._az_row_last[ch]
+        if last is None:
+            return
+        age = (frame_cnt - last) & 0x7fffffff
+        stale = np.nonzero((last >= 0) & (age > self._az_row_age))[0]
+        if stale.size == 0:
+            return
+        if id(self._live[ch]) in self._out[ch]:
+            m = self._max_pos[ch] + 1
+            fresh = self._take_buffer(ch)
+            fresh[:m] = self._live[ch][:m]
+            self._live[ch] = fresh
+        L = self._az_l
+        idx = (stale[:, None] * L + np.arange(L)[None, :]).ravel()
+        idx = idx[idx < self._max_frame_size]
+        self._live[ch][idx, :] = 0
+        last[stale] = -1
+
     def _publish(self, ch):
         """Snapshot the live buffer into the published frame (caller holds lock).
 
@@ -1698,6 +1735,8 @@ class DmaUdpClient:
             if (self._max_interval > 0 and self._frame_cnt[ch] != -1
                     and frame_cnt != self._frame_cnt[ch]):
                 self._publish(ch)
+            if frame_cnt != self._frame_cnt[ch] and self._az_l and self._az_row_age:
+                self._az_age_rows(ch, frame_cnt)
             self._frame_cnt[ch] = frame_cnt
             if p.size == 0:
                 return
@@ -1729,6 +1768,13 @@ class DmaUdpClient:
                 self._live[ch][p, 3] = refl_down
             self._live[ch][p, 0] = up
             self._live[ch][p, 1] = down
+            if self._az_l and self._az_row_age:
+                last = self._az_row_last[ch]
+                nrows = self._max_frame_size // self._az_l + 1
+                if last is None or last.size != nrows:
+                    last = np.full(nrows, -1, dtype=np.int64)
+                    self._az_row_last[ch] = last
+                last[np.unique(p // self._az_l)] = frame_cnt
             self._max_pos[ch] = max(self._max_pos[ch], int(p.max()))
             self._seen[ch] = True
             self._update_seq[ch] += 1
