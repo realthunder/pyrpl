@@ -1102,50 +1102,6 @@ def test_azimuth_live_ticks_signed_dt():
     return True
 
 
-
-def test_azimuth_planes_per_frame():
-    """az_planes (swing elevation stepping): 2D frame f writes plane f % M of a
-    stacked rows x L buffer, the first az_plane_guard_rows rows of travel of
-    every frame are dropped, az_frame_callback sees every frame turnover, and
-    row ageing waits M times longer (a plane is revisited every M frames)."""
-    fsz, frac, hsz, msw, hbs, T, L = 9, 8, 24, 10, 20, 1024, 4
-    idx = fsz + frac
-    rows, M, guard = 16, 3, 2
-    pts, i = [], 0
-    for f in range(4):                        # alternating sweep directions
-        ticks = range(rows) if f % 2 == 0 else range(rows - 1, -1, -1)
-        for t in ticks:
-            for m in range(L):
-                pts.append((t, m, f, [((100 + i, 200 + i), (0, 0))])); i += 1
-    pkts = emit_packets_az(pts, hsz=hsz, msw=msw, idx=idx,
-                           hist_block_size=hbs, nch=1, tagged=False,
-                           signed_dt=True)
-    c = DmaUdpClient(fsz=fsz, frac=frac, hsz=hsz, hist_block_size=hbs,
-                     max_frame_size=rows * L * M, max_interval=0.0)
-    c.configure(msw=msw, az_lcount=L, az_base=0, az_modulus=T, az_row_div=1,
-                az_dt_signed=True, az_planes=M, az_plane_guard_rows=guard)
-    seen = []
-    c.az_frame_callback = seen.append
-    for pkt in pkts:
-        c._process_packet(pkt)
-    expect = {}
-    for f in range(4):
-        first = 0 if f % 2 == 0 else rows - 1
-        for (t, m, ff, chv) in pts:
-            if ff == f and abs(t - first) >= guard:
-                expect[(f % M) * rows * L + t * L + m] = chv[0][0]
-    fr = c.get_frame(0)
-    peak_down, peak_up = fr[0], fr[1]
-    for pos, (up, dn) in expect.items():
-        assert peak_up[pos] == up, (pos, peak_up[pos], up)
-        assert peak_down[pos] == dn, (pos, peak_down[pos], dn)
-    nz = set(np.nonzero(peak_up)[0])
-    assert nz == set(expect), sorted(nz ^ set(expect))[:10]
-    assert seen == [0, 1, 2, 3], seen
-    assert c._bad_count == 0
-    return True
-
-
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:

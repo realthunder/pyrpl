@@ -310,18 +310,6 @@ class DmaUdpClient:
         # are recorded per channel in _az_row_last (frame counter per row).
         self._az_row_age = 2
         self._az_row_last = [None, None]
-        # az_planes: the dense azimuth buffer is stacked M times (swing
-        # elevation stepping, one band per sweep). 2D frame f writes plane
-        # f % M, its cells offset by max_frame_size // M. The first
-        # az_plane_guard_rows rows of travel of every frame are dropped: the
-        # host moves the elevation offset at the frame turnover, so the start
-        # of a sweep may still be drawn at the previous band.
-        # az_frame_callback(frame_cnt) runs on channel 0 at every turnover
-        # (from the parser thread, under the channel lock: keep it short).
-        self._az_planes = 1
-        self._az_plane_guard = 0
-        self._plane_start_row = [None, None]
-        self.az_frame_callback = None
         # az_dt_signed: the data word's 4-bit tick delta is two's complement
         # (-8..+7; descriptor 0x1A4[24]) instead of unsigned 0..15, so a
         # swinging prism's return sweep rides the same segment as forward
@@ -403,7 +391,6 @@ class DmaUdpClient:
                   dsz=None, intensity=None, msw=None, az_lcount=None,
                   az_base=None, az_modulus=None, az_row_div=None,
                   az_dt_signed=None, az_row_age=None,
-                  az_planes=None, az_plane_guard_rows=None,
                   refl_alpha=None, refl_bin0=None, refl_cal=None,
                   refl_avg=None, refl_avg_tol=None,
                   max_interval=None, max_parse_rate=None, seq_bits=None,
@@ -458,12 +445,6 @@ class DmaUdpClient:
             self._az_row_last = [None, None]     # rows re-keyed
         if az_row_age is not None:
             self._az_row_age = max(0, int(az_row_age))
-        if az_planes is not None:
-            self._az_planes = max(1, int(az_planes))
-            self._plane_start_row = [None, None]
-            self._az_row_last = [None, None]
-        if az_plane_guard_rows is not None:
-            self._az_plane_guard = max(0, int(az_plane_guard_rows))
         if az_base is not None:
             # may be negative (a sector starting just before the index)
             self._az_base = int(az_base)
@@ -1245,8 +1226,7 @@ class DmaUdpClient:
         if last is None:
             return
         age = (frame_cnt - last) & 0x7fffffff
-        # a band plane is only revisited every az_planes frames
-        stale = np.nonzero((last >= 0) & (age > self._az_row_age * self._az_planes))[0]
+        stale = np.nonzero((last >= 0) & (age > self._az_row_age))[0]
         if stale.size == 0:
             return
         if id(self._live[ch]) in self._out[ch]:
@@ -1755,17 +1735,8 @@ class DmaUdpClient:
             if (self._max_interval > 0 and self._frame_cnt[ch] != -1
                     and frame_cnt != self._frame_cnt[ch]):
                 self._publish(ch)
-            if frame_cnt != self._frame_cnt[ch]:
-                if self._az_l and self._az_row_age:
-                    self._az_age_rows(ch, frame_cnt)
-                if self._az_planes > 1:
-                    self._plane_start_row[ch] = None
-                    cb = self.az_frame_callback
-                    if ch == 0 and cb is not None:
-                        try:
-                            cb(frame_cnt)
-                        except Exception:
-                            logger.debug('az_frame_callback failed', exc_info=True)
+            if frame_cnt != self._frame_cnt[ch] and self._az_l and self._az_row_age:
+                self._az_age_rows(ch, frame_cnt)
             self._frame_cnt[ch] = frame_cnt
             if p.size == 0:
                 return
@@ -1779,23 +1750,6 @@ class DmaUdpClient:
                     refl_up, refl_down = refl_up[keep], refl_down[keep]
                 if p.size == 0:
                     return
-            if self._az_l and self._az_planes > 1:
-                # stacked bands: plane = frame % M; drop cells outside one
-                # plane and the guarded start of the sweep (see __init__)
-                psz = self._max_frame_size // self._az_planes
-                keep = p < psz
-                if self._az_plane_guard and keep.any():
-                    rows = p // self._az_l
-                    if self._plane_start_row[ch] is None:
-                        self._plane_start_row[ch] = int(rows[keep][0])
-                    keep &= np.abs(rows - self._plane_start_row[ch]) >= self._az_plane_guard
-                if not keep.all():
-                    p, up, down = p[keep], up[keep], down[keep]
-                    if refl_up is not None:
-                        refl_up, refl_down = refl_up[keep], refl_down[keep]
-                    if p.size == 0:
-                        return
-                p = p + (frame_cnt % self._az_planes) * psz
             # Copy-on-write: if a reader holds the live buffer, freeze it by
             # copying the populated extent into a recycled buffer before writing.
             if id(self._live[ch]) in self._out[ch]:
