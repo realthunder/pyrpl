@@ -41,6 +41,8 @@ logic [KW-1:0] krep     = '0;
 // asg3 busy model: a chirp holds dac_do for BUSY_CYC cycles after each pulse
 localparam BUSY_CYC = 20;
 logic busy_model = 1'b0;
+logic live_tag   = 1'b0;         // free-running-chirp tagging (enc_ctrl[25])
+int   base_tick;
 int   busy_cnt = 0;
 wire  asg_busy = busy_model && (busy_cnt != 0);
 wire  fft_busy = 1'b0;
@@ -72,6 +74,7 @@ red_pitaya_enc #(.TW(TW), .KW(KW)) dut (
    .rev_hyst_i        (rev_hyst),
    .az_mark_i         (az_mark),
    .k_repeat_i        (krep),
+   .live_tag_i        (live_tag),
    .trig_tick_o       (trig_tick),
    .turn_evt_o        (turn_evt),
    .az_tick_o         (az_tick),
@@ -296,6 +299,23 @@ initial begin
    chk("down pulse 4 (live)", az_seen[3], 1);
    chk("reversal frame raised", n_frame, 1);
    chk("counter is live", tick_in_turn, 1);
+
+   // ---- live azimuth tag: no pulse fires (masked by a permanently busy
+   // gate), yet az_tick follows the counter every cycle
+   $display("\n-- live tag (free-running chirps)");
+   reset_dut;
+   krep = 0; gate_asg = 1; busy_model = 1; live_tag = 1;
+   wait_n(4);
+   n_trig = 0;
+   base_tick = tick_in_turn;
+   qsteps(1, 7);
+   wait_n(4);
+   chk("live tag: az follows the counter", az_tick, tick_in_turn);
+   chk("live tag: counter advanced", tick_in_turn, base_tick + 7);
+   qsteps(0, 3);
+   wait_n(4);
+   chk("live tag: follows back down", az_tick, base_tick + 4);
+   live_tag = 0; busy_model = 0;
 
    $display("\n%s (%0d error%s)", errors == 0 ? "PASS" : "FAIL",
             errors, errors == 1 ? "" : "s");

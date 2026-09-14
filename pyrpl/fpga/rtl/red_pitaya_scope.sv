@@ -825,7 +825,8 @@ assign fft_window_o = {fft_down, fft_up};
 // delayed by fft_trig_dly while ticks keep arriving.
 localparam ENC_TW = 16;
 localparam ENC_KW = 12;
-logic [25-1:0]     enc_ctrl;       // 0x1A8: [0] enable [1] gate asg3 [2] gate fft
+logic [26-1:0]     enc_ctrl;       // 0x1A8: [0] enable [1] gate asg3 [2] gate fft
+                                   // [25] live azimuth tag (free-running chirps)
                                    // [3] frame src lo [7:4] divider N-1 lo
                                    // [11:8] glitch log2 [15:12] mems_turn_kick
                                    // [16] turn pin active LOW (index complement)
@@ -876,6 +877,7 @@ red_pitaya_enc #(.TW(ENC_TW), .KW(ENC_KW)) i_enc (
    .rev_hyst_i        (az_cfg[19:16]),
    .az_mark_i         (az_cfg[31:20]),
    .k_repeat_i        (enc_krepeat),
+   .live_tag_i        (enc_ctrl[25]),
    .trig_tick_o       (enc_trig_tick),
    .turn_evt_o        (enc_turn_evt),
    .az_tick_o         (az_tick_trig),
@@ -1686,7 +1688,7 @@ if (adc_rstn_i == 1'b0) begin
     // [16]=1 -> the index pin is ACTIVE LOW out of reset; [19]=1 -> an index
     // edge zeroes the azimuth. Quadrature off, frame source = index, so this
     // reproduces Design v2 exactly.
-    enc_ctrl    <= 25'h090000;
+    enc_ctrl    <= 26'h090000;
     az_cfg      <= 32'd1024;              // T = 1024 (AEDR-9830 x1); no hysteresis, mark 0
     enc_krepeat <= '0;                    // one chirp per fired tick
 end else if (sys_wen) begin
@@ -1705,7 +1707,7 @@ end else if (sys_wen) begin
         dma_int_en <= sys_wdata[0];
         dma_az_en  <= sys_wdata[1];
     end
-    if (sys_addr[19:0]==20'h1A8) enc_ctrl    <= sys_wdata[25-1:0];
+    if (sys_addr[19:0]==20'h1A8) enc_ctrl    <= sys_wdata[26-1:0];
     if (sys_addr[19:0]==20'h1AC) az_cfg      <= sys_wdata;
     if (sys_addr[19:0]==20'h1C4) enc_krepeat <= sys_wdata[ENC_KW-1:0];
     if (sys_addr[19:0]==20'h38) fft_peak_start <= sys_wdata[FSZ-1:0];
@@ -2582,7 +2584,7 @@ end else begin
      //        every chirp (live tick per circle point), not once per fired
      //        tick; 0 on older bitstreams (unsigned dt, per-circle latch)
      20'h001A4 : begin sys_ack <= sys_en;          sys_rdata <= {7'h0, 1'b1, 8'(HSZ-MSW), 8'd4, 8'(MSW)}  ; end
-     20'h001A8 : begin sys_ack <= sys_en;          sys_rdata <= { 7'h0, enc_ctrl}                   ; end
+     20'h001A8 : begin sys_ack <= sys_en;          sys_rdata <= { 6'h0, enc_ctrl}                   ; end
      20'h001AC : begin sys_ack <= sys_en;          sys_rdata <= az_cfg                              ; end
      20'h001B0 : begin sys_ack <= sys_en;          sys_rdata <= {enc_turn_cnt, enc_tick_in_turn}    ; end
      20'h001B4 : begin sys_ack <= sys_en;          sys_rdata <= {16'h0, enc_ticks_last_turn}        ; end

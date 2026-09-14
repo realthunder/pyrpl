@@ -761,6 +761,14 @@ class Scope(HardwareModule, AcquisitionModule):
     enc_quad_invert = BoolRegister(0x1A8, 24,
                                    doc="swap the decoded quadrature direction (wrong-way "
                                        "A/B wiring, or a mirrored gear train)")
+    enc_live_tag = BoolRegister(0x1A8, 25,
+                                doc="the azimuth latch FOLLOWS the live tick/turn counters "
+                                    "every cycle instead of being taken at emitted tick "
+                                    "pulses: for FREE-RUNNING chirps (asg3 'immediately', "
+                                    "scope triggered by asg3, no tick gating), each accepted "
+                                    "FFT frame is then tagged with the azimuth of its own "
+                                    "instant plus the asg1 MEMS step. Absent (reads 0) on "
+                                    "bitstreams before 2026-09-14 — probe by write/read-back")
     enc_index_zero = BoolRegister(0x1A8, 19,
                                   doc="an index edge zeroes the azimuth counter (and "
                                       "re-anchors the divider comb). DEFAULTS TO TRUE, and "

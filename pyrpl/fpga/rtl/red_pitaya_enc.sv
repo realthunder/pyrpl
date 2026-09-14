@@ -94,6 +94,11 @@ module red_pitaya_enc #(
    input   [ 4-1: 0] rev_hyst_i     ,  // ticks against the current direction before a reversal
    input   [12-1: 0] az_mark_i      ,  // azimuth that raises a frame in az_mark mode
    input   [KW-1: 0] k_repeat_i     ,  // EXTRA gated pulses per fired tick (k-1; 0 = v2)
+   input             live_tag_i     ,  // 1 = az_tick_o/az_turn_o FOLLOW the live counters
+                                       //     every cycle (free-running chirps: the scope
+                                       //     samples them at fft_trig_accept, so each
+                                       //     accepted frame carries the azimuth of its own
+                                       //     instant without any tick having fired a pulse)
    // trigger chain
    output logic          trig_tick_o    ,  // gated 1-cycle tick pulse (asg3 + scope trigger)
    output logic          turn_evt_o     ,  // 1-cycle frame pulse (mems_turn_kick)
@@ -402,7 +407,10 @@ end else begin
    // the azimuth of ITS OWN instant (the cell is {tick, mems}; the scope
    // samples the latch at fft_trig_accept, before the gate lets the next
    // pulse out).
-   if (fire_new || fire_rep) begin
+   // live_tag_i: the latch follows the counters continuously instead — for
+   // free-running chirps (asg3 'immediately', scope on asg3) where no pulse is
+   // ever emitted; the fft_trig_delay jitter (µs) is far below a tick interval.
+   if (live_tag_i || fire_new || fire_rep) begin
       az_tick_o   <= az_live;
       az_turn_o   <= frame_evt ? turn_cnt_o + 1'b1 : turn_cnt_o;
    end
