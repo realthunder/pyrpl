@@ -1137,6 +1137,48 @@ def test_azimuth_cell_ageing():
     return True
 
 
+def test_azimuth_window_remap():
+    """set_az_window (swing sector centre / span edit): the stored cells are
+    re-keyed by the tick shift instead of cleared, stamps move with them,
+    rows leaving the window are dropped, the shift wraps at the modulus, and
+    a shift that is not a whole number of rows falls back to a clear."""
+    L, T = 8, 1024
+    c = DmaUdpClient(fsz=9, frac=8, hsz=24, hist_block_size=20,
+                     max_frame_size=4 * L, max_interval=0.0)
+    c.configure(msw=10, az_lcount=L, az_modulus=T, az_row_age=0)
+    c.set_az_window(10, 4 * L)       # rows 0..3 = ticks 10..13
+
+    def w(frame, cells, val):
+        p = np.array(cells, dtype=np.int64)
+        v = np.full(p.size, val, dtype=np.int32)
+        c._write_channel(0, frame, p, v, v)
+
+    w(0, [0 * L + 1], 5)             # tick 10
+    w(1, [3 * L + 2], 6)             # tick 13
+    c.set_az_window(8, 6 * L)        # window grows to ticks 8..13: +2 rows
+    live, st = c._live[0], c.az_cell_stamps(0)
+    assert live.shape[0] == 6 * L
+    assert live[2 * L + 1, 0] == 5 and live[5 * L + 2, 0] == 6
+    assert st[2 * L + 1] == 0 and st[5 * L + 2] == 1 and st[1] == -1
+    assert c._max_pos[0] == 5 * L + 2
+    # a new write lands on the new keying: tick 13 = row 5
+    assert int(c._az_pos(np.array([13]), np.array([3]), 10)[0]) == 5 * L + 3
+    c.set_az_window(11, 2 * L)       # ticks 11..12 only: both cells drop out
+    assert not c._live[0].any() and c._max_pos[0] == -1
+    w(2, [0 * L + 4], 7)             # tick 11
+    c.set_az_window(T - 3, 16 * L)   # wraps: tick 11 is row 14
+    assert c._live[0][14 * L + 4, 0] == 7
+    c2 = DmaUdpClient(fsz=9, frac=8, hsz=24, hist_block_size=20,
+                      max_frame_size=4 * L, max_interval=0.0)
+    c2.configure(msw=10, az_lcount=L, az_modulus=T, az_row_div=2, az_row_age=0)
+    c2.set_az_window(10, 4 * L)
+    c2._write_channel(0, 0, np.array([1], dtype=np.int64),
+                      np.array([5], dtype=np.int32), np.array([5], dtype=np.int32))
+    c2.set_az_window(9, 4 * L)       # odd tick shift, divider 2: clear
+    assert not c2._live[0].any()
+    return True
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:

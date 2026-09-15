@@ -556,6 +556,57 @@ class DmaUdpClient:
                 if getattr(self, '_az_cell_frame', None) is not None:
                     self._az_cell_frame[ch] = None   # stamps of the old cells
 
+    def set_az_window(self, base, frame_size):
+        """Move / resize the swing sector window of the dense azimuth buffer
+        WITHOUT dropping its points: a sector centre or span edit only shifts
+        which ticks the rows cover, and the stored cells are position-tagged,
+        so each row is re-keyed by the tick shift (wrapped at az_modulus) into
+        a buffer of frame_size cells, cell stamps included; rows falling
+        outside the new window are dropped. configure(az_base=...) instead
+        clears everything, which blanked the whole 2D/3D view on every edit.
+        Falls back to a clear when the shift is not a whole number of rows or
+        no azimuth layout is active. The published frame is refreshed at once."""
+        base = int(base)
+        n = max(1, int(frame_size))
+        L, T, N = self._az_l, self._az_mod, self._az_row_div
+        delta = self._az_base - base          # old row r -> new row r + delta/N
+        if T:
+            delta = (delta + T // 2) % T - T // 2
+        if not L or delta % N or n % L:
+            self._az_base = base
+            self.set_max_frame_size(n, force=True)
+            return
+        shift = delta // N
+        if shift == 0 and n == self._max_frame_size:
+            return
+        with self._lock[0], self._lock[1]:
+            old_rows = self._max_frame_size // L
+            new_rows = n // L
+            lo, hi = max(0, -shift), min(old_rows, new_rows - shift)
+            self._az_base = base
+            self._max_frame_size = n
+            for ch in (0, 1):
+                old = self._live[ch]
+                live = np.zeros((n, self._ncols), dtype=np.int32)
+                st_old = self._az_cell_frame[ch]
+                st = None
+                if st_old is not None:
+                    st = np.full(n, -1, dtype=np.int64)
+                if hi > lo:
+                    live[(lo + shift) * L:(hi + shift) * L] = old[lo * L:hi * L]
+                    if st is not None:
+                        st[(lo + shift) * L:(hi + shift) * L] = st_old[lo * L:hi * L]
+                self._live[ch] = live
+                self._az_cell_frame[ch] = st
+                nz = np.flatnonzero(live.any(axis=1))
+                self._max_pos[ch] = int(nz[-1]) if nz.size else -1
+                self._pool[ch] = []
+                self._out[ch] = {}
+                self._avg_cnt[ch] = None
+                self._published[ch] = None
+                if self._max_interval > 0 and self._seen[ch]:
+                    self._publish(ch)
+
     def start(self):
         """Start the background receive thread."""
         if self._running:
