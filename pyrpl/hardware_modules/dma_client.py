@@ -422,9 +422,7 @@ class DmaUdpClient:
                 # Rebuild the live buffers with/without the reflectivity columns
                 # (no-op during __init__, where the buffers don't exist yet).
                 if hasattr(self, '_live'):
-                    n = self._max_frame_size
-                    self._max_frame_size = -1   # force the rebuild
-                    self.set_max_frame_size(n)
+                    self.set_max_frame_size(self._max_frame_size, force=True)
         if refl_alpha is not None:
             self._refl_alpha = float(refl_alpha)
         if refl_bin0 is not None:
@@ -462,9 +460,7 @@ class DmaUdpClient:
             # the cells are re-keyed: what the buffer holds now sits at the
             # wrong cells and would never be rewritten or aged there. A
             # re-apply of the SAME layout (any knob-only re-setup) keeps it.
-            n = self._max_frame_size
-            self._max_frame_size = -1   # force the rebuild (clears + stamps)
-            self.set_max_frame_size(n)
+            self.set_max_frame_size(self._max_frame_size, force=True)
         if hist_block_size is not None:
             self._hist_block_size = hist_block_size
         if max_interval is not None:
@@ -532,15 +528,18 @@ class DmaUdpClient:
         """Live-buffer columns: peak up/down (+ reflectivity up/down in intensity mode)."""
         return 4 if self._intensity else 2
 
-    def set_max_frame_size(self, n):
+    def set_max_frame_size(self, n, force=False):
         """Resize the per-channel point buffers to hold n scan cells. The lidar links
         this to the scan GRID (x_count*y_count): a cell index >= max_frame_size is
         dropped, so it MUST be >= the grid or the DMA frame is shorter than the
         consumer's point-cloud arrays (shape mismatch). Safe while running — both
         per-channel locks are held together so max_frame_size and the buffers stay
-        consistent; in-flight checked-out frames keep their old, still-valid buffers."""
+        consistent; in-flight checked-out frames keep their old, still-valid buffers.
+        force=True rebuilds (clears) at the same size. Never park the size at a
+        sentinel outside the locks instead: the parse thread reads it under its
+        channel lock only, and a -1 seen mid-write crashed it (np.full(-1))."""
         n = max(1, int(n))
-        if n == self._max_frame_size:
+        if n == self._max_frame_size and not force:
             return
         with self._lock[0], self._lock[1]:
             self._max_frame_size = n
