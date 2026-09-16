@@ -448,13 +448,39 @@ class PyrplWidget(QtWidgets.QMainWindow):
         except KeyError:
             coords = [0, 0, 800, 600]
         try:
-            self.window_position = coords
-            if QtWidgets.QApplication.desktop().screenNumber(self)==-1:
-                # window doesn't fit inside screen
-                self.window_position = (0,0)
+            self.window_position = self._fit_to_screen(coords)
         except Exception as e:
             self.logger.warning("Gui is not started. Cannot set window position.\n"\
                                 + str(e))
+
+    def _fit_to_screen(self, coords):
+        """Clamp a saved [x, y, dx, dy] onto a screen that actually exists.
+
+        A config carried over from another machine (or from a monitor that has
+        since been unplugged) holds a position outside every current screen --
+        e.g. [-1413, -1078, ...] from a PC whose second monitor sat up and to
+        the left of the primary. Qt keeps such a position in its global
+        coordinate frame even where the platform cannot honour it (Wayland
+        ignores client-side positioning, so the compositor shows the window
+        anyway), and then EVERYTHING derived from it is off-screen too:
+        mapToGlobal, and with it every popup menu position. The right-click
+        menu of a plot then opens and takes the mouse grab without ever being
+        drawn -- the GUI looks frozen. So refuse the off-screen rect.
+        """
+        x, y, dx, dy = (int(v) for v in coords)
+        screens = QtWidgets.QApplication.screens()
+        rect = QtCore.QRect(x, y, dx, dy)
+        if not screens or any(s.availableGeometry().intersects(rect)
+                              for s in screens):
+            return [x, y, dx, dy]
+        avail = QtWidgets.QApplication.primaryScreen().availableGeometry()
+        fitted = [avail.left(), avail.top(),
+                  min(dx, avail.width()), min(dy, avail.height())]
+        self.logger.warning("Saved window position %s lies outside every "
+                            "screen (stale config from another display "
+                            "layout?) - using %s instead.", [x, y, dx, dy],
+                            fitted)
+        return fitted
 
     @property
     def window_position(self):
