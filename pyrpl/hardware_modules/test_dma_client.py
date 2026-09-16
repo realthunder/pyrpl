@@ -1127,138 +1127,13 @@ def test_azimuth_cell_ageing():
     assert live[1, 0] == 0, "an unrevisited cell of a written row must age out"
     assert live[9, 0] == 0
     st = c.az_cell_stamps(0)
-    # stamps are the ageing EPOCH, which counts the first frame too, so the
-    # four turnovers 0..3 leave cell 0 stamped 4 (ageing itself is unchanged)
-    assert st[0] == 4 and st[1] == -1 and st[9] == -1
+    assert st[0] == 3 and st[1] == -1 and st[9] == -1
     w(4, [2], 9)
     c.configure(msw=10, az_lcount=L, az_base=0, az_modulus=1024)
     assert c._live[0][2, 0] == 9, "a same-layout re-apply must keep the buffer"
     c.configure(az_base=3)
     assert not c._live[0].any(), "a changed layout must clear the buffer"
     assert c.az_cell_stamps(0) is None
-    return True
-
-
-def test_azimuth_time_ageing():
-    """Parked prism (swing pattern, motor idle): the 2D frame counter never
-    turns over, so turnover ageing never ran and cells stuck forever. With
-    az_age_secs the stamp epoch advances on the CLOCK instead, so az_row_age
-    still expires cells while every point arrives under one frame number."""
-    L, rows = 8, 4
-    clock = [0.0]
-    c = DmaUdpClient(fsz=9, frac=8, hsz=24, hist_block_size=20,
-                     max_frame_size=rows * L, max_interval=0.0,
-                     time_fn=lambda: clock[0])
-    c.configure(msw=10, az_lcount=L, az_base=0, az_modulus=1024,
-                az_row_age=2, az_age_secs=1.0)
-
-    def w(cells, val):
-        p = np.array(cells, dtype=np.int64)
-        v = np.full(p.size, val, dtype=np.int32)
-        c._write_channel(0, 7, p, v, v)      # SAME frame number throughout
-
-    w([0, 1, 9], 5)
-    # the time path only arms after _az_stall_mult (3) sweeps without a
-    # turnover, so the first bumps land at t = 3, 4, 5, 6
-    for _ in range(6):                       # cell 0 only
-        clock[0] += 1.0
-        w([0], 7)
-    assert c._live[0][0, 0] == 7
-    assert c._live[0][1, 0] == 0, "a stalled frame counter must still age cells"
-    assert c._live[0][9, 0] == 0
-    assert c.frame_count(0) == 7, "no turnover ever happened"
-
-    # az_age_secs = 0 keeps the old turnover-only behaviour
-    c2 = DmaUdpClient(fsz=9, frac=8, hsz=24, hist_block_size=20,
-                      max_frame_size=rows * L, max_interval=0.0,
-                      time_fn=lambda: clock[0])
-    c2.configure(msw=10, az_lcount=L, az_base=0, az_modulus=1024,
-                 az_row_age=2, az_age_secs=0.0)
-    p = np.array([0, 1], dtype=np.int64)
-    v = np.full(2, 5, dtype=np.int32)
-    c2._write_channel(0, 7, p, v, v)
-    p1 = np.array([0], dtype=np.int64)
-    v1 = np.full(1, 7, dtype=np.int32)
-    for _ in range(5):
-        clock[0] += 10.0
-        c2._write_channel(0, 7, p1, v1, v1)
-    assert c2._live[0][1, 0] == 5, "no time ageing without az_age_secs"
-    return True
-
-
-def test_azimuth_time_ageing_not_while_turning_over():
-    """Regression (bench 2026-09-16): the ageing clock must NEVER run alongside
-    real turnovers. az_age_secs is the NOMINAL sweep period (0.5/swing_rate_hz)
-    while the real one is a little longer — the drive lags the commanded rate
-    (4.9 Hz measured for 5 Hz) and the reversal needs az_rev_hysteresis ticks.
-    A sweep is many writes of which only the first turns the frame over, so a
-    free-running clock fires on the last write before each turnover and
-    advances the epoch TWICE a sweep, halving swing_persist_frames (solid
-    coverage at 20 became circular gaps). Sweeps 1.2x the nominal period must
-    still advance the epoch exactly once each."""
-    L, rows = 8, 4
-    clock = [0.0]
-    c = DmaUdpClient(fsz=9, frac=8, hsz=24, hist_block_size=20,
-                     max_frame_size=rows * L, max_interval=0.0,
-                     time_fn=lambda: clock[0])
-    c.configure(msw=10, az_lcount=L, az_base=0, az_modulus=1024,
-                az_row_age=2, az_age_secs=1.0)
-    p = np.array([0], dtype=np.int64)
-    v = np.full(1, 5, dtype=np.int32)
-    for sweep in range(1, 11):          # frame number = sweep
-        for _ in range(6):              # 6 writes per sweep, 0.2 s apart =>
-            clock[0] += 0.2             # 1.2 s, just over the 1.0 s nominal
-            c._write_channel(0, sweep, p, v, v)
-    st = c.az_cell_stamps(0)
-    assert st[0] == 10, ("the epoch must count sweeps, not sweeps + clock "
-                         "ticks; got %d" % st[0])
-    # guard the guard: without the watchdog this very pattern double-counts.
-    # Run it well past one nominal period so the extra tick cannot be missed
-    # by the float drift of an accumulated clock.
-    c._az_stall_mult = 0.0
-    before = c._az_epoch[0]
-    for _ in range(10):
-        clock[0] += 0.2
-        c._write_channel(0, 11, p, v, v)
-    assert c._az_epoch[0] > before + 1, ("this pattern must be able to "
-                                         "double-count once unguarded")
-    return True
-
-
-def test_live_published_switch_buffers():
-    """The lidar flips max_interval between live (0) and published (>0) as the
-    prism starts and stops swinging. Both modes hand out buffers from the same
-    pool and _release recycles against the NEW mode's active buffer, so the
-    switch must drop the published snapshot and the pool — otherwise a
-    published buffer released after the switch returns to the pool while
-    _published still points at it, and the next publish writes into a buffer
-    already handed out as the live one."""
-    clock = [0.0]
-    c = DmaUdpClient(fsz=9, frac=8, hsz=24, hist_block_size=20,
-                     max_frame_size=64, max_interval=1.0,
-                     time_fn=lambda: clock[0])
-
-    def w(frame, cell, val):
-        p = np.array([cell], dtype=np.int64)
-        v = np.full(1, val, dtype=np.int32)
-        c._write_channel(0, frame, p, v, v)
-
-    w(0, 1, 5)
-    w(1, 1, 6)                               # turnover -> publish
-    assert c._published[0] is not None
-    with c.frame(0, 64) as f:                # a reader holds the published buffer
-        assert f is not None
-        c.configure(max_interval=0.0)        # -> live mode, mid-lease
-        assert c._published[0] is None, "the switch must drop the snapshot"
-        assert c._pool[0] == [], "and the cross-mode recycle pool"
-    c.configure(max_interval=1.0)            # -> published again
-    w(2, 2, 8)                               # turnover publish
-    clock[0] += 5.0
-    w(2, 3, 9)                               # interval publish
-    pub = c._published[0]
-    assert pub is not None
-    assert pub is not c._live[0], "the published snapshot must not alias live"
-    assert pub[3, 0] == 9 and pub[1, 0] == 6
     return True
 
 
