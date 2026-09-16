@@ -323,6 +323,18 @@ class DmaUdpClient:
         self._az_age_secs = 0.0
         self._az_epoch = [0, 0]
         self._az_epoch_time = [None, None]
+        # Time ageing is a STALL WATCHDOG, never a second clock. az_age_secs is
+        # the NOMINAL sweep period and the real sweep runs a little longer (the
+        # drive lags the commanded rate, and the reversal needs its hysteresis
+        # ticks), so a clock left running while frames still turn over fires on
+        # the last write before each turnover and advances the epoch up to
+        # twice a sweep — silently shortening az_row_age (bench 2026-09-16:
+        # solid coverage at 20 frames became circular gaps; measured 26 epochs
+        # over 20 sweeps at 1.2x nominal, i.e. 20 behaving like 15). The time
+        # path is therefore armed only after no turnover for _az_stall_mult
+        # sweeps, and the host additionally sends 0 while the prism swings.
+        self._az_turn_time = [None, None]   # last REAL turnover
+        self._az_stall_mult = 3.0
         # az_dt_signed: the data word's 4-bit tick delta is two's complement
         # (-8..+7; descriptor 0x1A4[24]) instead of unsigned 0..15, so a
         # swinging prism's return sweep rides the same segment as forward
@@ -588,6 +600,7 @@ class DmaUdpClient:
                     self._az_cell_frame[ch] = None   # stamps of the old cells
                     self._az_epoch[ch] = 0           # and the epoch they counted
                     self._az_epoch_time[ch] = None
+                    self._az_turn_time[ch] = None
 
     def start(self):
         """Start the background receive thread."""
@@ -1796,18 +1809,23 @@ class DmaUdpClient:
                 self._publish(ch)
             if self._az_l and self._az_row_age:
                 # Age on the EPOCH (see _az_age_secs in __init__): a real frame
-                # turnover, or — while the frame counter is stalled, as it is
-                # for a parked prism — one tick per az_age_secs, so cells still
-                # expire instead of sticking forever.
+                # turnover, or — only once the frame counter has been STALLED
+                # for _az_stall_mult sweeps, as it is for a parked prism — one
+                # tick per az_age_secs, so cells still expire instead of
+                # sticking forever. A turnover always rearms the watchdog, so
+                # a swinging prism ages exactly per sweep, as it always did.
                 if turnover:
+                    self._az_turn_time[ch] = self._time()
                     self._az_bump_epoch(ch)
                 elif self._az_age_secs > 0:
                     now = self._time()
-                    last = self._az_epoch_time[ch]
-                    if last is None:
-                        self._az_epoch_time[ch] = now
-                    elif now - last >= self._az_age_secs:
-                        self._az_bump_epoch(ch)
+                    last_turn = self._az_turn_time[ch]
+                    if last_turn is None:
+                        self._az_turn_time[ch] = now
+                    elif now - last_turn >= self._az_stall_mult * self._az_age_secs:
+                        last = self._az_epoch_time[ch]
+                        if last is None or now - last >= self._az_age_secs:
+                            self._az_bump_epoch(ch)
             self._frame_cnt[ch] = frame_cnt
             if p.size == 0:
                 return
