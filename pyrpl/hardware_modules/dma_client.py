@@ -312,6 +312,17 @@ class DmaUdpClient:
         # view reads it too (az_cell_stamps).
         self._az_row_age = 2
         self._az_cell_frame = [None, None]
+        # az_age_secs: the ageing clock for when the 2D frame counter is
+        # STALLED. A swing pattern with the prism parked never reverses, so no
+        # frame ever turns over and az_row_age would expire nothing — the
+        # buffer keeps every stale point forever. The cell stamps are therefore
+        # an EPOCH rather than the raw frame counter: it advances on a real
+        # turnover and, while that is stalled, once per az_age_secs (the host
+        # passes the sweep period), so az_row_age keeps its "in sweeps" meaning
+        # whether or not the prism moves. 0 = turnover only (old behaviour).
+        self._az_age_secs = 0.0
+        self._az_epoch = [0, 0]
+        self._az_epoch_time = [None, None]
         # az_dt_signed: the data word's 4-bit tick delta is two's complement
         # (-8..+7; descriptor 0x1A4[24]) instead of unsigned 0..15, so a
         # swinging prism's return sweep rides the same segment as forward
@@ -392,7 +403,7 @@ class DmaUdpClient:
     def configure(self, fsz=None, frac=None, hsz=None, hist_block_size=None,
                   dsz=None, intensity=None, msw=None, az_lcount=None,
                   az_base=None, az_modulus=None, az_row_div=None,
-                  az_dt_signed=None, az_row_age=None,
+                  az_dt_signed=None, az_row_age=None, az_age_secs=None,
                   refl_alpha=None, refl_bin0=None, refl_cal=None,
                   refl_avg=None, refl_avg_tol=None,
                   max_interval=None, max_parse_rate=None, seq_bits=None,
@@ -446,6 +457,8 @@ class DmaUdpClient:
             self._az_l = int(az_lcount)
         if az_row_age is not None:
             self._az_row_age = max(0, int(az_row_age))
+        if az_age_secs is not None:
+            self._az_age_secs = max(0.0, float(az_age_secs))
         if az_base is not None:
             # may be negative (a sector starting just before the index)
             self._az_base = int(az_base)
@@ -468,7 +481,25 @@ class DmaUdpClient:
             # rate-multiplier values are converted by the lidar layer before
             # they get here; clamp any stray negative to live mode instead of
             # letting `now - last >= interval` publish on every segment.
-            self._max_interval = max(0.0, float(max_interval))
+            new_iv = max(0.0, float(max_interval))
+            if ((new_iv == 0) != (self._max_interval == 0)
+                    and getattr(self, '_published', None) is not None):
+                # live <-> published switch. Both modes hand out buffers from
+                # the same pool and _release recycles against the NEW mode's
+                # active buffer, so a published buffer released after the
+                # switch returns to the pool while _published still points at
+                # it — the next _publish would then write into a buffer already
+                # handed out as the live one. Drop the stale references; the
+                # next publish rebuilds the snapshot. The lidar flips these
+                # modes whenever the prism starts/stops swinging, so this is a
+                # routine transition, not a one-off at startup.
+                for c in (0, 1):
+                    with self._lock[c]:
+                        self._published[c] = None
+                        self._published_frame_cnt[c] = -1
+                        self._last_publish_time[c] = None
+                        self._pool[c] = []
+            self._max_interval = new_iv
         if max_parse_rate is not None:
             self._max_parse_rate = max_parse_rate
         if zigzag_stride is not None:
@@ -555,6 +586,8 @@ class DmaUdpClient:
                 self._avg_cnt[ch] = None   # sized to the buffer; re-alloc lazily
                 if getattr(self, '_az_cell_frame', None) is not None:
                     self._az_cell_frame[ch] = None   # stamps of the old cells
+                    self._az_epoch[ch] = 0           # and the epoch they counted
+                    self._az_epoch_time[ch] = None
 
     def start(self):
         """Start the background receive thread."""
@@ -1227,16 +1260,24 @@ class DmaUdpClient:
         else:
             self._seq_pend = seq          # unconfirmed; keep the old baseline
 
-    def _az_age_cells(self, ch, frame_cnt):
-        """Blank the dense-buffer cells not rewritten for az_row_age frames
-        (caller holds the lock; called at a 2D-frame turnover, before the new
-        frame's first points). Copy-on-write like a normal write, so a held
-        snapshot is never mutated. Empty cells stay untouched; the frame
-        counter may wrap, so the age is taken modulo 2**31."""
+    def _az_bump_epoch(self, ch):
+        """Advance the ageing epoch and blank whatever went stale with it
+        (caller holds the lock)."""
+        self._az_epoch[ch] += 1
+        self._az_epoch_time[ch] = self._time()
+        self._az_age_cells(ch)
+
+    def _az_age_cells(self, ch):
+        """Blank the dense-buffer cells not rewritten for az_row_age EPOCHS
+        (caller holds the lock; called from _az_bump_epoch, before the new
+        frame's first points). An epoch is a 2D-frame turnover or, while the
+        frame counter is stalled, an az_age_secs tick. Copy-on-write like a
+        normal write, so a held snapshot is never mutated. Empty cells stay
+        untouched. The epoch only ever counts up, so no wrap handling."""
         st = self._az_cell_frame[ch]
         if st is None:
             return
-        age = (frame_cnt - st) & 0x7fffffff
+        age = self._az_epoch[ch] - st
         stale = np.nonzero((st >= 0) & (age > self._az_row_age))[0]
         if stale.size == 0:
             return
@@ -1250,8 +1291,11 @@ class DmaUdpClient:
         st[stale] = -1
 
     def az_cell_stamps(self, ch):
-        """Frame counter of the last write of every dense azimuth cell (-1 =
+        """Ageing EPOCH of the last write of every dense azimuth cell (-1 =
         empty), or None outside the azimuth mode / before the first write.
+        Counts 2D-frame turnovers, plus az_age_secs ticks while the frame
+        counter is stalled; monotonic, so consumers that only RANK cells
+        against each other (the 2D view's "newest sweep wins") are unaffected.
         The live array: read it, do not modify it."""
         return self._az_cell_frame[ch] if self._az_l else None
 
@@ -1747,11 +1791,23 @@ class DmaUdpClient:
         with self._lock[ch]:
             # On a 2D-frame turnover, publish the just-completed frame BEFORE
             # writing the new frame's points, so the snapshot stays coherent.
-            if (self._max_interval > 0 and self._frame_cnt[ch] != -1
-                    and frame_cnt != self._frame_cnt[ch]):
+            turnover = frame_cnt != self._frame_cnt[ch]
+            if self._max_interval > 0 and self._frame_cnt[ch] != -1 and turnover:
                 self._publish(ch)
-            if frame_cnt != self._frame_cnt[ch] and self._az_l and self._az_row_age:
-                self._az_age_cells(ch, frame_cnt)
+            if self._az_l and self._az_row_age:
+                # Age on the EPOCH (see _az_age_secs in __init__): a real frame
+                # turnover, or — while the frame counter is stalled, as it is
+                # for a parked prism — one tick per az_age_secs, so cells still
+                # expire instead of sticking forever.
+                if turnover:
+                    self._az_bump_epoch(ch)
+                elif self._az_age_secs > 0:
+                    now = self._time()
+                    last = self._az_epoch_time[ch]
+                    if last is None:
+                        self._az_epoch_time[ch] = now
+                    elif now - last >= self._az_age_secs:
+                        self._az_bump_epoch(ch)
             self._frame_cnt[ch] = frame_cnt
             if p.size == 0:
                 return
@@ -1788,7 +1844,7 @@ class DmaUdpClient:
                 if st is None or st.size != self._max_frame_size:
                     st = np.full(self._max_frame_size, -1, dtype=np.int64)
                     self._az_cell_frame[ch] = st
-                st[p] = frame_cnt
+                st[p] = self._az_epoch[ch]
             self._max_pos[ch] = max(self._max_pos[ch], int(p.max()))
             self._seen[ch] = True
             self._update_seq[ch] += 1
