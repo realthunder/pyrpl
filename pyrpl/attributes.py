@@ -1161,14 +1161,21 @@ class SelectProperty(BaseProperty):
     Options can be specified at attribute creation, but it can also be updated
     later on a per-module basis using change_options(new_options). If
     options are callable, they are evaluated every time they are needed.
+
+    option_docs is an optional {option: text} dict shown as the tooltip of
+    each entry in the combobox.
     """
     _widget_class = SelectAttributeWidget
     default = None
+    option_docs = {}
 
     def __init__(self,
                  options=[],
+                 option_docs=None,
                  **kwargs):
         self.default_options = options
+        if option_docs is not None:
+            self.option_docs = option_docs
         BaseProperty.__init__(self, **kwargs)
 
     @property

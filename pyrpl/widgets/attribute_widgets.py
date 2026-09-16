@@ -755,7 +755,14 @@ class SelectAttributeWidget(BaseAttributeWidget):
     def _make_widget(self):
         self.widget = QtWidgets.QComboBox()
         self.widget.addItems(self.options)
+        self._set_option_tooltips()
         self.widget.currentIndexChanged.connect(self.write_widget_value_to_attribute)
+
+    def _set_option_tooltips(self):
+        docs = getattr(self.attribute_descriptor, 'option_docs', None) or {}
+        for i, opt in enumerate(self.options):
+            if opt in docs:
+                self.widget.setItemData(i, docs[opt], QtCore.Qt.ToolTipRole)
 
     @property
     def options(self):
@@ -804,6 +811,7 @@ class SelectAttributeWidget(BaseAttributeWidget):
         #self.widget.addItems(new_options)
         # do not trust the new options, rather call options again
         self.widget.addItems(self.options)
+        self._set_option_tooltips()
         self.widget_value = self.attribute_value
         self.widget.blockSignals(False)
 
