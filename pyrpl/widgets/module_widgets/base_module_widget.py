@@ -237,7 +237,7 @@ class ReducedModuleWidget(AttributeGroupMixin, QtWidgets.QGroupBox):
                 attribute_value = getattr(self.module, attr_name)  # needed for
                 # passing the instance to the descriptor
                 attribute = getattr(self.module.__class__, attr_name)
-                group = self._attribute_group_of(attribute)
+                group = self._attribute_group_of(attribute, attr_name)
                 if callable(attribute):
                     # assume that attribute is a function
                     widget = QtWidgets.QPushButton(attr_name)
@@ -251,6 +251,7 @@ class ReducedModuleWidget(AttributeGroupMixin, QtWidgets.QGroupBox):
             self.attribute_widgets[attr_name] = widget
             # grouped attributes go into their collapsible box instead
             self._add_attribute_widget(widget, group=group)
+        self._place_attribute_groups()   # the boxes, after the loose widgets
         self.attribute_layout.addStretch(1)
 
     def update_attribute_by_name(self, name, new_value_list):

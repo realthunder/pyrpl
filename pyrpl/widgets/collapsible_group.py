@@ -13,13 +13,20 @@ gone. Clicking the box header folds the whole set of knobs away; the
 collapsed/expanded state of every box is saved in the module's config branch
 and restored at the next start.
 
+The boxes are placed after the ungrouped widgets, in the order given by the
+module's optional ``_gui_groups`` list (names it does not mention keep
+first-use order). Groups start COLLAPSED on a config that has never seen
+them, so a fresh pane opens showing its ungrouped knobs only; list a group in
+the widget's ``_default_expanded_groups`` (or clear
+``_groups_collapsed_by_default``) to open it instead.
+
 Module widgets get this for free through :class:`AttributeGroupMixin`, which
 :class:`~pyrpl.widgets.module_widgets.base_module_widget.ReducedModuleWidget`
 already mixes in. A widget that builds its own attribute panel (rather than
-using ``init_attribute_layout``) only has to call ``_add_attribute_widget``
-instead of ``self.attribute_layout.addWidget``, and may override
-``_group_content_layout`` / ``_add_group_box`` to control what the box
-contains and where it is placed.
+using ``init_attribute_layout``) has to call ``_add_attribute_widget``
+instead of ``self.attribute_layout.addWidget`` and ``_place_attribute_groups``
+once the loop is done, and may override ``_group_content_layout`` /
+``_add_group_box`` to control what a box contains and where it is placed.
 """
 import logging
 from collections import OrderedDict
@@ -110,6 +117,12 @@ class CollapsibleGroupBox(QtWidgets.QFrame):
         if self._notify:
             self.collapse_changed.emit(not checked)
 
+    def flow_full_row(self):
+        """Hook for a flow layout that gives grouped boxes a row of their
+        own: only an EXPANDED box needs the full width. Collapsed we are just
+        a header, and pack alongside the other items like any chip."""
+        return not self.collapsed
+
     def _refresh_header(self):
         """Arrow + title; a collapsed box also shows how many knobs it hides,
         so a folded group does not look like an empty label."""
@@ -132,23 +145,34 @@ class AttributeGroupMixin(object):
     """
     # config key holding {group name: collapsed} in the module's branch
     _COLLAPSED_GROUPS_KEY = 'gui_collapsed_groups'
-    # groups that start collapsed the first time they are seen
-    _default_collapsed_groups = ()
+    # a group the config has never seen starts folded, so a fresh pane opens
+    # showing only its ungrouped knobs
+    _groups_collapsed_by_default = True
+    _default_expanded_groups = ()           # exceptions to that
 
     def _init_attribute_groups(self):
         self.attribute_groups = OrderedDict()   # group name -> group box
+        self._placed_groups = set()             # boxes already in the layout
 
-    @staticmethod
-    def _attribute_group_of(attribute):
+    def _attribute_group_of(self, attribute, name=None):
         """The group an attribute (descriptor or callable) belongs to, '' for
-        the ungrouped ones."""
+        the ungrouped ones.
+
+        The module's optional `_gui_attribute_groups` {name: group} map wins
+        over the attribute's own `group=`: it is the way to group a setting
+        INHERITED from a base module, whose descriptor is shared with every
+        other module of that base and must not be tagged in place."""
+        override = getattr(self.module, '_gui_attribute_groups', None) or {}
+        if name is not None and name in override:
+            return str(override[name] or '').strip()
         return str(getattr(attribute, 'group', '') or '').strip()
 
-    def _add_attribute_widget(self, widget, attribute=None, group=None):
+    def _add_attribute_widget(self, widget, attribute=None, group=None,
+                              name=None):
         """Add an attribute widget to the attribute layout, or to the
         collapsible box of its group when it declares one."""
         if group is None:
-            group = self._attribute_group_of(attribute)
+            group = self._attribute_group_of(attribute, name)
         if not group:
             self.attribute_layout.addWidget(widget)
         else:
@@ -166,8 +190,25 @@ class AttributeGroupMixin(object):
                 collapsed=self._group_starts_collapsed(group))
             box.collapse_changed.connect(self._attribute_group_toggled)
             self.attribute_groups[group] = box
-            self._add_group_box(box)
         return box
+
+    def _group_order(self):
+        """The order the boxes are placed in: the module's optional
+        `_gui_groups` list first, then any group it does not mention, in
+        first-use order."""
+        wanted = [g for g in (getattr(self.module, '_gui_groups', None) or ())
+                  if g in self.attribute_groups]
+        return wanted + [g for g in self.attribute_groups if g not in wanted]
+
+    def _place_attribute_groups(self):
+        """Put the boxes in the attribute layout, after the ungrouped
+        widgets and in group order. Call this once the attribute widgets have
+        been created - a box is built lazily but placed only from here, so
+        the module's `_gui_groups` order wins over first use."""
+        for name in self._group_order():
+            if name not in self._placed_groups:
+                self._placed_groups.add(name)
+                self._add_group_box(self.attribute_groups[name])
 
     # ---- overridable hooks --------------------------------------------------
     def _group_content_layout(self):
@@ -188,8 +229,10 @@ class AttributeGroupMixin(object):
     def _group_starts_collapsed(self, group):
         saved = self._saved_collapsed_groups()
         if group in saved:
-            return bool(saved[group])
-        return group in self._default_collapsed_groups
+            return bool(saved[group])          # what the user left it at
+        if group in self._default_expanded_groups:
+            return False
+        return bool(self._groups_collapsed_by_default)
 
     def _saved_collapsed_groups(self):
         """{group: collapsed} as last saved in the module's config branch."""
