@@ -229,7 +229,7 @@ class ReducedModuleWidget(AttributeGroupMixin, QtWidgets.QGroupBox):
             self.attribute_layout = QtWidgets.QHBoxLayout()
             self.main_layout.addLayout(self.attribute_layout)
         for attr_name in self.module._gui_attributes:
-            group = ''
+            group, attribute = '', None
             if attr_name == '\n':
                 self.attribute_layout = QtWidgets.QHBoxLayout()
                 self.attributes_layout.addLayout(self.attribute_layout)
@@ -250,7 +250,8 @@ class ReducedModuleWidget(AttributeGroupMixin, QtWidgets.QGroupBox):
                     widget.value_changed.connect(self.attribute_changed)
             self.attribute_widgets[attr_name] = widget
             # grouped attributes go into their collapsible box instead
-            self._add_attribute_widget(widget, group=group)
+            self._add_attribute_widget(widget, attribute=attribute,
+                                       group=group, name=attr_name)
         self._place_attribute_groups()   # the boxes, after the loose widgets
         self.attribute_layout.addStretch(1)
 

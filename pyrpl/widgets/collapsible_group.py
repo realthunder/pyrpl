@@ -63,7 +63,7 @@ class CollapsibleGroupBox(QtWidgets.QFrame):
         self.header.setAutoRaise(True)
         self.header.setFocusPolicy(QtCore.Qt.NoFocus)
         self.header.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
-        self.header.setToolTip('Click to collapse / expand "%s"' % self._title)
+        self._settings = []                     # (name, one-line brief)
         self.header.setSizePolicy(QtWidgets.QSizePolicy.Maximum,
                                   QtWidgets.QSizePolicy.Fixed)
         font = self.header.font()
@@ -92,6 +92,31 @@ class CollapsibleGroupBox(QtWidgets.QFrame):
 
         self.header.toggled.connect(self._on_header_toggled)
         self.set_collapsed(collapsed, notify=False)
+
+    # ---- contents ----------------------------------------------------------
+    def add_setting(self, name, brief=''):
+        """Record a setting that went into this box, so the header can name
+        its contents (they are invisible while it is folded)."""
+        self._settings.append((str(name), str(brief or '')))
+        self._refresh_header()
+
+    def _tooltip(self):
+        n = len(self._settings) or self.content_layout.count()
+        lines = ['%s - %d setting%s, click to %s:'
+                 % (self._title, n, '' if n == 1 else 's',
+                    'unfold' if self.collapsed else 'fold')]
+        for name, brief in self._settings:
+            if brief:
+                room = max(40, self._TIP_WIDTH - len(name) - 3)
+                if len(brief) > room:
+                    cut = brief[:room].rsplit(' ', 1)[0]
+                    brief = (cut if len(cut) > room // 2 else brief[:room]) + '...'
+                lines.append('    %s - %s' % (name, brief))
+            else:
+                lines.append('    %s' % name)
+        return '\n'.join(lines)
+
+    _TIP_WIDTH = 96          # characters, before a brief is cut short
 
     # ---- collapsed state ---------------------------------------------------
     @property
@@ -125,15 +150,17 @@ class CollapsibleGroupBox(QtWidgets.QFrame):
 
     def _refresh_header(self):
         """Arrow + title; a collapsed box also shows how many knobs it hides,
-        so a folded group does not look like an empty label."""
+        so a folded group does not look like an empty label. The tooltip
+        lists them by name whichever way the box stands."""
         if self.collapsed:
             self.header.setArrowType(QtCore.Qt.RightArrow)
-            n = self.content_layout.count()
+            n = len(self._settings) or self.content_layout.count()
             self.header.setText('%s  (%d)' % (self._title, n) if n
                                 else self._title)
         else:
             self.header.setArrowType(QtCore.Qt.DownArrow)
             self.header.setText(self._title)
+        self.header.setToolTip(self._tooltip())
 
 
 class AttributeGroupMixin(object):
@@ -167,6 +194,20 @@ class AttributeGroupMixin(object):
             return str(override[name] or '').strip()
         return str(getattr(attribute, 'group', '') or '').strip()
 
+    @staticmethod
+    def _attribute_brief(attribute, name=None):
+        """One line describing an attribute, for the group box tooltip: the
+        first line of its doc, whitespace collapsed. `doc` first (a
+        SelectProperty's __doc__ appends its option list), then __doc__ (which
+        is where BaseProperty keeps it, and a callable its docstring)."""
+        doc = getattr(attribute, 'doc', None)
+        if not isinstance(doc, str) or not doc:
+            doc = getattr(attribute, '__doc__', '') or ''
+        if not isinstance(doc, str):
+            return ''
+        first = doc.replace('\r\n', '\n').replace('\r', '\n').split('\n')[0]
+        return ' '.join(first.split())
+
     def _add_attribute_widget(self, widget, attribute=None, group=None,
                               name=None):
         """Add an attribute widget to the attribute layout, or to the
@@ -175,8 +216,13 @@ class AttributeGroupMixin(object):
             group = self._attribute_group_of(attribute, name)
         if not group:
             self.attribute_layout.addWidget(widget)
-        else:
-            self._attribute_group_box(group).content_layout.addWidget(widget)
+            return
+        box = self._attribute_group_box(group)
+        box.content_layout.addWidget(widget)
+        if name:
+            # the header names what it hides (the knobs are invisible while
+            # the box is folded)
+            box.add_setting(name, self._attribute_brief(attribute, name))
 
     def _attribute_group_box(self, group):
         """The box holding `group`, created (and placed) on first use."""
