@@ -210,6 +210,24 @@ class AttributeGroupMixin(object):
                 self._placed_groups.add(name)
                 self._add_group_box(self.attribute_groups[name])
 
+    def showEvent(self, event):
+        """Safety net: a custom attribute panel that fills in
+        `_add_attribute_widget` but forgets `_place_attribute_groups` would
+        show none of its boxes at all - the grouped knobs would simply
+        vanish. Place whatever is still unplaced before the widget appears."""
+        try:
+            groups = getattr(self, 'attribute_groups', None)
+            if groups and len(self._placed_groups) < len(groups):
+                logger.debug('%s: placing %d attribute group box(es) from '
+                             'showEvent - _place_attribute_groups was never '
+                             'called', type(self).__name__,
+                             len(groups) - len(self._placed_groups))
+                self._place_attribute_groups()
+        except Exception:
+            logger.debug('%s: late group placement failed',
+                         type(self).__name__, exc_info=True)
+        super(AttributeGroupMixin, self).showEvent(event)
+
     # ---- overridable hooks --------------------------------------------------
     def _group_content_layout(self):
         """The layout built inside a new group box."""
