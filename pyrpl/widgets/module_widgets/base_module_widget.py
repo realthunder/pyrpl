@@ -45,6 +45,7 @@ import functools
 import logging
 from ..yml_editor import YmlEditor
 from ..collapsible_group import AttributeGroupMixin
+from .. import escape_mnemonics
 
 
 class MyMenuLabel(QtWidgets.QLabel):
@@ -300,7 +301,9 @@ class ReducedModuleWidget(AttributeGroupMixin, QtWidgets.QGroupBox):
             self.set_title(name)
 
     def set_title(self, title):
-        return self.setTitle(str(title))
+        # a group box title is mnemonic markup: an '&' in a module or config
+        # name would be swallowed and underline the next character
+        return self.setTitle(escape_mnemonics(title))
 
     def create_title_bar(self):
         # manage spacings of title bar / box around module
@@ -332,7 +335,7 @@ class ModuleWidget(ReducedModuleWidget):
     def set_title(self, title):
         title = str(title)
         if hasattr(self, "title_label"): # ModuleManagerWidgets don't have a title_label
-            self.title_label.setText(title)
+            self.title_label.setText(escape_mnemonics(title))
             self.title_label.adjustSize()
             self.title_label.move(*self.title_pos)
             self.load_label.move(self.title_label.width() + self.title_pos[0],

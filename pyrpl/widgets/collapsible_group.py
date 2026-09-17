@@ -33,6 +33,8 @@ from collections import OrderedDict
 
 from qtpy import QtCore, QtWidgets
 
+from . import escape_mnemonics
+
 logger = logging.getLogger(name=__name__)
 
 
@@ -163,13 +165,6 @@ class CollapsibleGroupBox(QtWidgets.QFrame):
         a header, and pack alongside the other items like any chip."""
         return not self.collapsed
 
-    @staticmethod
-    def _button_text(text):
-        """A button's text is mnemonic markup: a single '&' eats itself and
-        underlines the next character ('MEMS circle & band' came out as
-        'MEMS circle _band'). Double it to mean a literal ampersand."""
-        return text.replace('&', '&&')
-
     def _refresh_header(self):
         """Arrow + title; a collapsed box also shows how many knobs it hides,
         so a folded group does not look like an empty label. The tooltip
@@ -181,7 +176,9 @@ class CollapsibleGroupBox(QtWidgets.QFrame):
         else:
             self.header.setArrowType(QtCore.Qt.DownArrow)
             text = self._title
-        self.header.setText(self._button_text(text))
+        # a button's text is mnemonic markup ('& band' would underline the
+        # b and eat the ampersand)
+        self.header.setText(escape_mnemonics(text))
         self.header.setToolTip(self._tooltip())
 
 
