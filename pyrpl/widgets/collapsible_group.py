@@ -114,7 +114,22 @@ class CollapsibleGroupBox(QtWidgets.QFrame):
                 lines.append('    %s - %s' % (name, brief))
             else:
                 lines.append('    %s' % name)
-        return '\n'.join(lines)
+        return self._rich_text('\n'.join(lines))
+
+    @staticmethod
+    def _rich_text(text):
+        """A tooltip is auto-detected as HTML when it happens to contain
+        something tag-shaped - and some of these docs do ('<laser_sel>', a
+        '# range +-<x>V' header). Escape it and mark it up ourselves, so
+        every doc renders literally, line breaks and indent included, no
+        matter what it holds."""
+        esc = (text.replace('&', '&amp;').replace('<', '&lt;')
+                   .replace('>', '&gt;'))
+        rows = []
+        for line in esc.split('\n'):
+            body = line.lstrip(' ')
+            rows.append('&nbsp;' * (len(line) - len(body)) + body)
+        return '<div style="white-space:pre-wrap">%s</div>' % '<br>'.join(rows)
 
     _TIP_WIDTH = 96          # characters, before a brief is cut short
 
@@ -148,6 +163,13 @@ class CollapsibleGroupBox(QtWidgets.QFrame):
         a header, and pack alongside the other items like any chip."""
         return not self.collapsed
 
+    @staticmethod
+    def _button_text(text):
+        """A button's text is mnemonic markup: a single '&' eats itself and
+        underlines the next character ('MEMS circle & band' came out as
+        'MEMS circle _band'). Double it to mean a literal ampersand."""
+        return text.replace('&', '&&')
+
     def _refresh_header(self):
         """Arrow + title; a collapsed box also shows how many knobs it hides,
         so a folded group does not look like an empty label. The tooltip
@@ -155,11 +177,11 @@ class CollapsibleGroupBox(QtWidgets.QFrame):
         if self.collapsed:
             self.header.setArrowType(QtCore.Qt.RightArrow)
             n = len(self._settings) or self.content_layout.count()
-            self.header.setText('%s  (%d)' % (self._title, n) if n
-                                else self._title)
+            text = '%s  (%d)' % (self._title, n) if n else self._title
         else:
             self.header.setArrowType(QtCore.Qt.DownArrow)
-            self.header.setText(self._title)
+            text = self._title
+        self.header.setText(self._button_text(text))
         self.header.setToolTip(self._tooltip())
 
 
