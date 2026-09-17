@@ -78,19 +78,29 @@ class BaseProperty(BaseAttribute):
     _widget_class = None
     widget = None
     default = None
+    # optional name of the collapsible group box this attribute's widget goes
+    # into (see pyrpl.widgets.collapsible_group); "" = ungrouped, i.e. shown
+    # directly in the module widget's attribute layout
+    group = ""
 
     def __init__(self,
                  default=None,
                  doc="",
                  ignore_errors=False,
-                 call_setup=False):
+                 call_setup=False,
+                 group=""):
         """
         default: if provided, the value is initialized to it
+        group: if provided, the attribute's widget is placed inside a
+               collapsible group box of that name (whose collapsed state is
+               remembered across sessions) instead of the plain attribute row
         """
         if default is not None:
             self.default = default
         self.call_setup = call_setup
         self.ignore_errors = ignore_errors
+        if group:  # an empty group keeps a class-level default, if any
+            self.group = group
         self.__doc__ = doc
 
     def __set__(self, obj, value):

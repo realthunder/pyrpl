@@ -1,0 +1,216 @@
+"""Collapsible group boxes for attribute widgets.
+
+Any attribute (property or register) declared with a non-empty ``group``
+argument, e.g.::
+
+    swing_rate_hz = FloatProperty(min=0.1, max=50.0, default=5.0,
+                                  group='Scanner360', doc='...')
+
+is not added to its module widget's attribute layout directly: it goes
+inside a :class:`CollapsibleGroupBox` titled with the group name, created on
+first use at the place where the first attribute of that group would have
+gone. Clicking the box header folds the whole set of knobs away; the
+collapsed/expanded state of every box is saved in the module's config branch
+and restored at the next start.
+
+Module widgets get this for free through :class:`AttributeGroupMixin`, which
+:class:`~pyrpl.widgets.module_widgets.base_module_widget.ReducedModuleWidget`
+already mixes in. A widget that builds its own attribute panel (rather than
+using ``init_attribute_layout``) only has to call ``_add_attribute_widget``
+instead of ``self.attribute_layout.addWidget``, and may override
+``_group_content_layout`` / ``_add_group_box`` to control what the box
+contains and where it is placed.
+"""
+import logging
+from collections import OrderedDict
+
+from qtpy import QtCore, QtWidgets
+
+logger = logging.getLogger(name=__name__)
+
+
+class CollapsibleGroupBox(QtWidgets.QFrame):
+    """A titled frame whose header arrow folds its content away.
+
+    Not a checkable QGroupBox on purpose: Qt enables/disables all children of
+    a checkable group box along with the check mark, which would clobber any
+    per-widget enabling the module widget does (greying out the knobs a mode
+    does not use).
+
+    `content_layout` is the layout the grouped attribute widgets are added to
+    (a plain horizontal box by default); it lives in `self.content`, which is
+    simply hidden while the box is collapsed.
+    """
+    collapse_changed = QtCore.Signal(bool)      # True = now collapsed
+    _notify = True                              # muted while constructing
+
+    def __init__(self, title, parent=None, content_layout=None,
+                 collapsed=False):
+        super(CollapsibleGroupBox, self).__init__(parent)
+        self._title = str(title)
+        self.setFrameShape(QtWidgets.QFrame.StyledPanel)
+
+        self.header = QtWidgets.QToolButton(self)
+        self.header.setCheckable(True)
+        self.header.setChecked(True)            # checked = expanded
+        self.header.setAutoRaise(True)
+        self.header.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.header.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self.header.setToolTip('Click to collapse / expand "%s"' % self._title)
+        self.header.setSizePolicy(QtWidgets.QSizePolicy.Maximum,
+                                  QtWidgets.QSizePolicy.Fixed)
+        font = self.header.font()
+        font.setBold(True)
+        self.header.setFont(font)
+
+        self.content = QtWidgets.QWidget(self)
+        if content_layout is None:
+            content_layout = QtWidgets.QHBoxLayout()
+            content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout = content_layout
+        self.content.setLayout(content_layout)
+
+        box = QtWidgets.QVBoxLayout(self)
+        box.setContentsMargins(4, 2, 4, 4)
+        box.setSpacing(2)
+        box.addWidget(self.header, 0, QtCore.Qt.AlignLeft)
+        box.addWidget(self.content)
+
+        # let a flow/height-for-width layout inside the box drive our height
+        if content_layout.hasHeightForWidth():
+            for w in (self.content, self):
+                policy = w.sizePolicy()
+                policy.setHeightForWidth(True)
+                w.setSizePolicy(policy)
+
+        self.header.toggled.connect(self._on_header_toggled)
+        self.set_collapsed(collapsed, notify=False)
+
+    # ---- collapsed state ---------------------------------------------------
+    @property
+    def collapsed(self):
+        return not self.header.isChecked()
+
+    def set_collapsed(self, collapsed, notify=True):
+        collapsed = bool(collapsed)
+        if collapsed == self.collapsed:
+            self._refresh_header()
+            return
+        # _on_header_toggled does the work (and emits unless muted)
+        self._notify = notify
+        try:
+            self.header.setChecked(not collapsed)
+        finally:
+            self._notify = True
+
+    def _on_header_toggled(self, checked):
+        self.content.setVisible(checked)
+        self._refresh_header()
+        self.updateGeometry()
+        if self._notify:
+            self.collapse_changed.emit(not checked)
+
+    def _refresh_header(self):
+        """Arrow + title; a collapsed box also shows how many knobs it hides,
+        so a folded group does not look like an empty label."""
+        if self.collapsed:
+            self.header.setArrowType(QtCore.Qt.RightArrow)
+            n = self.content_layout.count()
+            self.header.setText('%s  (%d)' % (self._title, n) if n
+                                else self._title)
+        else:
+            self.header.setArrowType(QtCore.Qt.DownArrow)
+            self.header.setText(self._title)
+
+
+class AttributeGroupMixin(object):
+    """Adds collapsible attribute groups to a module widget.
+
+    Mixed into ReducedModuleWidget, so every module widget supports it. The
+    hooks a subclass may override are `_group_content_layout` (the layout
+    built inside a new box) and `_add_group_box` (where the box is placed).
+    """
+    # config key holding {group name: collapsed} in the module's branch
+    _COLLAPSED_GROUPS_KEY = 'gui_collapsed_groups'
+    # groups that start collapsed the first time they are seen
+    _default_collapsed_groups = ()
+
+    def _init_attribute_groups(self):
+        self.attribute_groups = OrderedDict()   # group name -> group box
+
+    @staticmethod
+    def _attribute_group_of(attribute):
+        """The group an attribute (descriptor or callable) belongs to, '' for
+        the ungrouped ones."""
+        return str(getattr(attribute, 'group', '') or '').strip()
+
+    def _add_attribute_widget(self, widget, attribute=None, group=None):
+        """Add an attribute widget to the attribute layout, or to the
+        collapsible box of its group when it declares one."""
+        if group is None:
+            group = self._attribute_group_of(attribute)
+        if not group:
+            self.attribute_layout.addWidget(widget)
+        else:
+            self._attribute_group_box(group).content_layout.addWidget(widget)
+
+    def _attribute_group_box(self, group):
+        """The box holding `group`, created (and placed) on first use."""
+        if not hasattr(self, 'attribute_groups'):
+            self._init_attribute_groups()
+        box = self.attribute_groups.get(group)
+        if box is None:
+            box = CollapsibleGroupBox(
+                group, parent=None,
+                content_layout=self._group_content_layout(),
+                collapsed=self._group_starts_collapsed(group))
+            box.collapse_changed.connect(self._attribute_group_toggled)
+            self.attribute_groups[group] = box
+            self._add_group_box(box)
+        return box
+
+    # ---- overridable hooks --------------------------------------------------
+    def _group_content_layout(self):
+        """The layout built inside a new group box."""
+        layout = QtWidgets.QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        return layout
+
+    def _add_group_box(self, box):
+        """Place a freshly created group box in the attribute layout."""
+        self.attribute_layout.addWidget(box)
+
+    def _attribute_group_toggled(self, collapsed):
+        """A box was folded or unfolded: persist the new state."""
+        self._save_collapsed_groups()
+
+    # ---- persistence --------------------------------------------------------
+    def _group_starts_collapsed(self, group):
+        saved = self._saved_collapsed_groups()
+        if group in saved:
+            return bool(saved[group])
+        return group in self._default_collapsed_groups
+
+    def _saved_collapsed_groups(self):
+        """{group: collapsed} as last saved in the module's config branch."""
+        try:
+            module = self.module
+            # do not create an empty config section just to read the state
+            if module.c is None or module.name not in module.parent.c:
+                return {}
+            saved = module.c._data.get(self._COLLAPSED_GROUPS_KEY, None)
+            return dict(saved) if isinstance(saved, dict) else {}
+        except Exception:
+            logger.debug('%s: collapsed-group state not readable',
+                         type(self).__name__, exc_info=True)
+            return {}
+
+    def _save_collapsed_groups(self):
+        state = {name: bool(box.collapsed)
+                 for name, box in getattr(self, 'attribute_groups',
+                                          {}).items()}
+        try:
+            self.module.c[self._COLLAPSED_GROUPS_KEY] = state
+        except Exception:
+            logger.debug('%s: collapsed-group state not saved',
+                         type(self).__name__, exc_info=True)

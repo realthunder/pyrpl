@@ -44,6 +44,7 @@ from collections import OrderedDict
 import functools
 import logging
 from ..yml_editor import YmlEditor
+from ..collapsible_group import AttributeGroupMixin
 
 
 class MyMenuLabel(QtWidgets.QLabel):
@@ -160,11 +161,14 @@ class HideShowLabel(MyMenuLabel):
         return None
 
 
-class ReducedModuleWidget(QtWidgets.QGroupBox):
+class ReducedModuleWidget(AttributeGroupMixin, QtWidgets.QGroupBox):
     """
     Base class for a module Widget.
 
     In general, this is one of the DockWidget of the Pyrpl MainWindow.
+
+    Attributes declared with a non-empty `group` are not laid out directly
+    but inside a collapsible group box of that name (AttributeGroupMixin).
     """
     attribute_changed = QtCore.Signal()
     title_pos = (12, 0)
@@ -175,6 +179,7 @@ class ReducedModuleWidget(QtWidgets.QGroupBox):
         self.module = module
         self.name = name
         self.attribute_widgets = OrderedDict()
+        self._init_attribute_groups()   # group name -> collapsible group box
         self.yml_editors = dict()  # optional widgets to edit the yml code of module on a per-state basis
         self.init_gui() # performs the automatic gui creation based on register_names
         # self.setStyleSheet("ModuleWidget{border:0;color: transparent;}") # frames and title hidden for software_modules
@@ -224,6 +229,7 @@ class ReducedModuleWidget(QtWidgets.QGroupBox):
             self.attribute_layout = QtWidgets.QHBoxLayout()
             self.main_layout.addLayout(self.attribute_layout)
         for attr_name in self.module._gui_attributes:
+            group = ''
             if attr_name == '\n':
                 self.attribute_layout = QtWidgets.QHBoxLayout()
                 self.attributes_layout.addLayout(self.attribute_layout)
@@ -231,6 +237,7 @@ class ReducedModuleWidget(QtWidgets.QGroupBox):
                 attribute_value = getattr(self.module, attr_name)  # needed for
                 # passing the instance to the descriptor
                 attribute = getattr(self.module.__class__, attr_name)
+                group = self._attribute_group_of(attribute)
                 if callable(attribute):
                     # assume that attribute is a function
                     widget = QtWidgets.QPushButton(attr_name)
@@ -242,7 +249,8 @@ class ReducedModuleWidget(QtWidgets.QGroupBox):
                         continue
                     widget.value_changed.connect(self.attribute_changed)
             self.attribute_widgets[attr_name] = widget
-            self.attribute_layout.addWidget(widget)
+            # grouped attributes go into their collapsible box instead
+            self._add_attribute_widget(widget, group=group)
         self.attribute_layout.addStretch(1)
 
     def update_attribute_by_name(self, name, new_value_list):
