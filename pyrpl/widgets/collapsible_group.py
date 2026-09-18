@@ -109,13 +109,17 @@ class CollapsibleGroupBox(QtWidgets.QFrame):
                     'unfold' if self.collapsed else 'fold')]
         for name, brief in self._settings:
             if brief:
-                room = max(40, self._TIP_WIDTH - len(name) - 3)
+                # the budget is the WHOLE line: indent + name + ' - ' + brief,
+                # since nothing wraps any more and an over-long brief would
+                # just stretch the tooltip across the screen
+                room = max(40, self._TIP_WIDTH - len(name) - 3
+                           - len(self._TIP_INDENT))
                 if len(brief) > room:
                     cut = brief[:room].rsplit(' ', 1)[0]
                     brief = (cut if len(cut) > room // 2 else brief[:room]) + '...'
-                lines.append('    %s - %s' % (name, brief))
+                lines.append('%s%s - %s' % (self._TIP_INDENT, name, brief))
             else:
-                lines.append('    %s' % name)
+                lines.append('%s%s' % (self._TIP_INDENT, name))
         return self._rich_text('\n'.join(lines))
 
     @staticmethod
@@ -124,16 +128,26 @@ class CollapsibleGroupBox(QtWidgets.QFrame):
         something tag-shaped - and some of these docs do ('<laser_sel>', a
         '# range +-<x>V' header). Escape it and mark it up ourselves, so
         every doc renders literally, line breaks and indent included, no
-        matter what it holds."""
+        matter what it holds.
+
+        ONE SOURCE LINE = ONE DISPLAYED LINE: each setting has to stay
+        readable as `name - brief`, and a tooltip that re-wraps long briefs
+        turns the list into a paragraph where the names stop lining up. Qt
+        wraps rich-text tooltips on its own, so both levers are used -
+        `white-space:pre` on the block and `<nobr>` per row (the one Qt's
+        tooltip layout actually honours). Briefs are cut to _TIP_WIDTH in
+        _tooltip, which is what keeps the unwrapped box a sane width."""
         esc = (text.replace('&', '&amp;').replace('<', '&lt;')
                    .replace('>', '&gt;'))
         rows = []
         for line in esc.split('\n'):
             body = line.lstrip(' ')
-            rows.append('&nbsp;' * (len(line) - len(body)) + body)
-        return '<div style="white-space:pre-wrap">%s</div>' % '<br>'.join(rows)
+            rows.append('<nobr>%s%s</nobr>'
+                        % ('&nbsp;' * (len(line) - len(body)), body))
+        return '<div style="white-space:pre">%s</div>' % '<br>'.join(rows)
 
     _TIP_WIDTH = 96          # characters, before a brief is cut short
+    _TIP_INDENT = '    '     # per-setting indent under the header line
 
     # ---- collapsed state ---------------------------------------------------
     @property
