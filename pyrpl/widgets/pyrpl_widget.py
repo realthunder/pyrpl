@@ -1,5 +1,6 @@
 from qtpy import QtCore, QtWidgets
 import sys
+import time
 from traceback import format_exception, format_exception_only
 import logging
 from .. import APP
@@ -63,12 +64,26 @@ class LogHandler(QtCore.QObject, logging.Handler):
         """
         try:
             msg = self.format(record)
-            self.show_log.emit([msg])
+            # the level travels with the text: show_log used to test the
+            # text for 'ERROR:', which this formatter never writes, so every
+            # error showed on the green background
+            self.show_log.emit([msg, record.levelno])
             #EL.display_log(record)
         except (KeyboardInterrupt, SystemExit):
             raise
         except:
             self.handleError(record)
+
+
+class _ForeignErrorFilter(logging.Filter):
+    """For the handler on the ROOT logger: errors from loggers outside the
+    pyrpl tree (application modules logging under their own __name__, e.g.
+    lidar's odrive_micro), which the handler on the pyrpl logger never sees.
+    pyrpl records are left to that handler, so nothing shows twice."""
+    def filter(self, record):
+        return (record.levelno >= logging.ERROR
+                and record.name != 'pyrpl'
+                and not record.name.startswith('pyrpl.'))
 
 
 class FloatingTitleBar(QtWidgets.QWidget):
@@ -207,6 +222,9 @@ class PyrplWidget(QtWidgets.QMainWindow):
         self.logger = self.parent.logger
         self.handler = LogHandler()
         self.logger.addHandler(self.handler)
+        self.foreign_handler = LogHandler()
+        self.foreign_handler.addFilter(_ForeignErrorFilter())
+        logging.getLogger().addHandler(self.foreign_handler)
 
         super(PyrplWidget, self).__init__()
         self.setDockNestingEnabled(True)  # allow dockwidget nesting
@@ -247,6 +265,7 @@ class PyrplWidget(QtWidgets.QMainWindow):
         self.status_bar = self.statusBar()
         EL.show_exception.connect(self.show_exception)
         self.handler.show_log.connect(self.show_log)
+        self.foreign_handler.show_log.connect(self.show_log)
         self.setWindowTitle(self.parent.c.pyrpl.name)
         self.timers = [self.timer_save_pos, self.timer_toolbar]
         #self.set_background_color(self)
@@ -272,18 +291,36 @@ class PyrplWidget(QtWidgets.QMainWindow):
         self.status_bar.setStyleSheet('color: white;background-color: red;')
         self._next_toolbar_style = 'color: orange;'
         self.status_bar.setToolTip(''.join(format_exception(typ, val, tb)))
-        self.timer_toolbar.start()
+        self._error_until = time.monotonic() + self.ERROR_HOLD_S
+        self.timer_toolbar.start(int(self.ERROR_HOLD_S * 1000))
+
+    # an error keeps the bar (red background) this long: lower-level records
+    # arriving meanwhile are not shown over it - the DEBUG stream (config
+    # saves, several per second) otherwise replaced an error within
+    # milliseconds, before anyone could read it
+    ERROR_HOLD_S = 10.0
+    _error_until = 0.0
 
     def show_log(self, records):
         record = records[0]
+        level = records[1] if len(records) > 1 else logging.INFO
+        if level >= logging.ERROR:
+            self.timer_toolbar.stop()
+            self.status_bar.showMessage(record)
+            self.status_bar.setToolTip(record)
+            self.status_bar.setStyleSheet('color: white;background-color: red;')
+            self._next_toolbar_style = 'color: red;'
+            self._error_until = time.monotonic() + self.ERROR_HOLD_S
+            self.timer_toolbar.start(int(self.ERROR_HOLD_S * 1000))
+            return
+        if time.monotonic() < self._error_until:
+            return
         self.timer_toolbar.stop()
         self.status_bar.showMessage(record)
-        if record.startswith('CRITICAL:') or record.startswith('ERROR:'):
-            self.status_bar.setStyleSheet('color: white;background-color: red;')
-        else:
-            self.status_bar.setStyleSheet('color: white;background-color: green;')
+        self.status_bar.setToolTip('')
+        self.status_bar.setStyleSheet('color: white;background-color: green;')
         self._next_toolbar_style = 'color: grey;'
-        self.timer_toolbar.start()
+        self.timer_toolbar.start(1000)
 
     def vanish_toolbar(self):
         """
@@ -294,6 +331,8 @@ class PyrplWidget(QtWidgets.QMainWindow):
     def _clear(self):
         for timer in self.timers:
             timer.stop()
+        # the root logger outlives this window
+        logging.getLogger().removeHandler(self.foreign_handler)
 
     def add_dock_widget(self, create_widget, name):
         dock_widget = MyDockWidget(create_widget,
