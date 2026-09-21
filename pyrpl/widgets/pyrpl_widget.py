@@ -75,13 +75,14 @@ class LogHandler(QtCore.QObject, logging.Handler):
             self.handleError(record)
 
 
-class _ForeignErrorFilter(logging.Filter):
-    """For the handler on the ROOT logger: errors from loggers outside the
-    pyrpl tree (application modules logging under their own __name__, e.g.
-    lidar's odrive_micro), which the handler on the pyrpl logger never sees.
+class _ForeignWarningFilter(logging.Filter):
+    """For the handler on the ROOT logger: warnings and errors from loggers
+    outside the pyrpl tree (application modules logging under their own
+    __name__, e.g. lidar's odrive_micro), which the handler on the pyrpl
+    logger never sees.
     pyrpl records are left to that handler, so nothing shows twice."""
     def filter(self, record):
-        return (record.levelno >= logging.ERROR
+        return (record.levelno >= logging.WARNING
                 and record.name != 'pyrpl'
                 and not record.name.startswith('pyrpl.'))
 
@@ -223,7 +224,7 @@ class PyrplWidget(QtWidgets.QMainWindow):
         self.handler = LogHandler()
         self.logger.addHandler(self.handler)
         self.foreign_handler = LogHandler()
-        self.foreign_handler.addFilter(_ForeignErrorFilter())
+        self.foreign_handler.addFilter(_ForeignWarningFilter())
         logging.getLogger().addHandler(self.foreign_handler)
 
         super(PyrplWidget, self).__init__()
@@ -291,36 +292,48 @@ class PyrplWidget(QtWidgets.QMainWindow):
         self.status_bar.setStyleSheet('color: white;background-color: red;')
         self._next_toolbar_style = 'color: orange;'
         self.status_bar.setToolTip(''.join(format_exception(typ, val, tb)))
-        self._error_until = time.monotonic() + self.ERROR_HOLD_S
-        self.timer_toolbar.start(int(self.ERROR_HOLD_S * 1000))
+        self._hold(logging.ERROR)
 
-    # an error keeps the bar (red background) this long: lower-level records
-    # arriving meanwhile are not shown over it - the DEBUG stream (config
-    # saves, several per second) otherwise replaced an error within
-    # milliseconds, before anyone could read it
-    ERROR_HOLD_S = 10.0
-    _error_until = 0.0
+    # A warning / error keeps the bar (orange / red background) this long:
+    # lower-level records arriving meanwhile are not shown over it - the
+    # DEBUG stream (config saves, several per second) otherwise replaced an
+    # error within milliseconds, before anyone could read it. A record of
+    # the same or a higher level replaces it at once.
+    HOLD_S = {logging.ERROR: 10.0, logging.WARNING: 5.0}
+    _held_level = logging.NOTSET
+    _held_until = 0.0
+    # (style while fresh, style after the 1 s flash) per level
+    _LOG_STYLES = {
+        logging.ERROR: ('color: white;background-color: red;', 'color: red;'),
+        logging.WARNING: ('color: black;background-color: orange;',
+                          'color: darkorange;'),
+        logging.NOTSET: ('color: white;background-color: green;',
+                         'color: grey;'),
+    }
+
+    def _hold(self, level):
+        self._held_level = level
+        self._held_until = time.monotonic() + self.HOLD_S[level]
 
     def show_log(self, records):
         record = records[0]
         level = records[1] if len(records) > 1 else logging.INFO
-        if level >= logging.ERROR:
-            self.timer_toolbar.stop()
-            self.status_bar.showMessage(record)
-            self.status_bar.setToolTip(record)
-            self.status_bar.setStyleSheet('color: white;background-color: red;')
-            self._next_toolbar_style = 'color: red;'
-            self._error_until = time.monotonic() + self.ERROR_HOLD_S
-            self.timer_toolbar.start(int(self.ERROR_HOLD_S * 1000))
-            return
-        if time.monotonic() < self._error_until:
+        cls = (logging.ERROR if level >= logging.ERROR else
+               logging.WARNING if level >= logging.WARNING else logging.NOTSET)
+        if cls < self._held_level and time.monotonic() < self._held_until:
             return
         self.timer_toolbar.stop()
         self.status_bar.showMessage(record)
-        self.status_bar.setToolTip('')
-        self.status_bar.setStyleSheet('color: white;background-color: green;')
-        self._next_toolbar_style = 'color: grey;'
-        self.timer_toolbar.start(1000)
+        self.status_bar.setToolTip(record if cls != logging.NOTSET else '')
+        fresh, faded = self._LOG_STYLES[cls]
+        self.status_bar.setStyleSheet(fresh)
+        self._next_toolbar_style = faded
+        if cls in self.HOLD_S:
+            self._hold(cls)
+            self.timer_toolbar.start(int(self.HOLD_S[cls] * 1000))
+        else:
+            self._held_level = logging.NOTSET
+            self.timer_toolbar.start(1000)
 
     def vanish_toolbar(self):
         """
