@@ -1262,6 +1262,58 @@ def test_live_published_switch_buffers():
     return True
 
 
+def test_tap_replay_matches_live():
+    """A recording tap sees every parsed datagram and every config change;
+    feeding them into replay_client(config_snapshot()) rebuilds the same
+    frame, including a mid-stream re-layout."""
+    class Tap:
+        def __init__(self):
+            self.log = []
+        def packets(self, batch):
+            self.log.append(('P', [bytes(memoryview(b)[:n]) for b, n in batch]))
+        def config_changed(self, client):
+            self.log.append(('C', client.config_snapshot()))
+
+    fsz, frac, hsz, hbs = 9, 8, 14, 4
+    idx = fsz + frac
+    live = DmaUdpClient(fsz=fsz, frac=frac, hsz=hsz, hist_block_size=hbs,
+                        max_frame_size=256, max_interval=0.0)
+    tap = Tap()
+    live.set_tap(tap)
+    assert tap.log and tap.log[0][0] == 'C'
+    pts1 = [(i, 3, 100 + i, 200 + i) for i in range(40)]
+    pts2 = [(i, 4, 300 + i, 400 + i) for i in range(10, 30)]
+    pk1 = emit_packets(pts1, hsz=hsz, idx=idx, hist_block_size=hbs)
+    pk2 = emit_packets(pts2, hsz=hsz, idx=idx, hist_block_size=hbs)
+    # through the tap exactly as the parser worker does
+    for pk in (pk1[:5], pk1[5:]):
+        batch = [(bytearray(p), len(p)) for p in pk]
+        tap.packets(batch)
+        live._parse_batch(batch)
+    live.set_max_frame_size(128)          # re-layout mid-stream: cleared
+    batch = [(bytearray(p), len(p)) for p in pk2]
+    tap.packets(batch)
+    live._parse_batch(batch)
+
+    kinds = [k for k, _ in tap.log]
+    assert kinds.count('C') >= 2
+    rep = None
+    for kind, item in tap.log:
+        if kind == 'C':
+            if rep is None:
+                rep = DmaUdpClient.replay_client(item)
+            else:
+                rep.apply_snapshot(item)
+        else:
+            rep.feed(item)
+    a, b = live.get_frame(0), rep.get_frame(0)
+    assert rep._max_frame_size == 128
+    for x, y in zip(a, b):
+        assert np.array_equal(x, y)
+    # only the cells written after the re-layout survive it
+    assert b[1][5] == 0 and b[1][15] == 315
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:

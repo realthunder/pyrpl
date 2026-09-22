@@ -342,6 +342,9 @@ class DmaUdpClient:
         self._az_dt_signed = False
         self._refl_avg_tol = 1.0 # max |bin move| to keep averaging (bins)
         self._avg_cnt = [None, None]  # per-cell sample counts, lazy (n,2) uint16
+        # Recording tap (set_tap): sees every datagram the parser gets and
+        # every layout/assembly change. None = not recording.
+        self._tap = None
         self.configure(fsz=fsz, frac=frac, hsz=hsz, dsz=dsz,
                        intensity=intensity,
                        hist_block_size=hist_block_size)
@@ -565,6 +568,78 @@ class DmaUdpClient:
         # surplus is shed by the kernel buffer (not a functional loss). 0 = no cap.
         self._parse_min_interval = (1.0 / (self._max_parse_rate * _PARSE_MARGIN)
                                     if self._max_parse_rate else 0.0)
+        self._notify_tap()
+
+    # --- recording / replay ---------------------------------------------------
+    def set_tap(self, tap):
+        """Install a recording tap (None removes it). The tap gets
+        tap.packets(batch) on the parser thread with each batch of
+        (buffer, nbytes) datagrams BEFORE they are parsed (the buffers are
+        recycled right after: copy what you keep), and tap.config_changed(self)
+        after every configure() / set_max_frame_size(), on the caller's
+        thread, so a replay can re-apply config_snapshot() at the same point
+        of the packet stream."""
+        self._tap = tap
+        if tap is not None:
+            self._notify_tap()
+
+    def _notify_tap(self):
+        tap = getattr(self, '_tap', None)
+        if tap is not None:
+            try:
+                tap.config_changed(self)
+            except Exception:
+                logger.exception('DMA recording tap failed (config)')
+
+    def config_snapshot(self):
+        """configure() keyword arguments (plus max_frame_size) that rebuild
+        this client's packet layout and frame assembly on another client —
+        see replay_client(). JSON-serializable."""
+        return dict(
+            fsz=self._fsz, frac=self._frac, hsz=self._hsz,
+            hist_block_size=self._hist_block_size, dsz=self._dsz,
+            intensity=bool(self._intensity), msw=self._msw,
+            az_lcount=self._az_l, az_base=self._az_base,
+            az_modulus=self._az_mod, az_row_div=self._az_row_div,
+            az_dt_signed=bool(self._az_dt_signed),
+            az_row_age=self._az_row_age, az_age_secs=self._az_age_secs,
+            refl_alpha=self._refl_alpha, refl_bin0=self._refl_bin0,
+            refl_cal=([] if self._refl_cal is None
+                      else [float(v) for v in self._refl_cal]),
+            refl_avg=self._refl_avg, refl_avg_tol=self._refl_avg_tol,
+            max_interval=self._max_interval, seq_bits=self._seq_bits,
+            zigzag_stride=self._zigzag_stride,
+            zigzag_shift=self._zigzag_shift,
+            max_frame_size=int(self._max_frame_size))
+
+    @classmethod
+    def replay_client(cls, snapshot, time_fn=None):
+        """A client that is never start()ed (no socket, no threads), set up
+        from config_snapshot(), to be fed recorded datagrams with feed().
+        time_fn is its clock (the replay's recording time), which drives the
+        max_interval publishing and the az_age_secs ageing."""
+        cfg = dict(snapshot)
+        n = int(cfg.pop('max_frame_size', 128 * 1024))
+        c = cls(max_frame_size=n, time_fn=time_fn, recv_pool_size=1)
+        c.configure(**cfg)
+        return c
+
+    def apply_snapshot(self, snapshot):
+        """Re-apply a config_snapshot() mid-replay."""
+        cfg = dict(snapshot)
+        n = cfg.pop('max_frame_size', None)
+        if n is not None:
+            self.set_max_frame_size(n)
+        self.configure(**cfg)
+
+    def feed(self, datagrams):
+        """Parse recorded datagrams (bytes-like) exactly as received ones."""
+        batch = [(d, len(d)) for d in datagrams]
+        if not batch:
+            return
+        self._pkt_count += len(batch)
+        self._parse_count += len(batch)
+        self._parse_batch(batch)
 
     @property
     def _ncols(self):
@@ -601,6 +676,7 @@ class DmaUdpClient:
                     self._az_epoch[ch] = 0           # and the epoch they counted
                     self._az_epoch_time[ch] = None
                     self._az_turn_time[ch] = None
+        self._notify_tap()
 
     def start(self):
         """Start the background receive thread."""
@@ -1015,6 +1091,12 @@ class DmaUdpClient:
             n = len(batch)
             self._pkt_count += n
             self._parse_count += n
+            tap = self._tap
+            if tap is not None:
+                try:
+                    tap.packets(batch)
+                except Exception:
+                    logger.exception('DMA recording tap failed (packets)')
             try:
                 self._parse_batch(batch)
             finally:
