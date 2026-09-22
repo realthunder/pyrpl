@@ -578,10 +578,15 @@ class DmaUdpClient:
         recycled right after: copy what you keep), and tap.config_changed(self)
         after every configure() / set_max_frame_size(), on the caller's
         thread, so a replay can re-apply config_snapshot() at the same point
-        of the packet stream."""
-        self._tap = tap
+        of the packet stream. The current config is reported BEFORE the tap
+        goes live, so a recording never starts with packets it cannot
+        decode (the parser thread may hand over a batch at any moment)."""
         if tap is not None:
-            self._notify_tap()
+            try:
+                tap.config_changed(self)
+            except Exception:
+                logger.exception('DMA recording tap failed (config)')
+        self._tap = tap
 
     def _notify_tap(self):
         tap = getattr(self, '_tap', None)
