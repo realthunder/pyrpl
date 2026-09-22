@@ -1337,12 +1337,30 @@ class SelectRegister(BaseRegister, SelectProperty):
         expected_value = self.options(obj)[value]
         raw_value = BaseRegister.get_value(self, obj)
         if raw_value != expected_value:
+            # The FPGA disagrees with the cached selection. The register is
+            # the truth: a client restarted on a running FPGA finds it still
+            # doing what the previous session set, while the cache holds the
+            # attribute default (the config is applied later in the load).
+            # This used to WRITE the cache into the register on a mere read,
+            # which switched a running ASG's trigger to 'off' and re-routed
+            # a pwm the moment the lidar setup compared them - a MEMS mirror
+            # driven near resonance never recovered (2026-09-22). A read
+            # never writes now: a raw value that is one of the options is
+            # adopted as the selection; one that is not is reported and the
+            # cached selection returned, with the register left alone.
+            for k, v in self.options(obj).items():
+                if v == raw_value:
+                    obj._logger.debug("Register %s of module %s reads %s "
+                                      "('%s'); the cached selection '%s' "
+                                      "follows the FPGA.", self.name,
+                                      obj.name, raw_value, k, value)
+                    setattr(obj, '_' + self.name, k)
+                    return k
             obj._logger.warning("Register %s of module %s has value %s, "
-                                "which does not correspond to selected "
-                                "option %s. Setting to '%s'. ",
-                                self.name, obj.name,
-                                raw_value, expected_value, value)
-            BaseRegister.set_value(self, obj, expected_value)
+                                "which is not one of its options (selected "
+                                "'%s' = %s); the register is left as it is.",
+                                self.name, obj.name, raw_value, value,
+                                expected_value)
         return value
 
     def set_value(self, obj, value):
