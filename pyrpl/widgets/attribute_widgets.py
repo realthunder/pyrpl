@@ -405,6 +405,9 @@ class NumberAttributeWidget(BaseAttributeWidget):
         self.widget.setMinimum(self.attribute_descriptor.min)
         if self.attribute_descriptor.log_increment:
             self.widget.set_log_increment()
+        per_second = getattr(self.attribute_descriptor, 'per_second', None)
+        if per_second:
+            self.widget.set_per_second(per_second)
 
     def _get_widget_value(self):
         return self.widget.value()

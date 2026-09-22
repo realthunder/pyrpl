@@ -394,11 +394,16 @@ class NumberProperty(BaseProperty):
                  max=np.inf,
                  increment=0,
                  log_increment=False,  # if True, the widget has log increment
+                 per_second=None,      # hold-to-sweep rate of the widget
+                                       # (units/s; None = the spinbox default
+                                       # 0.2, which with a large increment
+                                       # looks like no auto-repeat at all)
                  **kwargs):
         self.min = min
         self.max = max
         self.increment = increment
         self.log_increment = log_increment
+        self.per_second = per_second
         BaseProperty.__init__(self, **kwargs)
 
     def _create_widget(self, module, widget_name=None):
