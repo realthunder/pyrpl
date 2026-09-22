@@ -414,6 +414,8 @@ class MonitorClient(object):
             # avoids leaving the flag stuck if we exit via an unexpected path.
             self._reconnecting.clear()
 
+    RESTART_CONNECT_ATTEMPTS = 2     # link attempts per runtime reconnect
+
     def restart(self, hostname=None, port=None):
         """Full, synchronous reconnect of the register link, re-initialising this
         SAME object in place so cached module references (module._client) stay
@@ -446,6 +448,12 @@ class MonitorClient(object):
                 self.close()
             try:
                 newport = port if port is not None else self._restartserver()
+                # A runtime reconnect runs on the GUI thread (the reconnect
+                # dialog's Retry): the link gets a couple of attempts, not
+                # the 20 of the initial bring-up, so a board that is off
+                # hands control back in seconds and the dialog stays usable
+                # (2026-09-22: one Retry with the board powered down froze
+                # the GUI for well over a minute).
                 self.__init__(
                     hostname=self._hostname,
                     port=newport,
@@ -453,7 +461,8 @@ class MonitorClient(object):
                     reconnect_retries=self._reconnect_retries,
                     on_connection_lost=self._on_connection_lost,
                     on_reconnected=self._on_reconnected,
-                    connect_timeout=self._connect_timeout)
+                    connect_timeout=self._connect_timeout,
+                    connect_attempts=self.RESTART_CONNECT_ATTEMPTS)
             except BaseException as e:
                 reason = str(e) or e.__class__.__name__
                 self.logger.error("Reconnect attempt %d/%s failed: %s",
