@@ -185,6 +185,17 @@ class AsgAmplitudeAttribute(FloatRegister):
 
 class AsgFrequencyAttribute(FrequencyRegister):
     def set_value(self, obj, val):
+        # An unchanged frequency is not written: the write comes with a
+        # state-machine reset (below) that restarts the channel, and a config
+        # restore over a running FPGA re-applies the same value - each ASG
+        # of a synchronised pair then restarted on its own (2026-09-22).
+        try:
+            if self.bitmask is None and int(self.from_python(obj, val)) == \
+                    int(obj._read(self.address)):
+                obj.__class__.counter.value_updated(obj, obj.counter)
+                return
+        except Exception:
+            pass
         if obj.sync_on and not obj.sm_reset:
             try:
                 obj.sm_reset = True
