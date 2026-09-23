@@ -39,6 +39,7 @@ for your own purposes.
              /HOME/pyrpl_user_dir/config/<string_shown_in_top_bar_of_the_gui>.yml)
              and restart PyRPL with that configuration.
 """
+import inspect
 from qtpy import QtCore, QtWidgets
 from collections import OrderedDict
 import functools
@@ -240,8 +241,15 @@ class ReducedModuleWidget(AttributeGroupMixin, QtWidgets.QGroupBox):
                 attribute = getattr(self.module.__class__, attr_name)
                 group = self._attribute_group_of(attribute, attr_name)
                 if callable(attribute):
-                    # assume that attribute is a function
-                    widget = QtWidgets.QPushButton(attr_name)
+                    # a method: a push button. Its label is read by a person,
+                    # so spell the attribute name out in words, and hand them
+                    # the docstring as the tooltip - the same help an
+                    # attribute widget gives for its own doc.
+                    label = attr_name.replace('_', ' ')
+                    widget = QtWidgets.QPushButton(label[:1].upper() + label[1:])
+                    doc = getattr(attribute, '__doc__', None)
+                    if doc:
+                        widget.setToolTip(inspect.cleandoc(doc))
                     widget.clicked.connect(getattr(self.module, attr_name))
                 else:
                     # standard case: make attribute widget
