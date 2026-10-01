@@ -24,6 +24,7 @@ from .errors import ExpectedPyrplError
 
 import logging
 import string
+import time
 import numpy as np
 from six import with_metaclass
 from collections import OrderedDict
@@ -776,6 +777,30 @@ class HardwareModule(Module):
         # write.
         return self._client.writes(self._addr_base + addr, values)
 
+    # A socket the board dropped while it sat idle (a network outage the
+    # client never saw) fails on its first use; that I/O starts the
+    # background reconnect, which is back in milliseconds when the board is
+    # up. This long the call that found the dead socket waits for it, then
+    # retries, instead of failing a register access over a stale socket.
+    STALE_RECONNECT_WAIT = 0.5
+
+    def _reconnecting(self):
+        ev = getattr(self._client, '_reconnecting', None)
+        return ev is not None and ev.is_set()
+
+    def _wait_stale_reconnect(self, was_reconnecting):
+        """After a failed access: True when THIS access started a reconnect
+        (none was running before it) and that reconnect finished within
+        STALE_RECONNECT_WAIT - the caller retries once. A reconnect already
+        running before the call is a real outage: no wait, fail fast."""
+        if was_reconnecting or not self._reconnecting():
+            return False
+        t_end = time.monotonic() + self.STALE_RECONNECT_WAIT
+        while self._reconnecting() and time.monotonic() < t_end:
+            time.sleep(0.01)
+        return not self._reconnecting() and \
+            not getattr(self._client, '_connection_lost', False)
+
     def _read(self, addr):
         # reads() returns None on a transient fault (an out-of-sync frame, or the
         # fail-fast guard while a background reconnect is in flight) rather than
@@ -783,19 +808,28 @@ class HardwareModule(Module):
         # in a register get, killing whatever coroutine happened to be reading
         # (e.g. the lidar acquisition loop, freezing the scope/FFT view while the
         # DMA point cloud kept running). Retry once — a lone out-of-sync frame
-        # usually clears immediately — then raise a ConnectionError (an OSError,
-        # the type callers and the reconnect path already handle) so the caller
-        # can retry the operation and the bounded-reconnect flow can take over.
+        # usually clears immediately, and a stale socket reconnects in
+        # milliseconds (_wait_stale_reconnect) — then raise a ConnectionError
+        # (an OSError, the type callers and the reconnect path already handle)
+        # so the caller can retry the operation and the bounded-reconnect flow
+        # can take over.
+        was_reconnecting = self._reconnecting()
         for _attempt in range(2):
             vals = self._reads(addr, 1)
             if vals is not None:
                 return int(vals[0])
+            if _attempt == 0:
+                self._wait_stale_reconnect(was_reconnecting)
         raise ConnectionError(
             "register read at %s returned no data (link down or reconnecting)"
             % hex(addr))
 
     def _write(self, addr, value):
-        self._writes(addr, [int(value)])
+        was_reconnecting = self._reconnecting()
+        if self._writes(addr, [int(value)]) is None and \
+                self._wait_stale_reconnect(was_reconnecting):
+            # the write found a stale socket: it never reached the board
+            self._writes(addr, [int(value)])
 
     def _to_pyint(self, v, bitlength=14):
         v = v & (2 ** bitlength - 1)
