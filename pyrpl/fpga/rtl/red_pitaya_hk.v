@@ -31,6 +31,8 @@ module red_pitaya_hk #(
   parameter DWL = 8, // data width for LED
   parameter DWE = 8, // data width for extension
   parameter [57-1:0] DNA = 57'h0823456789ABCDE,
+  parameter DNA_W = 57, // 57 = 7-series DNA_PORT, 96 = UltraScale+ DNA_PORTE2
+  parameter [3:0] BOARD = 4'h0, // read at 0x40: 0 = Red Pitaya, 1 = ZCU216
   // parameter CNT = 2083, // default clock counter, equal to freq 1/(2083*2*8ns) ~ 30KHz
   parameter CNT = 6249, // default clock counter, equal to freq 1/(6249*2*8ns) ~ 10KHz
   parameter CSZ = 16 // clock counter width
@@ -76,34 +78,48 @@ wire           dna_dout ;
 reg            dna_clk  ;
 reg            dna_read ;
 reg            dna_shift;
-reg  [ 9-1: 0] dna_cnt  ;
-reg  [57-1: 0] dna_value;
+reg  [10-1: 0] dna_cnt  ;
+reg  [96-1: 0] dna_value;  // 7-series uses bits [56:0]
 reg            dna_done ;
+
+// Sample k (one every 8 clocks from dna_cnt 16) is the k-th bit shifted out:
+// DNA_PORT gives the MSB first, DNA_PORTE2 the LSB first.
+localparam [10-1:0] DNA_LAST = 10'd16 + 10'd8 * (DNA_W - 1);
 
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
   dna_clk   <=  1'b0;
   dna_read  <=  1'b0;
   dna_shift <=  1'b0;
-  dna_cnt   <=  9'd0;
-  dna_value <= 57'd0;
+  dna_cnt   <= 10'd0;
+  dna_value <= 96'd0;
   dna_done  <=  1'b0;
 end else begin
   if (!dna_done)
     dna_cnt <= dna_cnt + 1'd1;
 
   dna_clk <= dna_cnt[2] ;
-  dna_read  <= (dna_cnt < 9'd10);
-  dna_shift <= (dna_cnt > 9'd18);
+  dna_read  <= (dna_cnt < 10'd10);
+  dna_shift <= (dna_cnt > 10'd18);
 
   if ((dna_cnt[2:0]==3'h0) && !dna_done)
-    dna_value <= {dna_value[57-2:0], dna_dout};
+    dna_value <= (DNA_W == 96) ? {dna_dout, dna_value[96-1:1]}
+                               : {39'd0, dna_value[57-2:0], dna_dout};
 
-  if (dna_cnt > 9'd465)
+  if (dna_cnt > DNA_LAST + 10'd1)
     dna_done <= 1'b1;
 end
 
-// parameter specifies a sample 57-bit DNA value for simulation
+generate
+if (DNA_W == 96) begin : g_dna_e2
+DNA_PORTE2 #(.SIM_DNA_VALUE ({39'd0, DNA})) i_DNA (
+  .DOUT  ( dna_dout   ), // 1-bit output: DNA output data.
+  .CLK   ( dna_clk    ), // 1-bit input: Clock input.
+  .DIN   ( 1'b0       ), // 1-bit input: User data input pin.
+  .READ  ( dna_read   ), // 1-bit input: Active high load DNA, active low read input.
+  .SHIFT ( dna_shift  )  // 1-bit input: Active high shift enable input.
+);
+end else begin : g_dna
 DNA_PORT #(.SIM_DNA_VALUE (DNA)) i_DNA (
   .DOUT  ( dna_dout   ), // 1-bit output: DNA output data.
   .CLK   ( dna_clk    ), // 1-bit input: Clock input.
@@ -111,10 +127,9 @@ DNA_PORT #(.SIM_DNA_VALUE (DNA)) i_DNA (
   .READ  ( dna_read   ), // 1-bit input: Active high load DNA, active low read input.
   .SHIFT ( dna_shift  )  // 1-bit input: Active high shift enable input.
 );
+end
+endgenerate
 
-//---------------------------------------------------------------------------------
-//
-//  Design identification
 
 wire [32-1: 0] id_value;
 
@@ -228,7 +243,7 @@ end else begin
   casez (sys_addr[19:0])
     20'h00000: begin sys_ack <= sys_en;  sys_rdata <= {                id_value          }; end
     20'h00004: begin sys_ack <= sys_en;  sys_rdata <= {                dna_value[32-1: 0]}; end
-    20'h00008: begin sys_ack <= sys_en;  sys_rdata <= {{64- 57{1'b0}}, dna_value[57-1:32]}; end
+    20'h00008: begin sys_ack <= sys_en;  sys_rdata <= {                dna_value[64-1:32]}; end
     20'h0000c: begin sys_ack <= sys_en;  sys_rdata <= {{32-  1{1'b0}}, digital_loop      }; end
 
     20'h00010: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_p_dir_o}       ; end
@@ -248,6 +263,8 @@ end else begin
     20'h00038: begin sys_ack <= sys_en;  sys_rdata <= {{32-CSZ{1'b0}}, clk_cnt2_v}        ; end
 
     20'h0003C: begin sys_ack <= sys_en;  sys_rdata <= {{32-1{1'b0}}, scope_debug_en}      ; end
+    20'h00040: begin sys_ack <= sys_en;  sys_rdata <= {{32-4{1'b0}}, BOARD}               ; end
+    20'h00044: begin sys_ack <= sys_en;  sys_rdata <= {                dna_value[96-1:64]}; end
 
       default: begin sys_ack <= sys_en;  sys_rdata <=  32'h0                              ; end
   endcase

@@ -95,12 +95,25 @@ void error(const char *msg);
 #define MAP_MASK (MAP_SIZE - 1)
 #define MAX_LENGTH 65535
 
+/* Register words, protocol words and addresses are 32 bits on every target.
+ * `unsigned long` is 64-bit on aarch64 (ZCU216): it would turn each register
+ * access into an 8-byte AXI transfer, which the PL bridge refuses, and shift
+ * the header and data layout the pyrpl client sends. */
+typedef uint32_t word_t;
+
+/* The client always addresses the Red Pitaya map at 0x4000_0000. REG_BASE is
+ * where that map really is: 0x4000_0000 on the Red Pitaya, 0x8000_0000 on the
+ * ZCU216 (M_AXI_HPM0_LPD; `make monitor_server_zcu216`). */
+#ifndef REG_BASE
+#define REG_BASE 0x40000000UL
+#endif
+#define RP_REG_BASE 0x40000000UL
+#define REG_PHYS(a) ((off_t)(REG_BASE + ((unsigned long)(a) - RP_REG_BASE)))
+
 #define DEBUG_MONITOR 0
 
-unsigned long read_value(unsigned long a_addr);
-unsigned long* read_values(unsigned long a_addr, unsigned long* a_values_buffer, unsigned long a_len);
-void write_value(unsigned long a_addr, unsigned long a_value);
-void write_values(unsigned long a_addr, unsigned long* a_values, unsigned long a_len);
+word_t* read_values(word_t a_addr, word_t* a_values_buffer, unsigned long a_len);
+void write_values(word_t a_addr, word_t* a_values, unsigned long a_len);
 
 //FPGA memory handlers
 void* map_base = (void*)(-1);
@@ -128,10 +141,12 @@ int newsockfd;
  * slot (dma_reg[1] = HIST_BLOCK_SIZE), so it tracks the FPGA build with no
  * recompile; DMA_PKT_WORDS_DEFAULT is only a fallback for an old/garbage read.
  * ------------------------------------------------------------------------- */
+#ifndef DMA_BUF_BASE
 #define DMA_BUF_BASE         0x1e000000UL
+#endif
 #define DMA_BUF_WORDS        16384       /* must match BUF_WORDS in dma_s2mm */
 #define DMA_BUF_BYTES        (DMA_BUF_WORDS * 8)
-#define DMA_REG_BASE         0x40a00000UL /* AXI-Lite slot 5: [0]=wr_ptr [1]=hist_block */
+#define DMA_REG_BASE         (REG_BASE + 0xa00000UL) /* slot 5: [0]=wr_ptr [1]=hist_block */
 #define DMA_PKT_WORDS_DEFAULT 184        /* fallback: 1 header + 183 data = 1472 B = one MTU */
 #define DMA_PAD_WORD         ((uint64_t)~0ULL)  /* all-ones idle/pad sentinel (bit63=1 but NOT a real header) */
 /* Fresh-edge guard (words). wr_ptr is a PL register read directly over the GP
@@ -419,7 +434,7 @@ cleanup:
 
 //open and close memory mapping to FPGA registers
 void open_map_base() {
-    int addr = 0x40000000;
+    off_t addr = REG_PHYS(RP_REG_BASE);
     if((fd = open("/dev/mem", O_RDWR | O_SYNC)) == -1) FATAL;
     map_base = mmap(0, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, addr & ~MAP_MASK);
 	if(map_base == (void *) -1) FATAL;
@@ -472,11 +487,11 @@ int main(int argc, char *argv[])
 {
      int portno;
 	 unsigned int data_length;
-	 unsigned long address;
+	 word_t address;
      socklen_t clilen;
 
-     char data_buffer[8+sizeof(unsigned long)*MAX_LENGTH];
-	 unsigned long * rw_buffer =(unsigned long*)&(data_buffer[8]);
+     static char data_buffer[8+sizeof(word_t)*MAX_LENGTH] __attribute__((aligned(8)));
+	 word_t * rw_buffer =(word_t*)&(data_buffer[8]);
 	 char* buffer = (char*)&(data_buffer[0]);
      
      struct sockaddr_in serv_addr, cli_addr;
@@ -573,8 +588,8 @@ int main(int argc, char *argv[])
               * (was: error()/exit, which killed the whole daemon). */
              if (n != 8) break;
              //interpret the header
-             address = ((unsigned long*)buffer)[1]; //address to be read/written
-             data_length = buffer[2]+(buffer[3]<<8); //number of "unsigned long" to be read/written
+             memcpy(&address, buffer + 4, sizeof(address)); //address to be read/written
+             data_length = (unsigned char)buffer[2]+((unsigned char)buffer[3]<<8); //number of 32-bit words to be read/written
              if (data_length > MAX_LENGTH)
                  data_length = MAX_LENGTH;
              if (data_length == 0)
@@ -583,13 +598,13 @@ int main(int argc, char *argv[])
              else if (buffer[0] == 'r') { //read from FPGA
                  read_values(address, rw_buffer, data_length);
                  //send the data
-                 n = send(newsockfd,(void*)data_buffer,data_length*sizeof(unsigned long)+8,0);
-                 if (n != (int)(data_length*sizeof(unsigned long)+8)) break; //client gone
+                 n = send(newsockfd,(void*)data_buffer,data_length*sizeof(word_t)+8,0);
+                 if (n != (int)(data_length*sizeof(word_t)+8)) break; //client gone
              }
              else if  (buffer[0] == 'w') { //write to FPGA
                  //read new data from socket
-                 n = recv(newsockfd,(void*)rw_buffer,data_length*sizeof(unsigned long),MSG_WAITALL);
-                 if (n != (int)(data_length*sizeof(unsigned long))) break; //client gone
+                 n = recv(newsockfd,(void*)rw_buffer,data_length*sizeof(word_t),MSG_WAITALL);
+                 if (n != (int)(data_length*sizeof(word_t))) break; //client gone
                  //write FPGA memory
                  write_values(address, rw_buffer, data_length);
                  n=send(newsockfd,buffer,8,0);
@@ -611,16 +626,17 @@ int main(int argc, char *argv[])
 
 
 // old version with steady reinstantiation of mmap (slow)
-unsigned long* read_values(unsigned long a_addr, unsigned long* a_values_buffer, unsigned long a_len) {
+word_t* read_values(word_t a_addr, word_t* a_values_buffer, unsigned long a_len) {
     int fd = -1;
+    off_t phys = REG_PHYS(a_addr);
     if((fd = open("/dev/mem", O_RDWR | O_SYNC)) == -1) FATAL;
-    map_base = mmap(0, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, a_addr & ~MAP_MASK);
+    map_base = mmap(0, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, phys & ~MAP_MASK);
 	if(map_base == (void *) -1) FATAL;
 	
-	void* virt_addr = map_base + (a_addr & MAP_MASK);
+	volatile word_t* virt_addr = (volatile word_t*)((char*)map_base + (phys & MAP_MASK));
 	unsigned long i;
 	for (i = 0; i < a_len; i++) {
-		a_values_buffer[i] = ((unsigned long*) virt_addr)[i];
+		a_values_buffer[i] = virt_addr[i];
 	}
 
 	if (map_base != (void*)(-1)) {
@@ -633,16 +649,17 @@ unsigned long* read_values(unsigned long a_addr, unsigned long* a_values_buffer,
 	return a_values_buffer;
 }
 
-void write_values(unsigned long a_addr, unsigned long* a_values, unsigned long a_len) {
+void write_values(word_t a_addr, word_t* a_values, unsigned long a_len) {
     int fd = -1;
+    off_t phys = REG_PHYS(a_addr);
     if((fd = open("/dev/mem", O_RDWR | O_SYNC)) == -1) FATAL;
-    map_base = mmap(0, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, a_addr & ~MAP_MASK);
+    map_base = mmap(0, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, phys & ~MAP_MASK);
 	if(map_base == (void *) -1) FATAL;
 	
-	void* virt_addr = map_base + (a_addr & MAP_MASK);
+	volatile word_t* virt_addr = (volatile word_t*)((char*)map_base + (phys & MAP_MASK));
 	unsigned long i;
 	for (i = 0; i < a_len; i++) {
-				((unsigned long *) virt_addr)[i] = a_values[i];
+		virt_addr[i] = a_values[i];
 	}
 	
 	if (map_base != (void*)(-1)) {

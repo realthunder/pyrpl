@@ -107,8 +107,9 @@ fi
 # BOARD: target board.
 #   redpitaya (default)  Red Pitaya (xc7z020), red_pitaya_vivado.tcl -> out/red_pitaya.bit
 #   zcu216               AMD ZCU216 (xczu49dr RFSoC), zcu216_vivado.tcl -> out/zcu216.bit
-#                        and out/zcu216.bit.bin. Phase-1 shell: PS + LED heartbeat,
-#                        no HLS blocks yet, so the HLS step is skipped.
+#                        and out/zcu216.bit.bin. Shell so far: PS, register bus at
+#                        0x8000_0000 with hk in slot 0, LED heartbeat. No HLS blocks
+#                        yet, so the HLS step is skipped.
 #                        MAX_THREADS (default 8) sets its P&R thread count.
 # BOARD picks the default FPGA_PART, the Vivado script and the bitstream name;
 # FPGA_PART on the command line still wins. e.g.  BOARD=zcu216 ./make.sh

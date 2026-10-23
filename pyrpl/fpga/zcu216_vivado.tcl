@@ -2,6 +2,9 @@
 # Vivado tcl script for building the ZCU216 (XCZU49DR RFSoC) image in non
 # project mode. The Red Pitaya build stays in red_pitaya_vivado.tcl.
 #
+# Register bus: the PS reaches the Red Pitaya register map at 0x8000_0000
+# (Red Pitaya: 0x4000_0000), same offsets; see rtl/zcu216_top.sv.
+#
 # Usage (selects this script and the part):
 #   BOARD=zcu216 ./make.sh
 #
@@ -62,6 +65,9 @@ proc read_bd_wrapper {name} {
 
 read_bd_wrapper system_zcu216
 
+# Shared with the Red Pitaya build: the AXI-to-system-bus bridge and hk.
+read_verilog                      $path_rtl/axi_slave.v
+read_verilog                      $path_rtl/red_pitaya_hk.v
 read_verilog -sv                  $path_rtl/zcu216_top.sv
 
 read_xdc                          $path_sdc/zcu216.xdc
