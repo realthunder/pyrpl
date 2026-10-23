@@ -104,6 +104,29 @@ else
     fi
 fi
 
+# BOARD: target board.
+#   redpitaya (default)  Red Pitaya (xc7z020), red_pitaya_vivado.tcl -> out/red_pitaya.bit
+#   zcu216               AMD ZCU216 (xczu49dr RFSoC), zcu216_vivado.tcl -> out/zcu216.bit
+#                        and out/zcu216.bit.bin. Phase-1 shell: PS + LED heartbeat,
+#                        no HLS blocks yet, so the HLS step is skipped.
+#                        MAX_THREADS (default 8) sets its P&R thread count.
+# BOARD picks the default FPGA_PART, the Vivado script and the bitstream name;
+# FPGA_PART on the command line still wins. e.g.  BOARD=zcu216 ./make.sh
+export BOARD=${BOARD:-redpitaya}
+case "$BOARD" in
+    redpitaya)
+        BOARD_TCL=red_pitaya_vivado.tcl
+        BOARD_BIT=red_pitaya.bit
+        BOARD_WNS_CLOCKS="pll_adc_clk|pll_ser_clk|pll_dac_clk_1x" ;;
+    zcu216)
+        export FPGA_PART=${FPGA_PART:-xczu49dr-ffvf1760-2-e}
+        BOARD_TCL=zcu216_vivado.tcl
+        BOARD_BIT=zcu216.bit
+        BOARD_WNS_CLOCKS="clk_pl_0" ;;
+    *)
+        echo "ERROR: unknown BOARD='$BOARD' (known: redpitaya zcu216)" >&2; exit 1 ;;
+esac
+
 # Build parameters — uncomment and edit to override the defaults in the TCL scripts.
 # All values are passed to Vivado and Vitis HLS via environment variables.
 
@@ -823,6 +846,8 @@ else
     _fftclk="250MHz (SEL=1)"
 fi
 if [[ $_ssr -ge 8 ]]; then _single_def=1; else _single_def=0; fi
+echo "==> Board: ${BOARD} (part ${FPGA_PART:-xc7z020clg400-1}, ${BOARD_TCL})"
+[[ "$BOARD" != "redpitaya" ]] && echo "    (FFT_* settings below are not used by the ${BOARD} shell yet)"
 echo "==> Build config: IMPL=${FFT_IMPL} SSR=${_ssr} NFFT=${FFT_NFFT:-12} SCALED=${FFT_SCALED:-2} WIDTH=${FFT_WIDTH:-auto} SINGLE=${FFT_SINGLE:-$_single_def} HSZ=${HSZ:-24}"
 echo "                  FFT_CLK=${_fftclk} | DET=${DETERMINISTIC} PHYS_OPT=${PHYS_OPT:-AggressiveExplore} DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-0} SCOPE_FB_PIPELINE=${SCOPE_FB_PIPELINE:-0} MODULE_FB_PIPELINE=${MODULE_FB_PIPELINE:-0} DSP_LEAN=${DSP_LEAN:-0}"
 unset _ssr _fftclk _single_def
@@ -889,6 +914,13 @@ run_hls() {
 }
 
 check_hls() {
+    # The zcu216 shell has no HLS blocks yet. Building them there would also
+    # retarget the shared .hls cache to the xczu49dr and force a full HLS
+    # rebuild on the next Red Pitaya build.
+    if [[ "$BOARD" != "redpitaya" ]]; then
+        echo "==> HLS: skipped (BOARD=$BOARD has no HLS blocks yet)."
+        return 0
+    fi
     local impl=${FFT_IMPL:-3}
 
     if [[ "$impl" == "2" ]]; then
@@ -953,7 +985,7 @@ if [[ "$WORKROOT" == "$ROOT" ]]; then
     check_hls
 fi
 
-script="${1:-red_pitaya_vivado.tcl}"
+script="${1:-$BOARD_TCL}"
 [[ $# -gt 0 ]] && shift
 # Resolve to absolute so it can be sourced from an isolated WORKROOT cwd (its
 # internal relative paths rtl/ ip/ sdc/ out/ then resolve against the symlinks).
@@ -975,6 +1007,7 @@ mkdir -p "$WORKROOT/out"
 manifest="$WORKROOT/out/BUILD_INFO.txt"
 {
     echo "build_date    = $(date -Is)"
+    echo "board         = $BOARD"
     echo "host          = $(hostname)"
     echo "git_branch    = $(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
     echo "git_commit    = $(git -C "$ROOT" rev-parse HEAD 2>/dev/null)"
@@ -987,7 +1020,7 @@ manifest="$WORKROOT/out/BUILD_INFO.txt"
     for v in FPGA_PART ADC_SZ CLK_MULT CLK_ADC_DIV FFT_IMPL FFT_SSR FFT_NFFT \
              FFT_WIDTH PEAK_FRAC PEAK_ALGO CFAR_GUARD_MAX CFAR_TRAIN_MAX PEAK_RAMP CFAR_ZNORM FFT_SCALED FFT_INTERNAL_W FFT_CLK_PERIOD FFT_CLK_SEL FFT_CLK_200 FFT_CLK_178 \
              FFT_MULT_LUT FFT_USE_APPROX FFT_UNSCALED FFT_CORDIC_ITER HIST_BLOCK_SIZE HSZ PHYS_OPT OPT_DIRECTIVE FFT_SINGLE DSP_FB_PIPELINE SCOPE_FB_PIPELINE MODULE_FB_PIPELINE \
-             DSP_LEAN ASG_ADVTRIG ASG0 PID_FILTERSTAGES DMA_PER_CHAN_TAG DMA_INTENSITY; do
+             DSP_LEAN ASG_ADVTRIG ASG0 PID_FILTERSTAGES DMA_PER_CHAN_TAG DMA_INTENSITY MAX_THREADS; do
         printf '%-14s= %s\n' "$v" "${!v:-}"
     done
 } > "$manifest"
@@ -1001,7 +1034,7 @@ echo "==> Vivado done in $(fmt_elapsed $((SECONDS - vivado_start)))."
 # ramp build — see HANDOFF_n11_ramp_nofit.md). A bitstream written by THIS run
 # is the ground truth; anything else is a failed implementation.
 if [[ " $* " != *" hls "* ]]; then
-    bit="$WORKROOT/out/red_pitaya.bit"
+    bit="$WORKROOT/out/$BOARD_BIT"
     if [[ ! -f "$bit" || $(stat -c %Y "$bit") -lt $vivado_epoch ]]; then
         echo "ERROR: $bit missing or predates this run — place/route/bitgen FAILED; check the log above." >&2
         exit 1
@@ -1013,8 +1046,11 @@ if [[ -f "$WORKROOT/out/post_route_timing_summary.rpt" ]]; then
     {
         echo ""
         echo "# post-route intra-clock WNS (ns):"
-        grep -E "^  (pll_adc_clk|pll_ser_clk|pll_dac_clk_1x) " \
-            "$WORKROOT/out/post_route_timing_summary.rpt" | awk '{printf "    %-16s%s\n", $1, $2}'
+        # Generated clocks are indented in the report, primary ones (clk_pl_0)
+        # are not. A missing clock must not fail a build that already finished.
+        grep -E "^ *($BOARD_WNS_CLOCKS) " \
+            "$WORKROOT/out/post_route_timing_summary.rpt" \
+            | awk '$2 ~ /^-?[0-9]/ {printf "    %-16s%s\n", $1, $2}' || true
     } >> "$manifest"
 fi
 

@@ -56,8 +56,8 @@ set fft_nfft       [expr {[info exists env(FFT_NFFT)]       ? $env(FFT_NFFT)    
 set fft_ssr        [expr {[info exists env(FFT_SSR)]        ? $env(FFT_SSR)        : 4}]
 set fft_clk_period [expr {[info exists env(FFT_CLK_PERIOD)] ? $env(FFT_CLK_PERIOD) : 4.0}]
 # FFT_IMPL: 1=plain LogiCORE, 2=HLS SSR (Vitis library), 3=IP SSR (LogiCORE sub-FFTs),
-#           4=native-SSR xfft, 5=direct hls::fft (default; SSR=4 @ 125 MHz)
-set fft_impl       [expr {[info exists env(FFT_IMPL)]       ? $env(FFT_IMPL)       : 5}]
+#           4=native-SSR xfft (default, as in make.sh and the RTL), 5=direct hls::fft
+set fft_impl       [expr {[info exists env(FFT_IMPL)]       ? $env(FFT_IMPL)       : 4}]
 # FFT_SINGLE: 1=build only the fft_a channel and omit fft_b. Halves FFT resource
 #   usage so wide configurations (e.g. SSR=8) fit; channel B peak/readout regs
 #   then read back zero. Auto-enabled for SSR>=8 unless explicitly overridden.
