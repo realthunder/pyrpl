@@ -1,0 +1,21 @@
+/*
+ * Added to the device tree of the PetaLinux 2020.1 evaluation image by
+ * mkdtb.py: memory Linux must not use.
+ *
+ * pl_dma_ring: the PL DMA ring (dma_s2mm) that monitor_server reads at
+ * DMA_BUF_BASE, 0x1E00_0000 as on the Red Pitaya. 32 MB, the Red Pitaya's
+ * reservation; the ring itself is 128 KB today. no-map keeps it out of the
+ * kernel's linear map, so a PL write can never land in a kernel page.
+ */
+/ {
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		pl_dma_ring@1e000000 {
+			reg = <0x0 0x1e000000 0x0 0x2000000>;
+			no-map;
+		};
+	};
+};

@@ -58,6 +58,10 @@ echo "cmdline: $(cat /proc/cmdline)"
 grep -i cma /proc/meminfo
 dmesg | grep -i cma
 
+# the PL DMA ring (system.dtb, no-map): Linux RAM must have a hole there
+echo "reserved-memory: $(ls /proc/device-tree/reserved-memory 2>/dev/null | tr '\n' ' ')"
+grep "System RAM" /proc/iomem
+
 if [ ! -f $SD/zcu216.bit.bin ]; then
 	echo "no zcu216.bit.bin: network only"
 	exit 0

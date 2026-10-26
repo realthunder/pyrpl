@@ -1,5 +1,9 @@
 # ZCU216 Red Pitaya port: the stock PetaLinux 2020.1 RF DC Evaluation Tool
-# boot.scr with one change: bootargs set here, so they replace the DT ones.
+# boot.scr with two changes: bootargs set here, so they replace the DT ones,
+# and the mmc boot takes its device tree from system.dtb when the card has one
+# (the stock tree plus the PL DMA ring reservation, see mkdtb.py). That tree
+# replaces the one in image.ub (bootm <kernel> <ramdisk> <fdt>); if system.dtb
+# is missing or that bootm fails, the plain bootm after it boots the stock tree.
 #
 # cma=256M: the image's cma=1700M never reserves anything ("cma: Failed to
 # reserve 1700 MiB"; the largest free block under 4 GB is ~1650 MB), and
@@ -25,6 +29,10 @@ do
 	if test "${boot_target}" = "mmc0" || test "${boot_target}" = "mmc1" ; then
 		if test -e ${devtype} ${devnum}:${distro_bootpart} /image.ub; then
 			fatload ${devtype} ${devnum}:${distro_bootpart} 0x10000000 image.ub;
+			if test -e ${devtype} ${devnum}:${distro_bootpart} /system.dtb; then
+				fatload ${devtype} ${devnum}:${distro_bootpart} 0x0f000000 system.dtb;
+				bootm 0x10000000 0x10000000:ramdisk@1 0x0f000000;
+			fi
 			bootm 0x10000000;
 			exit;
                 fi
