@@ -43,6 +43,21 @@ route add default gw $GW
 echo "nameserver $GW" >/etc/resolv.conf
 ifconfig eth0
 
+# key login for the host tools (the rootfs is a ramdisk: redone every boot).
+# dropbear 2019.78 predates ed25519, so the keys must be RSA.
+if [ -f $SD/authorized_keys ]; then
+	mkdir -p /home/root/.ssh
+	cp $SD/authorized_keys /home/root/.ssh/authorized_keys
+	chmod 700 /home/root/.ssh
+	chmod 600 /home/root/.ssh/authorized_keys
+fi
+
+# fpgautil copies the whole bitstream into one coherent DMA buffer, which
+# needs CMA; log what the kernel actually got
+echo "cmdline: $(cat /proc/cmdline)"
+grep -i cma /proc/meminfo
+dmesg | grep -i cma
+
 if [ ! -f $SD/zcu216.bit.bin ]; then
 	echo "no zcu216.bit.bin: network only"
 	exit 0
@@ -57,6 +72,7 @@ state=$(cat /sys/class/fpga_manager/fpga0/state)
 echo "fpga0 state: $state"
 if [ "$state" != "operating" ]; then
 	echo "bitstream load failed: monitor_server not started"
+	dmesg | grep -iE "fpga|cma|dma" | tail -20
 	exit 1
 fi
 
