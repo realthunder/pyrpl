@@ -7,14 +7,25 @@
  * red_pitaya_top.v, so every register keeps its Red Pitaya offset:
  *
  *   slot 0  0x8000_0000  hk (ID, DNA, LEDs; 0x40 = board 1, 0x44 = DNA[95:64])
- *   slot 1-7             not built yet: reads return 0, writes are ignored
+ *   slot 1  0x8020_0000  FFT bring-up block (zcu216_fft_test), when FFT_EN
+ *   slot 2-7             not built yet: reads return 0, writes are ignored
  *
- * The bus runs on pl_clk0 (100 MHz) for now. LEDs 0-6 are hk's LED register
- * (0x30); LED 7 is a heartbeat that toggles every 0.67 s, so a running PL
- * clock is visible before any register access.
+ * The bus runs on pl_clk0 (100 MHz). The FFT runs on fclk, 312.5 MHz from an
+ * MMCM on pl_clk0 for now (the RF-ADC tile clock replaces it later): 8 samples
+ * per clock is 2.5 GS/s. LEDs 0-6 are hk's LED register (0x30); LED 7 is a
+ * heartbeat that toggles every 0.67 s, so a running PL clock is visible before
+ * any register access.
  */
 
-module zcu216_top (
+module zcu216_top #(
+  parameter bit    FFT_EN   = 1,
+  parameter int    FFT_NFFT = 18,     // log2 of the real FFT length
+  parameter int    FFT_NCH  = 2,
+  parameter int    FFT_WIN  = 4096,
+  parameter string TWC_FILE = "out/zcu216_twc.mem",
+  parameter string TWF_FILE = "out/zcu216_twf.mem",
+  parameter string SIN_FILE = "out/zcu216_sin.mem"
+) (
   output logic [7:0] led_g
 );
 
@@ -165,7 +176,7 @@ assign ps_sys_err   = |(sys_cs & sys_err);
 assign ps_sys_ack   = |(sys_cs & sys_ack);
 
 generate
-for (genvar i = 1; i < 8; i++) begin : g_empty_slot
+for (genvar i = 2; i < 8; i++) begin : g_empty_slot
   assign sys_rdata[i*32+:32] = 32'h0;
   assign sys_err  [i       ] = 1'b0;
   assign sys_ack  [i       ] = 1'b1;
@@ -206,6 +217,73 @@ red_pitaya_hk #(
   .sys_err       (sys_err[0]        ),
   .sys_ack       (sys_ack[0]        )
 );
+
+////////////////////////////////////////////////////////////////////////////////
+// FFT bring-up (slot 1) on fclk = 312.5 MHz: pl_clk0 x 12.5 / 4 (VCO 1250 MHz)
+////////////////////////////////////////////////////////////////////////////////
+
+if (FFT_EN) begin : g_fft
+  logic fb, fb_buf, fclk_mmcm, fclk, locked;
+
+  MMCME4_BASE #(
+    .CLKIN1_PERIOD    (10.0 ),
+    .DIVCLK_DIVIDE    (1    ),
+    .CLKFBOUT_MULT_F  (12.5 ),
+    .CLKOUT0_DIVIDE_F (4.0  )
+  ) i_mmcm (
+    .CLKIN1    (clk       ),
+    .CLKFBIN   (fb_buf    ),
+    .CLKFBOUT  (fb        ),
+    .CLKFBOUTB (          ),
+    .CLKOUT0   (fclk_mmcm ),
+    .CLKOUT0B  (          ),
+    .CLKOUT1   (          ),  .CLKOUT1B  (          ),
+    .CLKOUT2   (          ),  .CLKOUT2B  (          ),
+    .CLKOUT3   (          ),  .CLKOUT3B  (          ),
+    .CLKOUT4   (          ),  .CLKOUT5   (          ),
+    .CLKOUT6   (          ),
+    .LOCKED    (locked    ),
+    .PWRDWN    (1'b0      ),
+    .RST       (!ps_rstn  )
+  );
+
+  BUFG i_fb_buf  (.I (fb       ), .O (fb_buf));
+  BUFG i_clk_buf (.I (fclk_mmcm), .O (fclk  ));
+
+  // fclk reset: held while the MMCM is unlocked or the bus is in reset
+  (* ASYNC_REG = "TRUE" *) logic [2:0] frst_s;
+  logic frstn;
+  always_ff @(posedge fclk or negedge locked)
+    if (!locked) frst_s <= '0;
+    else         frst_s <= {frst_s[1:0], sys_rstn};
+  always_ff @(posedge fclk) frstn <= frst_s[2];
+
+  zcu216_fft_test #(
+    .NCH      (FFT_NCH       ),
+    .SUB      (FFT_NFFT - 3  ),
+    .WIN      (FFT_WIN       ),
+    .TWC_FILE (TWC_FILE      ),
+    .TWF_FILE (TWF_FILE      ),
+    .SIN_FILE (SIN_FILE      )
+  ) i_fft (
+    .sys_clk   (sys_clk            ),
+    .sys_rstn  (sys_rstn           ),
+    .sys_addr  (ps_sys_addr        ),
+    .sys_wdata (ps_sys_wdata       ),
+    .sys_wen   (sys_wen[1]         ),
+    .sys_ren   (sys_ren[1]         ),
+    .sys_rdata (sys_rdata[1*32+:32]),
+    .sys_err   (sys_err[1]         ),
+    .sys_ack   (sys_ack[1]         ),
+    .fclk      (fclk               ),
+    .frstn     (frstn              ),
+    .flocked   (locked             )
+  );
+end else begin : g_no_fft
+  assign sys_rdata[1*32+:32] = 32'h0;
+  assign sys_err  [1]        = 1'b0;
+  assign sys_ack  [1]        = 1'b1;
+end
 
 ////////////////////////////////////////////////////////////////////////////////
 // LEDs
