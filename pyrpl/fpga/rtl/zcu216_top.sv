@@ -14,9 +14,12 @@
  * [RF] (define ZCU216_RF, set by zcu216_vivado.tcl unless FFT_IMPL=0): the RF
  * Data Converter (ip/rfdc_zcu216.tcl: ADC tile 224 and DAC tile 228 at 2.5 GS/s)
  * and the FFT. Their clock, fclk = 312.5 MHz = 2.5 GS/s / 8, comes from the
- * CLK104's PL_CLK (125 MHz, x2.5 in an MMCM), so it is locked to the sample
- * clocks. Nothing runs there until zcu216/clk104 has programmed the CLK104 and
- * the RF tiles have been restarted; the MMCM retries its lock until then.
+ * RF-ADC tile's own output clock clk_adc0 (through an MMCM), as in AMD's RF
+ * DC evaluation design, so it is frequency-locked to the converters' FIFOs.
+ * (Taking it from the CLK104 PL_CLK instead left the tile FIFOs flagging
+ * overflow and underflow, with word slips in the data.) Nothing runs there
+ * until zcu216/clk104 has programmed the CLK104 and the tiles are up; the MMCM
+ * retries its lock until then.
  *
  * The bus runs on pl_clk0 (100 MHz). LEDs 0-6 are hk's LED register (0x30);
  * LED 7 is a heartbeat that toggles every 0.67 s, so a running PL clock is
@@ -242,14 +245,15 @@ red_pitaya_hk #(
 ////////////////////////////////////////////////////////////////////////////////
 
 `ifdef ZCU216_RF
-// fclk = PL_CLK (125 MHz) x 10 / 4 = 312.5 MHz (VCO 1250 MHz)
-logic pl_clk_ibuf, pl_clk_bufg, fb, fb_buf, fclk_mmcm, fclk, locked;
+// fclk = clk_adc0 (312.5 MHz) x 4 / 4 (VCO 1250 MHz). PL_CLK (125 MHz) is only
+// measured (debug clock meter).
+logic pl_clk_ibuf, pl_clk_bufg, adc_clk_bufg, fb, fb_buf, fclk_mmcm, fclk, locked;
 
 IBUFDS i_pl_clk_ibuf (.I (pl_clk_p), .IB (pl_clk_n), .O (pl_clk_ibuf));
 BUFG   i_pl_clk_bufg (.I (pl_clk_ibuf), .O (pl_clk_bufg));
 
-// PL_CLK only appears once the CLK104 is programmed: while unlocked, reset the
-// MMCM every 1.3 ms (pl_clk0) so it locks soon after the clock shows up
+// the tile clock only appears once the CLK104 is programmed and the tile is up:
+// while unlocked, reset the MMCM every 1.3 ms (pl_clk0) so it locks soon after
 (* ASYNC_REG = "TRUE" *) logic [1:0] locked_s;
 logic [16:0] lock_cnt;
 logic        mmcm_rst;
@@ -262,12 +266,12 @@ always_ff @(posedge clk) begin
 end
 
 MMCME4_BASE #(
-  .CLKIN1_PERIOD    (8.0  ),
+  .CLKIN1_PERIOD    (3.2  ),
   .DIVCLK_DIVIDE    (1    ),
-  .CLKFBOUT_MULT_F  (10.0 ),
+  .CLKFBOUT_MULT_F  (4.0  ),
   .CLKOUT0_DIVIDE_F (4.0  )
 ) i_mmcm (
-  .CLKIN1    (pl_clk_bufg),
+  .CLKIN1    (adc_clk_bufg),
   .CLKFBIN   (fb_buf    ),
   .CLKFBOUT  (fb        ),
   .CLKFBOUTB (          ),
@@ -322,14 +326,22 @@ zcu216_axil_bridge #(.AW (18)) i_rf_bridge (
 
 logic [127:0] adc_data [4];
 logic [3:0]   adc_valid;
+// the converters' output clocks: clk_adc0 makes fclk; all are measured (debug)
+logic         clk_adc0, clk_adc2, clk_dac0, clk_dac2;
+logic [3:0]   meas_clk;
+BUFG i_adc_clk_bufg (.I (clk_adc0), .O (adc_clk_bufg));
+BUFG i_meas2 (.I (clk_dac0), .O (meas_clk[2]));
+BUFG i_meas3 (.I (clk_dac2), .O (meas_clk[3]));
+assign meas_clk[0] = adc_clk_bufg;
+assign meas_clk[1] = pl_clk_bufg;
 logic [127:0] dac_data;
 logic         dac_valid;
 
 rfdc i_rfdc (
   .adc2_clk_p (adc2_clk_p), .adc2_clk_n (adc2_clk_n),
   .dac2_clk_p (dac2_clk_p), .dac2_clk_n (dac2_clk_n),
-  .clk_adc0 (), .clk_adc1 (), .clk_adc2 (),
-  .clk_dac0 (), .clk_dac1 (), .clk_dac2 (),
+  .clk_adc0 (clk_adc0), .clk_adc1 (), .clk_adc2 (clk_adc2),
+  .clk_dac0 (clk_dac0), .clk_dac1 (), .clk_dac2 (clk_dac2),
   .s_axi_aclk    (sys_clk   ), .s_axi_aresetn (sys_rstn  ),
   .s_axi_awaddr  (rf_awaddr ), .s_axi_awvalid (rf_awvalid), .s_axi_awready (rf_awready),
   .s_axi_wdata   (rf_wdata  ), .s_axi_wstrb   (rf_wstrb  ), .s_axi_wvalid  (rf_wvalid ),
@@ -389,7 +401,8 @@ zcu216_fft_test #(
   .adc_valid   (adc_valid          ),
   .dac_data    (dac_data           ),
   .dac_valid   (dac_valid          ),
-  .spi_sdo_sel (spi_sdo_sel        )
+  .spi_sdo_sel (spi_sdo_sel        ),
+  .meas_clk    (meas_clk           )
 );
 `else
 for (genvar i = 1; i < 3; i++) begin : g_no_rf

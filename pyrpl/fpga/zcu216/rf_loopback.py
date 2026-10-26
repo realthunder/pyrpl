@@ -43,6 +43,22 @@ def tiles(L, restart):
     return ok
 
 
+def fifo_flags(L):
+    """Clear, then re-read, the stream FIFO over/underflow flags of ADC 224 and
+    DAC 228 channel 0: anything left set means the stream clock and the tile
+    disagree (words slip)."""
+    regs = [('ADC 224', ADC_TILE(0) + 0x2000 + 0x010), ('DAC 228', DAC_TILE(0) + 0x2000 + 0x014)]
+    for _, a in regs:
+        L.write(a, 0xf)
+    time.sleep(0.2)
+    return {n: L.read(a)[0] & 0xf for n, a in regs}
+
+
+def meters(L):
+    names = ['clk_adc0', 'PL_CLK', 'clk_dac0', 'clk_dac2', 'fclk']
+    return {n: L.read(FFT + 0x300 + 4 * i)[0] / 1e3 for i, n in enumerate(names)}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--host', default='192.168.1.216')
@@ -64,6 +80,9 @@ def main():
     if not running:
         print('  not all tiles running: CLK104 programmed? (clk104 status on the board);'
               ' try --restart')
+    print('clocks (MHz): ' + '  '.join(f'{n} {v:.3f}' for n, v in meters(L).items()))
+    flags = fifo_flags(L)
+    print('stream FIFO flags (0 = clean): ' + '  '.join(f'{n} {v:x}' for n, v in flags.items()))
 
     inc = lambda b: (b << (32 - nb)) & 0xffffffff
     f = a.bin / (1 << nb) * FS

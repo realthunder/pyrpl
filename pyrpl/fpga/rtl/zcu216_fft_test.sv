@@ -19,6 +19,11 @@
  *   0x1c  W   any write: clear the sticky xfft event bits
  *   0x20  RO  window length WIN (bins)
  *   0x24      CLK104 SPI readback select (two pins, the chip id for SDO)
+ *   0x28  W   any write: capture the next RAW beats of the raw ADC source and
+ *             of the DAC stream (status [16] = done since the last arm)
+ *   0x2c      raw capture ADC source: RF-ADC tile 224 channel 0-3
+ *   0x300 +   RO clock meters, kHz (1 ms gate on the bus clock): +0x0 + 4*i
+ *             meas_clk[i] (clk_adc0, CLK104 PL_CLK, clk_dac0, clk_dac2), +0x10 fclk
  *   0x200 +   DAC tone generator: +0x00 inc_a  +0x04 amp_a  +0x08 inc_b
  *             +0x0c amp_b  +0x10 noise bits  +0x14 run
  *   0x40 + 0x40*c, channel c:
@@ -28,6 +33,8 @@
  *     +0x30 RO sticky xfft events: [0] data_in halt, [1] tlast unexpected,
  *                                  [2] tlast missing
  *   0x10000 * (c+1) + 4*i: RO mag of bin win_start + i, channel c
+ *   0x80000 + 4*i: RO raw ADC capture, beat i/4, 32-bit part i%4 (samples 2(i%4), +1)
+ *   0x90000 + 4*i: RO raw DAC capture, same layout
  *
  * Settings cross into fclk as quasi-static values; results cross back on a
  * per-frame toggle, after which they hold for a whole frame.
@@ -61,8 +68,12 @@ module zcu216_fft_test #(
   output logic [127:0] dac_data,
   output logic         dac_valid,
   // CLK104 SPI readback select
-  output logic [1:0]   spi_sdo_sel
+  output logic [1:0]   spi_sdo_sel,
+  // clocks to measure (debug)
+  input  logic [3:0]   meas_clk
 );
+
+localparam int RAW = 2048;                    // raw capture depth (beats)
 
 localparam int NB = SUB + 3;
 localparam int BW = SUB + 2;
@@ -84,6 +95,8 @@ logic [31:0]   d_inc_a, d_inc_b;
 logic [15:0]   d_amp_a, d_amp_b;
 logic [4:0]    d_nbits;
 logic          d_run;
+logic          rarm;
+logic [1:0]    raw_src;
 
 // results in sys_clk
 logic [31:0]   s_frames [NCH];
@@ -103,6 +116,8 @@ always_ff @(posedge sys_clk)
     arm       <= 1'b0;
     clr       <= 1'b0;
     spi_sdo_sel <= '0;
+    rarm      <= 1'b0;
+    raw_src   <= '0;
     d_inc_a   <= '0;  d_amp_a <= '0;
     d_inc_b   <= '0;  d_amp_b <= '0;
     d_nbits   <= '0;  d_run   <= 1'b0;
@@ -119,6 +134,8 @@ always_ff @(posedge sys_clk)
       20'h00018: arm       <= !arm;
       20'h0001c: clr       <= !clr;
       20'h00024: spi_sdo_sel <= sys_wdata[1:0];
+      20'h00028: rarm      <= !rarm;
+      20'h0002c: raw_src   <= sys_wdata[1:0];
       20'h00200: d_inc_a   <= sys_wdata;
       20'h00204: d_amp_a   <= sys_wdata[15:0];
       20'h00208: d_inc_b   <= sys_wdata;
@@ -144,6 +161,8 @@ logic [AW-1:0] rd_addr;
 logic [31:0]   rd_data [NCH];
 logic [2:0]    ram_rd;
 logic [3:0]    ram_ch;          // held: axi_slave runs one transaction at a time
+logic [12:0]   raw_addr;
+logic [127:0]  raw_q [2];
 
 always_ff @(posedge sys_clk) begin
   sys_err <= 1'b0;
@@ -157,6 +176,7 @@ always_ff @(posedge sys_clk) begin
     if (a[19:16] != 0) begin                        // window RAM
       ram_ch  <= a[19:16] - 1'b1;
       rd_addr <= a[AW+1:2];
+      raw_addr <= a[14:2];
       ram_rd  <= 3'b001;
     end else begin
       sys_ack   <= 1'b1;
@@ -165,7 +185,10 @@ always_ff @(posedge sys_clk) begin
   end
   if (ram_rd[2]) begin
     sys_ack   <= 1'b1;
-    sys_rdata <= (ram_ch < NCH) ? rd_data[ram_ch] : 32'h0;
+    if (ram_ch == 7 || ram_ch == 8)               // raw captures, 0x80000 / 0x90000
+      sys_rdata <= raw_q[ram_ch - 7][32*raw_addr[1:0] +: 32];
+    else
+      sys_rdata <= (ram_ch < NCH) ? rd_data[ram_ch] : 32'h0;
   end
 end
 
@@ -174,11 +197,17 @@ function automatic logic [31:0] reg_read(input logic [19:0] ad);
   case (ad)
     20'h00000: v = {16'hf0f6, 8'(NB), 8'(NCH)};
     20'h00004: v = {31'h0, run};
-    20'h00008: v = {{(24-NCH){1'b0}}, s_win_ready, 6'h0, s_locked, s_cfg_done};
+    20'h00008: v = {15'h0, s_raw_ready, {(8-NCH){1'b0}}, s_win_ready, 6'h0, s_locked, s_cfg_done};
     20'h0000c: v = 32'(min_bin);
     20'h00010: v = 32'(win_start);
     20'h00020: v = 32'(WIN);
     20'h00024: v = 32'(spi_sdo_sel);
+    20'h0002c: v = 32'(raw_src);
+    20'h00300: v = 32'(s_khz[0]);
+    20'h00304: v = 32'(s_khz[1]);
+    20'h00308: v = 32'(s_khz[2]);
+    20'h0030c: v = 32'(s_khz[3]);
+    20'h00310: v = 32'(s_khz[4]);
     20'h00200: v = d_inc_a;
     20'h00204: v = 32'(d_amp_a);
     20'h00208: v = d_inc_b;
@@ -228,6 +257,60 @@ logic [NCH-1:0] f_cfg_done;
 logic           f_cfg_all;
 
 assign f_cfg_all = &f_cfg_done;
+
+// clock meters (debug): the RF Data Converter's output clocks and fclk, in kHz
+logic [23:0] s_khz [5];
+logic        s_raw_ready;
+
+for (genvar i = 0; i < 4; i++) begin : g_meter
+  zcu216_freq_meter i_meter (.clk_ref (sys_clk), .clk_meas (meas_clk[i]), .khz (s_khz[i]));
+end
+zcu216_freq_meter i_meter_fclk (.clk_ref (sys_clk), .clk_meas (fclk), .khz (s_khz[4]));
+
+// raw capture (debug): RAW consecutive fclk beats of one RF-ADC channel and of
+// the DAC stream, to see the converter data in the time domain
+(* ASYNC_REG = "TRUE" *) logic [2:0] f_rarm_s;
+logic [1:0]  f_raw_src, f_raw_src_m;
+logic        f_rcap, f_rdone;
+logic [10:0] f_rcnt;
+(* ram_style = "block" *) logic [127:0] raw_adc [0:RAW-1];
+(* ram_style = "block" *) logic [127:0] raw_dac [0:RAW-1];
+
+always_ff @(posedge fclk) begin
+  f_rarm_s <= {f_rarm_s[1:0], rarm};
+  {f_raw_src, f_raw_src_m} <= {f_raw_src_m, raw_src};
+  if (!frstn) begin
+    f_rcap  <= 1'b0;
+    f_rdone <= 1'b0;
+    f_rcnt  <= '0;
+  end else begin
+    if (f_rarm_s[2] != f_rarm_s[1]) begin
+      f_rcap <= 1'b1;
+      f_rcnt <= '0;
+    end else if (f_rcap) begin
+      f_rcnt <= f_rcnt + 1'b1;
+      if (&f_rcnt) begin
+        f_rcap  <= 1'b0;
+        f_rdone <= !f_rdone;
+      end
+    end
+  end
+  if (f_rcap) begin
+    raw_adc[f_rcnt] <= adc_data[f_raw_src];
+    raw_dac[f_rcnt] <= dac_data;
+  end
+end
+
+always_ff @(posedge sys_clk) begin
+  raw_q[0] <= raw_adc[raw_addr[12:2]];
+  raw_q[1] <= raw_dac[raw_addr[12:2]];
+end
+
+(* ASYNC_REG = "TRUE" *) logic [2:0] rdone_s;
+always_ff @(posedge sys_clk) begin
+  rdone_s     <= {rdone_s[1:0], f_rdone};
+  s_raw_ready <= (rdone_s[2] == rarm);
+end
 
 // RF-DAC tone generator: all four channels of tile 228 play the same samples
 logic [31:0] fd_inc_a, fd_inc_b, fd_inc_a_m, fd_inc_b_m;
@@ -364,5 +447,46 @@ always_ff @(posedge sys_clk) begin
 end
 assign s_cfg_done = cfg_s[1];
 assign s_locked   = lock_s[1];
+
+endmodule
+
+
+/**
+ * Frequency of clk_meas in kHz: a Gray-coded counter in the measured domain,
+ * sampled on clk_ref (100 MHz) over a 1 ms gate. 0 when clk_meas is absent.
+ */
+module zcu216_freq_meter #(
+  parameter int GATE = 100000                 // clk_ref cycles per gate (1 ms at 100 MHz)
+) (
+  input  logic        clk_ref,
+  input  logic        clk_meas,
+  output logic [23:0] khz
+);
+
+logic [23:0] cnt = '0, gray = '0;
+always_ff @(posedge clk_meas) begin
+  cnt  <= cnt + 1'b1;
+  gray <= cnt ^ (cnt >> 1);
+end
+
+(* ASYNC_REG = "TRUE" *) logic [23:0] g1, g2;
+logic [23:0] bin, last;
+logic [16:0] gate;
+
+always_comb begin
+  bin[23] = g2[23];
+  for (int i = 22; i >= 0; i--) bin[i] = bin[i+1] ^ g2[i];
+end
+
+always_ff @(posedge clk_ref) begin
+  g1 <= gray;
+  g2 <= g1;
+  if (gate == 17'(GATE - 1)) begin
+    gate <= '0;
+    khz  <= bin - last;
+    last <= bin;
+  end else
+    gate <= gate + 1'b1;
+end
 
 endmodule

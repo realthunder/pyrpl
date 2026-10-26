@@ -50,7 +50,7 @@ foreach top {$([[ $which == all ]] && echo tb_dit8 tb_test tb_reorder tb_bridge 
 TCL
 cd "$work"
 vivado -mode batch -nojournal -nolog -source sim.tcl > sim.log 2>&1 || { tail -30 sim.log; exit 1; }
-grep -E "^(ID|STATUS|CH[0-9]|WIN|LOOP|TB_DONE|EVENT|RO |BRIDGE)" sim.log || true
+grep -E "^(ID|STATUS|CH[0-9]|WIN|LOOP|METER|TB_DONE|EVENT|RO |BRIDGE)" sim.log || true
 if [[ $which == all || $which == tb_dit8 ]]; then
   # the core outputs are cut by max(0, IN_W + SUB - DW) = max(0, 19 - DW) bits
   python3 -I "$here/cmp.py" "$work" 256 $(( dw < 19 ? 1 << (19 - dw) : 1 ))

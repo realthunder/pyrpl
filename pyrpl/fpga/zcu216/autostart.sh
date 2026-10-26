@@ -91,10 +91,18 @@ fi
 
 echo "hk id $(devmem 0x80000000 32) board $(devmem 0x80000040 32)"
 
-# RF build: CLK104 lock, and the RF tiles' power-up state (15 = running) for
-# ADC tiles 224-226 and DAC tiles 228-230 (RF Data Converter registers, slot 2)
+# RF build: CLK104 lock, then restart the RF tiles (the ADC tiles stop at state
+# 13 on their first power-up) and log their state (15 = running) for ADC tiles
+# 224-226 and DAC tiles 228-230 (RF Data Converter registers, slot 2)
 if [ -x /tmp/clk104 ] && [ "$(( $(devmem 0x80200000 32) >> 16 ))" = "$(( 0xf0f6 ))" ]; then
 	/tmp/clk104 status
+	for t in 0 1 2; do
+		for b in $((0x80414000 + t * 0x4000)) $((0x80404000 + t * 0x4000)); do
+			devmem $((b + 0x8)) 32 0x000f        # restart from state 0 to 15
+			devmem $((b + 0x4)) 32 1
+		done
+	done
+	sleep 1
 	for t in 0 1 2; do
 		echo "ADC tile $((224 + t)): state $(devmem $((0x80414000 + t * 0x4000 + 0xc)) 32)" \
 		     "status $(devmem $((0x80414000 + t * 0x4000 + 0x228)) 32)"

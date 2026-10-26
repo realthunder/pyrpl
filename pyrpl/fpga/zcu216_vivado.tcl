@@ -146,9 +146,18 @@ synth_design -top zcu216_top -flatten_hierarchy none {*}$rf_define \
 # streams): every crossing is a quasi-static setting, a per-frame toggle
 # handshake, the dual-clock window RAM, or inside the RF Data Converter
 if {$fft_en} {
+    # The RF Data Converter's output clocks: clk_adc0 (312.5 MHz) makes fclk;
+    # clk_dac0/clk_dac2 (156.25 MHz) and PL_CLK only feed the debug clock meters.
+    foreach {pin per} {clk_adc0 3.200 clk_dac0 6.400 clk_dac2 6.400} {
+        if {![llength [get_clocks -quiet -of_objects [get_pins i_rfdc/$pin]]]} {
+            create_clock -name rf_$pin -period $per [get_pins i_rfdc/$pin]
+        }
+    }
     set_clock_groups -asynchronous \
         -group [get_clocks clk_pl_0] \
-        -group [get_clocks -include_generated_clocks pl_clk]
+        -group [get_clocks -include_generated_clocks pl_clk] \
+        -group [get_clocks -include_generated_clocks -of_objects [get_pins i_rfdc/clk_adc0]] \
+        -group [get_clocks -of_objects [get_pins {i_rfdc/clk_dac0 i_rfdc/clk_dac2}]]
 }
 
 write_checkpoint         -force   $path_out/post_synth

@@ -19,7 +19,8 @@ module tb_test;
     .SIN_FILE({SIMDIR, "/mem/zcu216_sin.mem"})) dut (
     .sys_clk(sclk), .sys_rstn(srstn), .sys_addr, .sys_wdata, .sys_wen, .sys_ren,
     .sys_rdata, .sys_err, .sys_ack, .fclk, .frstn, .flocked(1'b1),
-    .adc_data, .adc_valid(4'hf), .dac_data, .dac_valid, .spi_sdo_sel(sdo_sel));
+    .adc_data, .adc_valid(4'hf), .dac_data, .dac_valid, .spi_sdo_sel(sdo_sel),
+    .meas_clk({fclk, sclk, fclk, sclk}));
 
   task automatic wr(input logic [31:0] ad, input logic [31:0] d);
     @(negedge sclk); sys_addr = ad; sys_wdata = d; sys_wen = 1;
@@ -73,6 +74,16 @@ module tb_test;
       $display("LOOP ch1 src=%0d peak_bin=%0d peak_mag=%0d events=%b sdo_sel=%0d", sr, pb, pm, ev[2:0], v);
       rd(32'h64, pb);
       $display("LOOP ch0 (tone generator) peak_bin=%0d", pb);
+    end
+    // clock meters (1 ms gate) and the raw capture
+    repeat (210000) @(posedge sclk);
+    begin
+      logic [31:0] k0, k1, k4, w0, w1;
+      rd(32'h300, k0); rd(32'h304, k1); rd(32'h310, k4);
+      wr(32'h2c, 2); wr(32'h28, 1);
+      do rd(32'h8, v); while (!v[16]);
+      rd(32'h80000, w0); rd(32'h90000, w1);
+      $display("METER fclk-in %0d kHz, sclk-in %0d kHz, fclk %0d kHz; RAW adc[0]=%h dac[0]=%h", k0, k1, k4, w0, w1);
     end
     wr(32'h04, 0);
     repeat (200) @(posedge sclk);
