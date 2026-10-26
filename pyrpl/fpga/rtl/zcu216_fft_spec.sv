@@ -47,29 +47,34 @@ module zcu216_fft_spec #(
 
 logic [31:0]   b01_mag, b23_mag, b_mag;
 logic [BW-1:0] b01_bin, b23_bin, b_bin;
-logic [1:0]    b_v = '0, b_f = '0, b_l = '0;
+logic [2:0]    b_v = '0, b_f = '0, b_l = '0;
 
-logic [31:0] m [4];                           // bins below min_bin count as 0
+logic [31:0]    m [4];                        // bins below min_bin count as 0
+logic [SUB-1:0] m_t;
 
-always_comb
+// the mask gets a cycle of its own: n_mag also feeds the CFAR detector and the
+// snapshot, and the mask plus the first compare missed timing behind that load
+always_ff @(posedge clk) begin
   for (int j = 0; j < 4; j++)
-    m[j] = ({n_t, 2'(j)} >= min_bin) ? n_mag[j] : '0;
+    m[j] <= ({n_t, 2'(j)} >= min_bin) ? n_mag[j] : '0;
+  m_t <= n_t;
+end
 
 always_ff @(posedge clk) begin
-  {b01_mag, b01_bin} <= (m[1] > m[0]) ? {m[1], {n_t, 2'd1}} : {m[0], {n_t, 2'd0}};
-  {b23_mag, b23_bin} <= (m[3] > m[2]) ? {m[3], {n_t, 2'd3}} : {m[2], {n_t, 2'd2}};
+  {b01_mag, b01_bin} <= (m[1] > m[0]) ? {m[1], {m_t, 2'd1}} : {m[0], {m_t, 2'd0}};
+  {b23_mag, b23_bin} <= (m[3] > m[2]) ? {m[3], {m_t, 2'd3}} : {m[2], {m_t, 2'd2}};
   {b_mag, b_bin}     <= (b23_mag > b01_mag) ? {b23_mag, b23_bin} : {b01_mag, b01_bin};
-  b_v <= {b_v[0], n_valid};
-  b_f <= {b_f[0], n_valid && n_first};
-  b_l <= {b_l[0], n_valid && n_last};
+  b_v <= {b_v[1:0], n_valid};
+  b_f <= {b_f[1:0], n_valid && n_first};
+  b_l <= {b_l[1:0], n_valid && n_last};
 end
 
 logic [31:0]   run_mag, nm;
 logic [BW-1:0] run_bin, nb;
 
 always_comb begin
-  nm = (b_f[1] || b_mag > run_mag) ? b_mag : run_mag;
-  nb = (b_f[1] || b_mag > run_mag) ? b_bin : run_bin;
+  nm = (b_f[2] || b_mag > run_mag) ? b_mag : run_mag;
+  nb = (b_f[2] || b_mag > run_mag) ? b_bin : run_bin;
 end
 
 always_ff @(posedge clk)
@@ -80,10 +85,10 @@ always_ff @(posedge clk)
     frames   <= '0;
     peak_bin <= '0;
     peak_mag <= '0;
-  end else if (b_v[1]) begin
+  end else if (b_v[2]) begin
     run_mag <= nm;
     run_bin <= nb;
-    if (b_l[1]) begin
+    if (b_l[2]) begin
       peak_mag <= nm;
       peak_bin <= nb;
       frames   <= frames + 1'b1;

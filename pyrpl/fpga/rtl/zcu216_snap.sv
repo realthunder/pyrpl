@@ -62,15 +62,21 @@ localparam int MAXF = (SIZE >> (SUB + 4)) > 255 ? 255 : (SIZE >> (SUB + 4));
 localparam int LB   = (SUB >= 9) ? 8 : SUB - 1;  // log2 BLK
 localparam int BLK  = 1 << LB;                   // beats per block (one burst)
 
-// selected source, registered
-logic [127:0]   x_data;
-logic           x_valid, x_first;
-logic [SRW-1:0] csrc;
+// every source registered where it comes from, then the selected one: the
+// sources sit across the die and one hop from each to the mux missed timing
+logic [127:0]    y_data [NSRC];
+logic [NSRC-1:0] y_valid, y_first;
+logic [127:0]    x_data;
+logic            x_valid, x_first;
+logic [SRW-1:0]  csrc;
 
 always_ff @(posedge clk) begin
-  x_data  <= s_data[csrc];
-  x_valid <= s_valid[csrc];
-  x_first <= s_first[csrc] && s_valid[csrc];
+  y_data  <= s_data;
+  y_valid <= s_valid;
+  y_first <= s_first & s_valid;
+  x_data  <= y_data[csrc];
+  x_valid <= y_valid[csrc];
+  x_first <= y_first[csrc];
 end
 
 logic [2:0]  arm_s;

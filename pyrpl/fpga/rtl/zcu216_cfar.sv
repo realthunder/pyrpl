@@ -341,12 +341,15 @@ logic          cl_ok [RL+1];                  // cell below the cutoff (b >= 0, 
 logic [DW-1:0] m_c, m_l, m_r, p_raw, p_l, p_r;
 logic          have_l, have_r, clear_ok;
 
-always_comb begin
-  have_l = (jc_s - 1 >= lo_s) && (jc_s - 1 >= 0);
-  have_r = (jc_s + 1 <= hi_s) && (jc_s + 1 < nmax);
-  p_raw  = jpv ? m_c : '0;
-  p_l    = have_l ? m_l : '0;
-  p_r    = have_r ? m_r : '0;
+// p_l, p_r and have_* only feed the interpolation at J_THR and J_OUT, long
+// after the point reads: registered (and their products once more, below)
+always_comb p_raw = jpv ? m_c : '0;
+
+always_ff @(posedge clk) begin
+  have_l <= (jc_s - 1 >= lo_s) && (jc_s - 1 >= 0);
+  have_r <= (jc_s + 1 <= hi_s) && (jc_s + 1 < nmax);
+  p_l    <= have_l ? m_l : '0;
+  p_r    <= have_r ? m_r : '0;
 end
 
 // WIN: off = G + t/2 + 1 on alternating sides; the cell's ramp attenuation
@@ -464,16 +467,23 @@ always_comb begin
 end
 
 // the divider: floor(|L - R| * 2^(FRAC-1) / ((P - L) + (P - R)))
-wire [DW:0] den_mag = (DW+1)'(p_raw - p_l) + (DW+1)'(p_raw - p_r);
-wire        num_neg = p_r > p_l;
-wire [DW-1:0] num_mag = num_neg ? p_r - p_l : p_l - p_r;
-wire        interp_ok = jpv && have_l && have_r && jcb != 0 && p_l <= p_raw && p_r <= p_raw;
+logic [DW:0]   den_mag;
+logic          num_neg, interp_ok, den_nz;
+logic [DW-1:0] num_mag;
+
+always_ff @(posedge clk) begin
+  den_mag   <= (DW+1)'(p_raw - p_l) + (DW+1)'(p_raw - p_r);
+  num_neg   <= p_r > p_l;
+  num_mag   <= (p_r > p_l) ? p_r - p_l : p_l - p_r;
+  interp_ok <= jpv && have_l && have_r && jcb != 0 && p_l <= p_raw && p_r <= p_raw;
+  den_nz    <= p_l != p_raw || p_r != p_raw;
+end
 wire [DW+1:0] drem2 = {drem[DW:0], 1'b0};
 
 logic signed [IW:0] ki;
 always_comb begin
   ki = $signed({1'b0, jcb, {FRAC{1'b0}}});
-  if (interp_ok && den_mag != 0)
+  if (interp_ok && den_nz)
     ki = num_neg ? ki + $signed((IW+1)'(fmag)) : ki - $signed((IW+1)'(fmag));
 end
 
