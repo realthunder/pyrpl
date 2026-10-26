@@ -28,8 +28,16 @@ fi
 exec >$SD/autostart.log 2>&1
 echo "autostart: $(date)"
 
-# static address; stop the DHCP client so a lease cannot replace it
+# static address; stop the DHCP client so a lease cannot replace it. On the
+# way out udhcpc releases the lease and its deconfig hook flushes every eth0
+# address, so wait until it has gone before setting ours: setting it straight
+# after the kill lost the race and left eth0 with no address at all.
 killall udhcpc 2>/dev/null
+for i in 1 2 3 4 5 6 7 8 9 10; do
+	pidof udhcpc >/dev/null || break
+	sleep 1
+done
+pidof udhcpc >/dev/null && { echo "udhcpc still running: SIGKILL"; killall -9 udhcpc; }
 ifconfig eth0 $IP netmask 255.255.255.0 up
 route add default gw $GW
 echo "nameserver $GW" >/etc/resolv.conf
