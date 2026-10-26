@@ -98,7 +98,7 @@ always_ff @(posedge clk)
 logic [AW-1:0] raddr;
 assign raddr = {rpage, t};
 
-localparam int RL = 3;                        // RAM read latency (address, RAM, output reg)
+localparam int RL = 5;                        // zcu216_reorder_ram read latency
 logic [31:0]    rdata [4];
 logic [1:0]     q_d [RL];
 logic [SUB-1:0] t_d [RL];
@@ -136,7 +136,10 @@ endmodule
 
 /**
  * 2^AW x 32-bit RAM, one write and one read port, stored as 2^(AW-1) x 64 bit
- * with byte write enables so it maps onto UltraRAM. Read latency 3 from raddr.
+ * with byte write enables so it maps onto UltraRAM. Read latency 5 from raddr:
+ * at AW = 16 a bank is a cascade of 8 URAM288, and Vivado places the extra output
+ * registers inside the cascade (with 2 the read ran through 7 cascade links in
+ * one 3.2 ns cycle and missed by 19 ps).
  */
 module zcu216_reorder_ram #(
   parameter int AW = 16
@@ -160,18 +163,22 @@ always_ff @(posedge clk)
   for (int i = 0; i < 8; i++)
     if (be[i]) mem[waddr[AW-1:1]][8*i +: 8] <= wd[8*i +: 8];
 
+localparam int OP = 4;                        // output pipeline after the array read
+
 logic [AW-1:0] ra;
-logic          half0, half1;
-logic [63:0]   q0, q1;
+logic [63:0]   q [OP];
+logic [OP-1:0] half;
 
 always_ff @(posedge clk) begin
-  ra    <= raddr;
-  q0    <= mem[ra[AW-1:1]];
-  half0 <= ra[0];
-  q1    <= q0;
-  half1 <= half0;
+  ra      <= raddr;
+  q[0]    <= mem[ra[AW-1:1]];
+  half[0] <= ra[0];
+  for (int i = 1; i < OP; i++) begin
+    q[i]    <= q[i-1];
+    half[i] <= half[i-1];
+  end
 end
 
-assign rdata = half1 ? q1[63:32] : q1[31:0];
+assign rdata = half[OP-1] ? q[OP-1][63:32] : q[OP-1][31:0];
 
 endmodule

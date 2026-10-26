@@ -88,6 +88,7 @@ read_verilog -sv                  $path_rtl/zcu216_top.sv
 if {$fft_en} {
     # sub-FFT: 1 sample/clock, unscaled, bit-reversed output with xk_index (with
     # super_sample_rates > 1 xfft forces natural order and drops xk_index)
+    file mkdir $path_out/ip
     create_ip -name xfft -vendor xilinx.com -library ip -version 9.1 \
               -module_name xfft_sub -dir $path_out/ip -force
     set_property -dict [list \

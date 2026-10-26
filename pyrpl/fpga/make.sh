@@ -138,7 +138,7 @@ case "$BOARD" in
         fi
         BOARD_TCL=zcu216_vivado.tcl
         BOARD_BIT=zcu216.bit
-        BOARD_WNS_CLOCKS="clk_pl_0|fclk_mmcm" ;;
+        BOARD_WNS_CLOCKS="clk_pl_0|g_fft\.fclk_mmcm" ;;
     *)
         echo "ERROR: unknown BOARD='$BOARD' (known: redpitaya zcu216)" >&2; exit 1 ;;
 esac
