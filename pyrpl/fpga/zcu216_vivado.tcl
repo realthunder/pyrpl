@@ -67,6 +67,7 @@ if {$fft_en && ($fft_nfft < 6 || $fft_nfft > 19)} {
 }
 puts "INFO: FFT_IMPL=$fft_impl FFT_NFFT=$fft_nfft FFT_CH=$fft_ch"
 
+set zcu216_hp $fft_en               ;# snapshot DMA ports (S_AXI_HP0/HP1) in RF builds
 source                            $path_ip/system_bd_zcu216.tcl
 generate_target all [get_files    system_zcu216.bd]
 
@@ -128,6 +129,8 @@ if {$fft_en} {
     read_verilog -sv              $path_rtl/zcu216_fft_reorder.sv
     read_verilog -sv              $path_rtl/zcu216_tone_gen.sv
     read_verilog -sv              $path_rtl/zcu216_fft_spec.sv
+    read_verilog -sv              $path_rtl/zcu216_cfar.sv
+    read_verilog -sv              $path_rtl/zcu216_snap.sv
     read_verilog -sv              $path_rtl/zcu216_fft_test.sv
 }
 

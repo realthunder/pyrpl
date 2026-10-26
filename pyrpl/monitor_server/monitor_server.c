@@ -108,7 +108,16 @@ typedef uint32_t word_t;
 #define REG_BASE 0x40000000UL
 #endif
 #define RP_REG_BASE 0x40000000UL
-#define REG_PHYS(a) ((off_t)(REG_BASE + ((unsigned long)(a) - RP_REG_BASE)))
+
+/* Memory window: client addresses MEM_WIN_BASE .. + MEM_WIN_SIZE read and write
+ * the reserved DDR from DMA_BUF_BASE on (point-cloud ring, then the ZCU216's
+ * frame snapshots from 1 MB on), so the client fetches a captured frame with
+ * ordinary register reads. */
+#define MEM_WIN_BASE 0x48000000UL
+#define MEM_WIN_SIZE 0x02000000UL
+#define REG_PHYS(a) ((off_t)(((unsigned long)(a) - MEM_WIN_BASE < MEM_WIN_SIZE) \
+    ? DMA_BUF_BASE + ((unsigned long)(a) - MEM_WIN_BASE)                    \
+    : REG_BASE + ((unsigned long)(a) - RP_REG_BASE)))
 
 #define DEBUG_MONITOR 0
 
@@ -626,47 +635,46 @@ int main(int argc, char *argv[])
 
 
 // old version with steady reinstantiation of mmap (slow)
+/* Map the pages that [phys, phys + bytes) touches; *base gets the mapping, the
+ * return value the address of phys inside it. A request is up to MAX_LENGTH
+ * words (256 KB), larger than any fixed map size. */
+static volatile word_t *map_range(int fd, off_t phys, size_t bytes, void **base, size_t *len)
+{
+    off_t pg = (off_t)sysconf(_SC_PAGESIZE);
+    off_t start = phys & ~(pg - 1);
+    *len = (size_t)((phys - start) + (off_t)bytes + pg - 1) & ~(size_t)(pg - 1);
+    *base = mmap(0, *len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, start);
+    if (*base == MAP_FAILED) FATAL;
+    return (volatile word_t *)((char *)*base + (phys - start));
+}
+
 word_t* read_values(word_t a_addr, word_t* a_values_buffer, unsigned long a_len) {
     int fd = -1;
+    void *base;
+    size_t len;
     off_t phys = REG_PHYS(a_addr);
     if((fd = open("/dev/mem", O_RDWR | O_SYNC)) == -1) FATAL;
-    map_base = mmap(0, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, phys & ~MAP_MASK);
-	if(map_base == (void *) -1) FATAL;
-	
-	volatile word_t* virt_addr = (volatile word_t*)((char*)map_base + (phys & MAP_MASK));
-	unsigned long i;
-	for (i = 0; i < a_len; i++) {
-		a_values_buffer[i] = virt_addr[i];
-	}
-
-	if (map_base != (void*)(-1)) {
-		if(munmap(map_base, MAP_SIZE) == -1) FATAL;
-		map_base = (void*)(-1);
-	}
-	if (fd != -1) {
-		close(fd);
-	}
-	return a_values_buffer;
+    volatile word_t* virt_addr = map_range(fd, phys, a_len * sizeof(word_t), &base, &len);
+    unsigned long i;
+    for (i = 0; i < a_len; i++) {
+        a_values_buffer[i] = virt_addr[i];
+    }
+    if (munmap(base, len) == -1) FATAL;
+    close(fd);
+    return a_values_buffer;
 }
 
 void write_values(word_t a_addr, word_t* a_values, unsigned long a_len) {
     int fd = -1;
+    void *base;
+    size_t len;
     off_t phys = REG_PHYS(a_addr);
     if((fd = open("/dev/mem", O_RDWR | O_SYNC)) == -1) FATAL;
-    map_base = mmap(0, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, phys & ~MAP_MASK);
-	if(map_base == (void *) -1) FATAL;
-	
-	volatile word_t* virt_addr = (volatile word_t*)((char*)map_base + (phys & MAP_MASK));
-	unsigned long i;
-	for (i = 0; i < a_len; i++) {
-		virt_addr[i] = a_values[i];
-	}
-	
-	if (map_base != (void*)(-1)) {
-		if(munmap(map_base, MAP_SIZE) == -1) FATAL;
-		map_base = (void*)(-1);
-	}
-	if (fd != -1) {
-		close(fd);
-	}
+    volatile word_t* virt_addr = map_range(fd, phys, a_len * sizeof(word_t), &base, &len);
+    unsigned long i;
+    for (i = 0; i < a_len; i++) {
+        virt_addr[i] = a_values[i];
+    }
+    if (munmap(base, len) == -1) FATAL;
+    close(fd);
 }

@@ -2,7 +2,9 @@
  * ZCU216 FFT bring-up block (register slot 1): NCH channels of
  *   tone generator -> zcu216_fft_dit8 (N = 2^(SUB+3), real input) ->
  *   zcu216_fft_mag (|X|) -> zcu216_fft_reorder (natural order) -> zcu216_fft_spec
- * on fclk (8 samples per clock). Each channel's source is its tone generator or
+ *                                                              -> zcu216_cfar
+ * on fclk (8 samples per clock), and zcu216_snap, which writes whole frames of
+ * |X| or of an FFT's input samples into DDR on request. Each channel's source is its tone generator or
  * one of the four RF-ADC channels of tile 224 (src register). A third tone
  * generator drives the four RF-DAC channels of tile 228, for the XM655 loopback.
  * Magnitudes are mag = K|X|/2, K = 1.64676 (CORDIC gain). RF samples are 16 bit
@@ -26,10 +28,30 @@
  *             meas_clk[i] (clk_adc0, CLK104 PL_CLK, clk_dac0, clk_dac2), +0x10 fclk
  *   0x200 +   DAC tone generator: +0x00 inc_a  +0x04 amp_a  +0x08 inc_b
  *             +0x0c amp_b  +0x10 noise bits  +0x14 run
+ *   0x100 +   CFAR detector settings (all channels; hls/peak_detector_cfar.cpp
+ *             semantics, taken at each frame start):
+ *             +0x00 k^2 (16 bits)  +0x04 start_index  +0x08 end_index (bins,
+ *             inclusive)  +0x0c data_min  +0x10 guard cells (<= 16)
+ *             +0x14 training cells per side (<= 64)  +0x18 [0] one-sided edge
+ *             fallback, [1] SO-CFAR  +0x1c ramp_d0  +0x20 ramp_step (Q3.20)
+ *             +0x24 RO {FRAC, TMAX, GMAX} = [19:16], [15:8], [7:0]
+ *   0x140 +   snapshot of whole frames into DDR (zcu216_snap):
+ *             +0x00 W  arm: capture from the next frame start (ignored while a
+ *                      capture is pending; bit 31 set only drops the pending flag)
+ *             +0x04    source: [1:0] channel, [4] 0 = |X| (4 x 32-bit bins per
+ *                      beat), 1 = the FFT's input (8 x 16-bit samples)
+ *             +0x08    frames to capture (0 = 1, clamped to +0x1c)
+ *             +0x0c RO [0] pending (armed, not done yet), [1] busy, [2] overflow
+ *                      (beats lost: DDR too slow), [3] AXI error, [15:8] captures done
+ *             +0x10 RO beats captured
+ *             +0x14 RO physical base   +0x18 RO bytes per frame   +0x1c RO max frames
  *   0x40 + 0x40*c, channel c:
  *     +0x00 inc_a   +0x04 amp_a   +0x08 inc_b   +0x0c amp_b   +0x10 noise bits (0-18)
  *     +0x14 source: 0 = tone generator, 1-4 = RF-ADC tile 224 channel 0-3
+ *     +0x18 RO CFAR result [31:0] = raw magnitude (reading it latches +0x1c)
+ *     +0x1c RO CFAR result [63:32]: [0] detected, [IW:1] k_interp = bin * 256 + offset
  *     +0x20 RO frames      +0x24 RO peak bin      +0x28 RO peak mag
+ *     +0x2c RO CFAR results   +0x34 RO CFAR detections   +0x38 RO CFAR overruns
  *     +0x30 RO sticky xfft events: [0] data_in halt, [1] tlast unexpected,
  *                                  [2] tlast missing
  *   0x10000 * (c+1) + 4*i: RO mag of bin win_start + i, channel c
@@ -44,6 +66,8 @@ module zcu216_fft_test #(
   parameter int    NCH       = 2,
   parameter int    SUB       = 15,
   parameter int    WIN       = 4096,
+  parameter logic [39:0] SNAP_BASE = 40'h1E10_0000,  // reserved DDR (31 MB)
+  parameter int    SNAP_SIZE = 31 << 20,
   parameter string TWC_FILE  = "",
   parameter string TWF_FILE  = "",
   parameter string SIN_FILE  = ""
@@ -70,7 +94,24 @@ module zcu216_fft_test #(
   // CLK104 SPI readback select
   output logic [1:0]   spi_sdo_sel,
   // clocks to measure (debug)
-  input  logic [3:0]   meas_clk
+  input  logic [3:0]   meas_clk,
+  // snapshot DMA: two AXI4 write masters on fclk (S_AXI_HP0/HP1)
+  output logic [48:0]  hp_awaddr  [2],
+  output logic [7:0]   hp_awlen   [2],
+  output logic [2:0]   hp_awsize  [2],
+  output logic [1:0]   hp_awburst [2],
+  output logic [3:0]   hp_awcache [2],
+  output logic [2:0]   hp_awprot  [2],
+  output logic [1:0]   hp_awvalid,
+  input  logic [1:0]   hp_awready,
+  output logic [127:0] hp_wdata   [2],
+  output logic [15:0]  hp_wstrb   [2],
+  output logic [1:0]   hp_wlast,
+  output logic [1:0]   hp_wvalid,
+  input  logic [1:0]   hp_wready,
+  input  logic [1:0]   hp_bresp   [2],
+  input  logic [1:0]   hp_bvalid,
+  output logic [1:0]   hp_bready
 );
 
 localparam int RAW = 2048;                    // raw capture depth (beats)
@@ -79,6 +120,10 @@ localparam int NB = SUB + 3;
 localparam int BW = SUB + 2;
 localparam int XW = 27 + 5;
 localparam int AW = $clog2(WIN);
+localparam int GMAX = 16, TMAX = 64, FRAC = 8;
+localparam int GW = $clog2(GMAX + 1), TW = $clog2(TMAX + 1);
+localparam int SNAP_FB = 16 << SUB;                       // bytes per frame
+localparam int SNAP_MAXF = (SNAP_SIZE / SNAP_FB > 255) ? 255 : SNAP_SIZE / SNAP_FB;
 
 ////////////////////////////////////////////////////////////////////////////////
 // registers (sys_clk)
@@ -97,12 +142,30 @@ logic [4:0]    d_nbits;
 logic          d_run;
 logic          rarm;
 logic [1:0]    raw_src;
+// CFAR settings
+logic [15:0]   cf_ksq;
+logic [BW:0]   cf_lo, cf_hi;
+logic [31:0]   cf_min;
+logic [GW-1:0] cf_g;
+logic [TW-1:0] cf_t;
+logic [1:0]    cf_flags;
+logic [22:0]   cf_d0, cf_step;
+// snapshot
+logic          sn_arm, sn_pending, sn_done_edge;
+logic [4:0]    sn_src;
+logic [7:0]    sn_nf;
+logic [7:0]    s_sn_cnt;
+logic          s_sn_busy, s_sn_ovf, s_sn_err;
+logic [31:0]   s_sn_beats;
 
 // results in sys_clk
 logic [31:0]   s_frames [NCH];
 logic [BW-1:0] s_peak_bin [NCH];
 logic [31:0]   s_peak_mag [NCH];
 logic [2:0]    s_events [NCH];
+logic [63:0]   s_cf_word [NCH];
+logic [31:0]   s_cf_hi [NCH];                    // high word, latched by a low-word read
+logic [31:0]   s_cf_cnt [NCH], s_cf_det [NCH], s_cf_ovr [NCH];
 logic [NCH-1:0] s_win_ready;
 logic          s_cfg_done, s_locked;
 
@@ -121,12 +184,29 @@ always_ff @(posedge sys_clk)
     d_inc_a   <= '0;  d_amp_a <= '0;
     d_inc_b   <= '0;  d_amp_b <= '0;
     d_nbits   <= '0;  d_run   <= 1'b0;
+    cf_ksq    <= 16'd16;
+    cf_lo     <= (BW+1)'(16);
+    cf_hi     <= (BW+1)'((1 << BW) - 1);
+    cf_min    <= '0;
+    cf_g      <= GW'(4);
+    cf_t      <= TW'(16);
+    cf_flags  <= '0;
+    cf_d0     <= '0;
+    cf_step   <= '0;
+    sn_arm    <= 1'b0;
+    sn_pending <= 1'b0;
+    sn_src    <= '0;
+    sn_nf     <= 8'd1;
     for (int c = 0; c < NCH; c++) begin
       inc_a[c] <= '0;  amp_a[c] <= '0;
       inc_b[c] <= '0;  amp_b[c] <= '0;
       nbits[c] <= '0;  src[c]   <= '0;
     end
-  end else if (sys_wen) begin
+  end else begin
+    // a capture finished (the arm a write below may make in the same cycle is
+    // not pending then: the capture it asks for cannot have finished)
+    if (sn_done_edge) sn_pending <= 1'b0;
+    if (sys_wen) begin
     case (a)
       20'h00004: run       <= sys_wdata[0];
       20'h0000c: min_bin   <= sys_wdata[BW-1:0];
@@ -142,6 +222,22 @@ always_ff @(posedge sys_clk)
       20'h0020c: d_amp_b   <= sys_wdata[15:0];
       20'h00210: d_nbits   <= (sys_wdata[4:0] > 5'd18) ? 5'd18 : sys_wdata[4:0];
       20'h00214: d_run     <= sys_wdata[0];
+      20'h00100: cf_ksq    <= sys_wdata[15:0];
+      20'h00104: cf_lo     <= sys_wdata[BW:0];
+      20'h00108: cf_hi     <= sys_wdata[BW:0];
+      20'h0010c: cf_min    <= sys_wdata;
+      20'h00110: cf_g      <= (sys_wdata > GMAX) ? GW'(GMAX) : sys_wdata[GW-1:0];
+      20'h00114: cf_t      <= (sys_wdata > TMAX) ? TW'(TMAX) : sys_wdata[TW-1:0];
+      20'h00118: cf_flags  <= sys_wdata[1:0];
+      20'h0011c: cf_d0     <= sys_wdata[22:0];
+      20'h00120: cf_step   <= sys_wdata[22:0];
+      20'h00140: if (sys_wdata[31]) sn_pending <= 1'b0;
+                 else if (!sn_pending) begin
+                   sn_arm     <= !sn_arm;
+                   sn_pending <= 1'b1;
+                 end
+      20'h00144: sn_src    <= {sys_wdata[4], 2'b00, sys_wdata[1:0]};
+      20'h00148: sn_nf     <= sys_wdata[7:0];
       default: ;
     endcase
     for (int c = 0; c < NCH; c++)
@@ -154,6 +250,7 @@ always_ff @(posedge sys_clk)
         20'h00054 + 20'h40*c: src[c]   <= (sys_wdata[2:0] > 3'd4) ? 3'd0 : sys_wdata[2:0];
         default: ;
       endcase
+    end
   end
 
 // reads: registers answer after 1 cycle, the window RAMs after 3
@@ -173,6 +270,8 @@ always_ff @(posedge sys_clk) begin
   end else if (sys_wen) begin
     sys_ack <= 1'b1;
   end else if (sys_ren) begin
+    for (int c = 0; c < NCH; c++)
+      if (a == 20'h00058 + 20'h40*c) s_cf_hi[c] <= s_cf_word[c][63:32];
     if (a[19:16] != 0) begin                        // window RAM
       ram_ch  <= a[19:16] - 1'b1;
       rd_addr <= a[AW+1:2];
@@ -214,6 +313,23 @@ function automatic logic [31:0] reg_read(input logic [19:0] ad);
     20'h0020c: v = 32'(d_amp_b);
     20'h00210: v = 32'(d_nbits);
     20'h00214: v = 32'(d_run);
+    20'h00100: v = 32'(cf_ksq);
+    20'h00104: v = 32'(cf_lo);
+    20'h00108: v = 32'(cf_hi);
+    20'h0010c: v = cf_min;
+    20'h00110: v = 32'(cf_g);
+    20'h00114: v = 32'(cf_t);
+    20'h00118: v = 32'(cf_flags);
+    20'h0011c: v = 32'(cf_d0);
+    20'h00120: v = 32'(cf_step);
+    20'h00124: v = {12'h0, 4'(FRAC), 8'(TMAX), 8'(GMAX)};
+    20'h00144: v = 32'(sn_src);
+    20'h00148: v = 32'(sn_nf);
+    20'h0014c: v = {16'h0, s_sn_cnt, 4'h0, s_sn_err, s_sn_ovf, s_sn_busy, sn_pending};
+    20'h00150: v = s_sn_beats;
+    20'h00154: v = SNAP_BASE[31:0];
+    20'h00158: v = 32'(SNAP_FB);
+    20'h0015c: v = 32'(SNAP_MAXF);
     default: ;
   endcase
   for (int c = 0; c < NCH; c++)
@@ -228,6 +344,11 @@ function automatic logic [31:0] reg_read(input logic [19:0] ad);
       20'h00064 + 20'h40*c: v = 32'(s_peak_bin[c]);
       20'h00068 + 20'h40*c: v = s_peak_mag[c];
       20'h00070 + 20'h40*c: v = 32'(s_events[c]);
+      20'h00058 + 20'h40*c: v = s_cf_word[c][31:0];
+      20'h0005c + 20'h40*c: v = s_cf_hi[c];
+      20'h0006c + 20'h40*c: v = s_cf_cnt[c];
+      20'h00074 + 20'h40*c: v = s_cf_det[c];
+      20'h00078 + 20'h40*c: v = s_cf_ovr[c];
       default: ;
     endcase
   return v;
@@ -240,6 +361,33 @@ endfunction
 (* ASYNC_REG = "TRUE" *) logic f_run_m, f_run, f_clr_m, f_clr;
 (* ASYNC_REG = "TRUE" *) logic f_arm_m, f_arm;
 logic [BW-1:0] f_min_bin_m, f_min_bin, f_win_start_m, f_win_start;
+
+// CFAR settings and snapshot control, the same way (sn_arm is a toggle)
+logic [15:0]   f_cf_ksq, f_cf_ksq_m;
+logic [BW:0]   f_cf_lo, f_cf_lo_m, f_cf_hi, f_cf_hi_m;
+logic [31:0]   f_cf_min, f_cf_min_m;
+logic [GW-1:0] f_cf_g, f_cf_g_m;
+logic [TW-1:0] f_cf_t, f_cf_t_m;
+logic [1:0]    f_cf_flags, f_cf_flags_m;
+logic [22:0]   f_cf_d0, f_cf_d0_m, f_cf_step, f_cf_step_m;
+logic [4:0]    f_sn_src, f_sn_src_m;
+logic [7:0]    f_sn_nf, f_sn_nf_m;
+(* ASYNC_REG = "TRUE" *) logic f_sn_arm_m, f_sn_arm;
+
+always_ff @(posedge fclk) begin
+  {f_cf_ksq,   f_cf_ksq_m}   <= {f_cf_ksq_m,   cf_ksq};
+  {f_cf_lo,    f_cf_lo_m}    <= {f_cf_lo_m,    cf_lo};
+  {f_cf_hi,    f_cf_hi_m}    <= {f_cf_hi_m,    cf_hi};
+  {f_cf_min,   f_cf_min_m}   <= {f_cf_min_m,   cf_min};
+  {f_cf_g,     f_cf_g_m}     <= {f_cf_g_m,     cf_g};
+  {f_cf_t,     f_cf_t_m}     <= {f_cf_t_m,     cf_t};
+  {f_cf_flags, f_cf_flags_m} <= {f_cf_flags_m, cf_flags};
+  {f_cf_d0,    f_cf_d0_m}    <= {f_cf_d0_m,    cf_d0};
+  {f_cf_step,  f_cf_step_m}  <= {f_cf_step_m,  cf_step};
+  {f_sn_src,   f_sn_src_m}   <= {f_sn_src_m,   sn_src};
+  {f_sn_nf,    f_sn_nf_m}    <= {f_sn_nf_m,    sn_nf};
+  {f_sn_arm,   f_sn_arm_m}   <= {f_sn_arm_m,   sn_arm};
+end
 
 always_ff @(posedge fclk) begin
   {f_run, f_run_m} <= {f_run_m, run};
@@ -255,6 +403,10 @@ end
 
 logic [NCH-1:0] f_cfg_done;
 logic           f_cfg_all;
+
+// snapshot sources: |X| of each channel (natural order), then each FFT's input
+logic [127:0]     sn_data  [2*NCH];
+logic [2*NCH-1:0] sn_valid, sn_first;
 
 assign f_cfg_all = &f_cfg_done;
 
@@ -380,11 +532,13 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
     .inc_a (f_inc_a), .amp_a (f_amp_a), .inc_b (f_inc_b), .amp_b (f_amp_b),
     .nbits (f_nbits), .data (g_data), .valid (g_valid));
 
+  logic in_accept, in_first;
+
   zcu216_fft_dit8 #(.SUB(SUB), .IN_W(14), .DW(27), .TW(18),
                     .TWC_FILE(TWC_FILE), .TWF_FILE(TWF_FILE)) i_fft (
     .clk (fclk), .rstn (frstn), .cfg_done (f_cfg_done[c]),
     .in_data (s_data), .in_valid (s_valid), .run (f_run && f_cfg_all),
-    .in_accept (), .in_first (),
+    .in_accept, .in_first,
     .x_re, .x_im, .x_k, .x_valid, .x_last,
     .ev_halt, .ev_tlast_unexpected (ev_unexp), .ev_tlast_missing (ev_miss));
 
@@ -423,22 +577,105 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
     .done (f_done),
     .rd_clk (sys_clk), .rd_addr (rd_addr), .rd_data (rd_data[c]));
 
+  assign sn_data[c]        = {n_mag[3], n_mag[2], n_mag[1], n_mag[0]};
+  assign sn_valid[c]       = n_valid;
+  assign sn_first[c]       = n_first;
+  assign sn_data[NCH + c]  = s_data;
+  assign sn_valid[NCH + c] = in_accept;
+  assign sn_first[NCH + c] = in_first;
+
+  // CFAR detector on the natural-order spectrum
+  logic        cf_valid, cf_ovr;
+  logic [63:0] cf_word, f_cf_word;
+  logic [31:0] f_cf_cnt, f_cf_det, f_cf_ovr;
+  logic        f_cf_upd;
+
+  zcu216_cfar #(.SUB(SUB), .DW(32), .GMAX(GMAX), .TMAX(TMAX), .FRAC(FRAC)) i_cfar (
+    .clk (fclk), .rstn (frstn),
+    .n_mag, .n_t, .n_valid, .n_first, .n_last,
+    .k_sq (f_cf_ksq), .start_index (f_cf_lo), .end_index (f_cf_hi),
+    .data_min (f_cf_min), .guard (f_cf_g), .train (f_cf_t),
+    .onesided (f_cf_flags[0]), .so_mode (f_cf_flags[1]),
+    .ramp_d0 (f_cf_d0), .ramp_step (f_cf_step),
+    .r_valid (cf_valid), .r_word (cf_word), .r_overrun (cf_ovr));
+
+  always_ff @(posedge fclk)
+    if (!frstn) begin
+      f_cf_cnt <= '0;
+      f_cf_det <= '0;
+      f_cf_ovr <= '0;
+      f_cf_upd <= 1'b0;
+    end else begin
+      if (cf_valid) begin
+        f_cf_word <= cf_word;
+        f_cf_cnt  <= f_cf_cnt + 1'b1;
+        f_cf_det  <= f_cf_det + cf_word[32];
+        f_cf_upd  <= !f_cf_upd;
+      end
+      if (cf_ovr) f_cf_ovr <= f_cf_ovr + 1'b1;
+    end
+
   // results into sys_clk: copy when the per-frame toggle moves
-  (* ASYNC_REG = "TRUE" *) logic [2:0] upd_s, done_s;
+  (* ASYNC_REG = "TRUE" *) logic [2:0] upd_s, done_s, cfu_s;
   logic [2:0] ev_m, ev_s;
   always_ff @(posedge sys_clk) begin
     upd_s  <= {upd_s[1:0], f_upd};
     done_s <= {done_s[1:0], f_done};
+    cfu_s  <= {cfu_s[1:0], f_cf_upd};
     {ev_s, ev_m} <= {ev_m, f_events};
     if (upd_s[2] != upd_s[1]) begin
       s_frames[c]   <= f_frames;
       s_peak_bin[c] <= f_peak_bin;
       s_peak_mag[c] <= f_peak_mag;
     end
+    if (cfu_s[2] != cfu_s[1]) begin
+      s_cf_word[c] <= f_cf_word;
+      s_cf_cnt[c]  <= f_cf_cnt;
+      s_cf_det[c]  <= f_cf_det;
+      s_cf_ovr[c]  <= f_cf_ovr;
+    end
     s_events[c]    <= ev_s;
     s_win_ready[c] <= (done_s[1] == arm);
   end
 end
+
+// snapshot DMA
+logic        f_sn_busy, f_sn_done, f_sn_ovf, f_sn_err;
+logic [31:0] f_sn_beats;
+localparam int SRW = $clog2(2 * NCH);
+
+zcu216_snap #(.NSRC(2 * NCH), .SUB(SUB), .BASE(SNAP_BASE), .SIZE(SNAP_SIZE)) i_snap (
+  .clk (fclk), .rstn (frstn),
+  .s_data (sn_data), .s_valid (sn_valid), .s_first (sn_first),
+  .arm (f_sn_arm),
+  .src (f_sn_src[4] ? SRW'(NCH + f_sn_src[1:0]) : SRW'(f_sn_src[1:0])),
+  .nframes (f_sn_nf),
+  .busy (f_sn_busy), .done (f_sn_done), .overflow (f_sn_ovf), .err (f_sn_err),
+  .beats (f_sn_beats),
+  .m_awaddr (hp_awaddr), .m_awlen (hp_awlen), .m_awsize (hp_awsize),
+  .m_awburst (hp_awburst), .m_awcache (hp_awcache), .m_awprot (hp_awprot),
+  .m_awvalid (hp_awvalid), .m_awready (hp_awready),
+  .m_wdata (hp_wdata), .m_wstrb (hp_wstrb), .m_wlast (hp_wlast),
+  .m_wvalid (hp_wvalid), .m_wready (hp_wready),
+  .m_bresp (hp_bresp), .m_bvalid (hp_bvalid), .m_bready (hp_bready));
+
+// status into sys_clk; beats only matter once done, when it holds still
+(* ASYNC_REG = "TRUE" *) logic [2:0] sn_done_s;
+(* ASYNC_REG = "TRUE" *) logic [1:0] sn_busy_s, sn_ovf_s, sn_err_s;
+logic [31:0] sn_beats_m;
+always_ff @(posedge sys_clk) begin
+  sn_done_s  <= {sn_done_s[1:0], f_sn_done};
+  sn_busy_s  <= {sn_busy_s[0], f_sn_busy};
+  sn_ovf_s   <= {sn_ovf_s[0], f_sn_ovf};
+  sn_err_s   <= {sn_err_s[0], f_sn_err};
+  {s_sn_beats, sn_beats_m} <= {sn_beats_m, f_sn_beats};
+  if (!sys_rstn) s_sn_cnt <= '0;
+  else if (sn_done_edge) s_sn_cnt <= s_sn_cnt + 1'b1;
+end
+assign sn_done_edge = sn_done_s[2] != sn_done_s[1];
+assign s_sn_busy    = sn_busy_s[1];
+assign s_sn_ovf     = sn_ovf_s[1];
+assign s_sn_err     = sn_err_s[1];
 
 (* ASYNC_REG = "TRUE" *) logic [1:0] cfg_s, lock_s;
 always_ff @(posedge sys_clk) begin

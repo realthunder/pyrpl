@@ -8,6 +8,8 @@
  *
  *   slot 0  0x8000_0000  hk (ID, DNA, LEDs; 0x40 = board 1, 0x44 = DNA[95:64])
  *   slot 1  0x8020_0000  FFT / RF bring-up block (zcu216_fft_test)        [RF]
+ *                        (CFAR detectors, frame snapshots into DDR through
+ *                        S_AXI_HP0/HP1 on fclk)
  *   slot 2  0x8040_0000  RF Data Converter registers (AXI4-Lite, 256 KB)  [RF]
  *   slot 3-7             not built yet: reads return 0, writes are ignored
  *
@@ -77,9 +79,68 @@ logic [32-1:0] gp0_rdata  ;
 logic [ 2-1:0] gp0_rresp  ;
 logic          gp0_rlast  , gp0_rvalid , gp0_rready;
 
+`ifdef ZCU216_RF
+// snapshot DMA (zcu216_snap) into DDR: two AXI4 write ports, fclk
+logic         fclk;
+logic [48:0]  hp_awaddr  [2];
+logic [7:0]   hp_awlen   [2];
+logic [2:0]   hp_awsize  [2];
+logic [1:0]   hp_awburst [2];
+logic [3:0]   hp_awcache [2];
+logic [2:0]   hp_awprot  [2];
+logic [1:0]   hp_awvalid, hp_awready, hp_wlast, hp_wvalid, hp_wready;
+logic [1:0]   hp_bvalid, hp_bready;
+logic [127:0] hp_wdata   [2];
+logic [15:0]  hp_wstrb   [2];
+logic [1:0]   hp_bresp   [2];
+`endif
+
 system_zcu216_wrapper i_ps (
   .pl_clk0            (clk        ),
   .pl_resetn0         (ps_rstn    ),
+`ifdef ZCU216_RF
+  .hp_clk             (fclk       ),
+  .S_AXI_HP0_awaddr   (hp_awaddr[0] ),  .S_AXI_HP1_awaddr   (hp_awaddr[1] ),
+  .S_AXI_HP0_awlen    (hp_awlen[0]  ),  .S_AXI_HP1_awlen    (hp_awlen[1]  ),
+  .S_AXI_HP0_awsize   (hp_awsize[0] ),  .S_AXI_HP1_awsize   (hp_awsize[1] ),
+  .S_AXI_HP0_awburst  (hp_awburst[0]),  .S_AXI_HP1_awburst  (hp_awburst[1]),
+  .S_AXI_HP0_awcache  (hp_awcache[0]),  .S_AXI_HP1_awcache  (hp_awcache[1]),
+  .S_AXI_HP0_awprot   (hp_awprot[0] ),  .S_AXI_HP1_awprot   (hp_awprot[1] ),
+  .S_AXI_HP0_awid     (6'd0         ),  .S_AXI_HP1_awid     (6'd0         ),
+  .S_AXI_HP0_awlock   (1'b0         ),  .S_AXI_HP1_awlock   (1'b0         ),
+  .S_AXI_HP0_awqos    (4'd0         ),  .S_AXI_HP1_awqos    (4'd0         ),
+  .S_AXI_HP0_awuser   (1'b0         ),  .S_AXI_HP1_awuser   (1'b0         ),
+  .S_AXI_HP0_awvalid  (hp_awvalid[0]),  .S_AXI_HP1_awvalid  (hp_awvalid[1]),
+  .S_AXI_HP0_awready  (hp_awready[0]),  .S_AXI_HP1_awready  (hp_awready[1]),
+  .S_AXI_HP0_wdata    (hp_wdata[0]  ),  .S_AXI_HP1_wdata    (hp_wdata[1]  ),
+  .S_AXI_HP0_wstrb    (hp_wstrb[0]  ),  .S_AXI_HP1_wstrb    (hp_wstrb[1]  ),
+  .S_AXI_HP0_wlast    (hp_wlast[0]  ),  .S_AXI_HP1_wlast    (hp_wlast[1]  ),
+  .S_AXI_HP0_wvalid   (hp_wvalid[0] ),  .S_AXI_HP1_wvalid   (hp_wvalid[1] ),
+  .S_AXI_HP0_wready   (hp_wready[0] ),  .S_AXI_HP1_wready   (hp_wready[1] ),
+  .S_AXI_HP0_bid      (             ),  .S_AXI_HP1_bid      (             ),
+  .S_AXI_HP0_bresp    (hp_bresp[0]  ),  .S_AXI_HP1_bresp    (hp_bresp[1]  ),
+  .S_AXI_HP0_bvalid   (hp_bvalid[0] ),  .S_AXI_HP1_bvalid   (hp_bvalid[1] ),
+  .S_AXI_HP0_bready   (hp_bready[0] ),  .S_AXI_HP1_bready   (hp_bready[1] ),
+  // write only: the read channels stay idle
+  .S_AXI_HP0_araddr   ('0           ),  .S_AXI_HP1_araddr   ('0           ),
+  .S_AXI_HP0_arburst  (2'b01        ),  .S_AXI_HP1_arburst  (2'b01        ),
+  .S_AXI_HP0_arcache  (4'd0         ),  .S_AXI_HP1_arcache  (4'd0         ),
+  .S_AXI_HP0_arid     (6'd0         ),  .S_AXI_HP1_arid     (6'd0         ),
+  .S_AXI_HP0_arlen    (8'd0         ),  .S_AXI_HP1_arlen    (8'd0         ),
+  .S_AXI_HP0_arlock   (1'b0         ),  .S_AXI_HP1_arlock   (1'b0         ),
+  .S_AXI_HP0_arprot   (3'd0         ),  .S_AXI_HP1_arprot   (3'd0         ),
+  .S_AXI_HP0_arqos    (4'd0         ),  .S_AXI_HP1_arqos    (4'd0         ),
+  .S_AXI_HP0_arsize   (3'b100       ),  .S_AXI_HP1_arsize   (3'b100       ),
+  .S_AXI_HP0_aruser   (1'b0         ),  .S_AXI_HP1_aruser   (1'b0         ),
+  .S_AXI_HP0_arvalid  (1'b0         ),  .S_AXI_HP1_arvalid  (1'b0         ),
+  .S_AXI_HP0_arready  (             ),  .S_AXI_HP1_arready  (             ),
+  .S_AXI_HP0_rdata    (             ),  .S_AXI_HP1_rdata    (             ),
+  .S_AXI_HP0_rid      (             ),  .S_AXI_HP1_rid      (             ),
+  .S_AXI_HP0_rlast    (             ),  .S_AXI_HP1_rlast    (             ),
+  .S_AXI_HP0_rresp    (             ),  .S_AXI_HP1_rresp    (             ),
+  .S_AXI_HP0_rvalid   (             ),  .S_AXI_HP1_rvalid   (             ),
+  .S_AXI_HP0_rready   (1'b1         ),  .S_AXI_HP1_rready   (1'b1         ),
+`endif
   .M_AXI_GP0_araddr   (gp0_araddr ),  .M_AXI_GP0_awaddr   (gp0_awaddr ),
   .M_AXI_GP0_arburst  (gp0_arburst),  .M_AXI_GP0_awburst  (gp0_awburst),
   .M_AXI_GP0_arcache  (gp0_arcache),  .M_AXI_GP0_awcache  (gp0_awcache),
@@ -247,7 +308,7 @@ red_pitaya_hk #(
 `ifdef ZCU216_RF
 // fclk = clk_adc0 (312.5 MHz) x 4 / 4 (VCO 1250 MHz). PL_CLK (125 MHz) is only
 // measured (debug clock meter).
-logic pl_clk_ibuf, pl_clk_bufg, adc_clk_bufg, fb, fb_buf, fclk_mmcm, fclk, locked;
+logic pl_clk_ibuf, pl_clk_bufg, adc_clk_bufg, fb, fb_buf, fclk_mmcm, locked;
 
 IBUFDS i_pl_clk_ibuf (.I (pl_clk_p), .IB (pl_clk_n), .O (pl_clk_ibuf));
 BUFG   i_pl_clk_bufg (.I (pl_clk_ibuf), .O (pl_clk_bufg));
@@ -402,7 +463,10 @@ zcu216_fft_test #(
   .dac_data    (dac_data           ),
   .dac_valid   (dac_valid          ),
   .spi_sdo_sel (spi_sdo_sel        ),
-  .meas_clk    (meas_clk           )
+  .meas_clk    (meas_clk           ),
+  .hp_awaddr, .hp_awlen, .hp_awsize, .hp_awburst, .hp_awcache, .hp_awprot,
+  .hp_awvalid, .hp_awready, .hp_wdata, .hp_wstrb, .hp_wlast, .hp_wvalid,
+  .hp_wready, .hp_bresp, .hp_bvalid, .hp_bready
 );
 `else
 for (genvar i = 1; i < 3; i++) begin : g_no_rf
