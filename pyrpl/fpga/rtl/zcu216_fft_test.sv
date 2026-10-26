@@ -1,7 +1,9 @@
 /**
  * ZCU216 FFT bring-up block (register slot 1): NCH channels of
- * tone generator -> zcu216_fft_dit8 (N = 2^(SUB+3), real input) -> zcu216_fft_spec,
+ *   tone generator -> zcu216_fft_dit8 (N = 2^(SUB+3), real input) ->
+ *   zcu216_fft_mag (|X|) -> zcu216_fft_reorder (natural order) -> zcu216_fft_spec
  * on fclk (8 samples per clock). The tone generator stands in for the RF-ADC.
+ * Magnitudes are mag = K|X|/2, K = 1.64676 (CORDIC gain).
  *
  * Register map (byte offsets in the slot; RO = read only):
  *   0x00  RO  {16'hf0f6, log2 N, NCH}
@@ -9,17 +11,16 @@
  *   0x08  RO  status: [0] all xfft cores configured, [1] fclk locked,
  *                     [8+c] window of channel c captured (since the last arm)
  *   0x0c      min_bin: peak search ignores bins below it
- *   0x10      win_start: first bin of the captured window
- *   0x14      mag_shift: window words are min(|X|^2 >> mag_shift, 2^32-1)
+ *   0x10      win_start: first bin of the captured window (multiple of 4)
  *   0x18  W   any write: capture the next whole frame into the windows (all channels)
  *   0x1c  W   any write: clear the sticky xfft event bits
  *   0x20  RO  window length WIN (bins)
  *   0x40 + 0x40*c, channel c:
  *     +0x00 inc_a   +0x04 amp_a   +0x08 inc_b   +0x0c amp_b   +0x10 noise bits (0-18)
- *     +0x20 RO frames      +0x24 RO peak bin      +0x28/+0x2c RO peak |X|^2 lo/hi
+ *     +0x20 RO frames      +0x24 RO peak bin      +0x28 RO peak mag
  *     +0x30 RO sticky xfft events: [0] data_in halt, [1] tlast unexpected,
  *                                  [2] tlast missing
- *   0x10000 * (c+1) + 4*i: RO window word i of channel c
+ *   0x10000 * (c+1) + 4*i: RO mag of bin win_start + i, channel c
  *
  * Settings cross into fclk as quasi-static values; results cross back on a
  * per-frame toggle, after which they hold for a whole frame.
@@ -52,7 +53,6 @@ module zcu216_fft_test #(
 localparam int NB = SUB + 3;
 localparam int BW = SUB + 2;
 localparam int XW = 27 + 5;
-localparam int MW = 2 * XW - 1;
 localparam int AW = $clog2(WIN);
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -61,7 +61,6 @@ localparam int AW = $clog2(WIN);
 
 logic          run;
 logic [BW-1:0] min_bin, win_start;
-logic [5:0]    mag_shift;
 logic          arm, clr;
 logic [31:0]   inc_a [NCH], inc_b [NCH];
 logic [15:0]   amp_a [NCH], amp_b [NCH];
@@ -70,7 +69,7 @@ logic [4:0]    nbits [NCH];
 // results in sys_clk
 logic [31:0]   s_frames [NCH];
 logic [BW-1:0] s_peak_bin [NCH];
-logic [MW-1:0] s_peak_mag [NCH];
+logic [31:0]   s_peak_mag [NCH];
 logic [2:0]    s_events [NCH];
 logic [NCH-1:0] s_win_ready;
 logic          s_cfg_done, s_locked;
@@ -82,7 +81,6 @@ always_ff @(posedge sys_clk)
     run       <= 1'b0;
     min_bin   <= BW'(16);
     win_start <= '0;
-    mag_shift <= '0;
     arm       <= 1'b0;
     clr       <= 1'b0;
     for (int c = 0; c < NCH; c++) begin
@@ -94,8 +92,7 @@ always_ff @(posedge sys_clk)
     case (a)
       20'h00004: run       <= sys_wdata[0];
       20'h0000c: min_bin   <= sys_wdata[BW-1:0];
-      20'h00010: win_start <= sys_wdata[BW-1:0];
-      20'h00014: mag_shift <= sys_wdata[5:0];
+      20'h00010: win_start <= {sys_wdata[BW-1:2], 2'b00};
       20'h00018: arm       <= !arm;
       20'h0001c: clr       <= !clr;
       default: ;
@@ -149,7 +146,6 @@ function automatic logic [31:0] reg_read(input logic [19:0] ad);
     20'h00008: v = {{(24-NCH){1'b0}}, s_win_ready, 6'h0, s_locked, s_cfg_done};
     20'h0000c: v = 32'(min_bin);
     20'h00010: v = 32'(win_start);
-    20'h00014: v = 32'(mag_shift);
     20'h00020: v = 32'(WIN);
     default: ;
   endcase
@@ -162,8 +158,7 @@ function automatic logic [31:0] reg_read(input logic [19:0] ad);
       20'h00050 + 20'h40*c: v = 32'(nbits[c]);
       20'h00060 + 20'h40*c: v = s_frames[c];
       20'h00064 + 20'h40*c: v = 32'(s_peak_bin[c]);
-      20'h00068 + 20'h40*c: v = s_peak_mag[c][31:0];
-      20'h0006c + 20'h40*c: v = 32'(s_peak_mag[c][MW-1:32]);
+      20'h00068 + 20'h40*c: v = s_peak_mag[c];
       20'h00070 + 20'h40*c: v = 32'(s_events[c]);
       default: ;
     endcase
@@ -177,7 +172,6 @@ endfunction
 (* ASYNC_REG = "TRUE" *) logic f_run_m, f_run, f_clr_m, f_clr;
 (* ASYNC_REG = "TRUE" *) logic f_arm_m, f_arm;
 logic [BW-1:0] f_min_bin_m, f_min_bin, f_win_start_m, f_win_start;
-logic [5:0]    f_mag_shift_m, f_mag_shift;
 
 always_ff @(posedge fclk) begin
   {f_run, f_run_m} <= {f_run_m, run};
@@ -185,7 +179,6 @@ always_ff @(posedge fclk) begin
   {f_arm, f_arm_m} <= {f_arm_m, arm};
   {f_min_bin,   f_min_bin_m}   <= {f_min_bin_m,   min_bin};
   {f_win_start, f_win_start_m} <= {f_win_start_m, win_start};
-  {f_mag_shift, f_mag_shift_m} <= {f_mag_shift_m, mag_shift};
 end
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -239,15 +232,27 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
     else f_events <= f_events | {ev_miss, ev_unexp, ev_halt};
   end
 
+  logic [31:0]    m_mag [4], n_mag [4];
+  logic [SUB-1:0] m_k, n_t;
+  logic           m_valid, m_last, n_valid, n_first, n_last;
+
+  zcu216_fft_mag #(.XW(XW), .SUB(SUB)) i_mag (
+    .clk (fclk), .x_re, .x_im, .x_k, .x_valid, .x_last,
+    .mag (m_mag), .m_k, .m_valid, .m_last);
+
+  zcu216_fft_reorder #(.SUB(SUB)) i_reorder (
+    .clk (fclk), .rstn (frstn), .m_mag, .m_k, .m_valid, .m_last,
+    .n_mag, .n_t, .n_valid, .n_first, .n_last);
+
   logic          f_upd, f_done;
   logic [31:0]   f_frames;
   logic [BW-1:0] f_peak_bin;
-  logic [MW-1:0] f_peak_mag;
+  logic [31:0]   f_peak_mag;
 
-  zcu216_fft_spec #(.SUB(SUB), .XW(XW), .WIN(WIN)) i_spec (
+  zcu216_fft_spec #(.SUB(SUB), .WIN(WIN)) i_spec (
     .clk (fclk), .rstn (frstn),
-    .x_re, .x_im, .x_k, .x_valid, .x_last,
-    .min_bin (f_min_bin), .win_start (f_win_start), .mag_shift (f_mag_shift),
+    .n_mag, .n_t, .n_valid, .n_first, .n_last,
+    .min_bin (f_min_bin), .win_start (f_win_start),
     .arm (f_arm),
     .upd (f_upd), .frames (f_frames), .peak_bin (f_peak_bin), .peak_mag (f_peak_mag),
     .done (f_done),

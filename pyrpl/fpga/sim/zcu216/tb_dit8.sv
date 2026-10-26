@@ -15,6 +15,9 @@ module tb_dit8;
   logic signed [`TB_DW+4:0] x_re [4], x_im [4];
   logic [SUB-1:0] x_k;
   logic x_valid, x_last, eh, eu, em;
+  logic [31:0] m_mag [4], n_mag [4];
+  logic [SUB-1:0] m_k, n_t;
+  logic m_valid, m_last, n_valid, n_first, n_last;
 
   zcu216_fft_dit8 #(.SUB(SUB), .DW(`TB_DW), .TWC_FILE({SIMDIR, "/mem/zcu216_twc.mem"}),
                     .TWF_FILE({SIMDIR, "/mem/zcu216_twf.mem"})) dut (
@@ -22,10 +25,16 @@ module tb_dit8;
     .x_re, .x_im, .x_k, .x_valid, .x_last,
     .ev_halt(eh), .ev_tlast_unexpected(eu), .ev_tlast_missing(em));
 
-  integer fi, fo, fr_in = -1, fr = 0;
+  zcu216_fft_mag #(.XW(`TB_DW + 5), .SUB(SUB)) i_mag (
+    .clk, .x_re, .x_im, .x_k, .x_valid, .x_last, .mag(m_mag), .m_k, .m_valid, .m_last);
+  zcu216_fft_reorder #(.SUB(SUB)) i_ro (
+    .clk, .rstn, .m_mag, .m_k, .m_valid, .m_last, .n_mag, .n_t, .n_valid, .n_first, .n_last);
+
+  integer fi, fo, fn, fr_in = -1, fr = 0, fr_n = 0;
   initial begin
     fi = $fopen({SIMDIR, "/in.txt"}, "w");
     fo = $fopen({SIMDIR, "/out.txt"}, "w");
+    fn = $fopen({SIMDIR, "/nat.txt"}, "w");
     repeat (20) @(posedge clk);
     rstn <= 1;
     run  <= 1;
@@ -47,7 +56,7 @@ module tb_dit8;
     repeat (2 * BEATS) @(posedge clk);
     in_valid <= 0;
     repeat (3000) @(posedge clk);
-    $fclose(fi);  $fclose(fo);
+    $fclose(fi);  $fclose(fo);  $fclose(fn);
     $display("TB_DONE frames_out=%0d", fr);
     $finish;
   end
@@ -61,6 +70,10 @@ module tb_dit8;
       for (int q = 0; q < 4; q++)
         $fwrite(fo, "%0d %0d %0d %0d\n", fr, q*BEATS + x_k, x_re[q], x_im[q]);
       if (x_last) fr++;
+    end
+    if (n_valid) begin
+      for (int j = 0; j < 4; j++) $fwrite(fn, "%0d %0d %0d\n", fr_n, 4*n_t + j, n_mag[j]);
+      if (n_last) fr_n++;
     end
     if (rstn && (eh | eu | em)) $display("EVENT halt=%b unexp=%b miss=%b t=%0t", eh, eu, em, $time);
   end

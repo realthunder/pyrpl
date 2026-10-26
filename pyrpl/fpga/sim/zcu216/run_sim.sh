@@ -1,7 +1,8 @@
 #!/bin/bash
 # xsim checks of the ZCU216 FFT at N = 256 (eight 32-point xfft cores), the same
 # RTL as the 256k build:
-#   tb_dit8  continuous source -> zcu216_fft_dit8, every bin compared with numpy
+#   tb_dit8  continuous source -> zcu216_fft_dit8 -> _mag -> _reorder; every bin
+#            (complex, and the natural-order magnitudes) compared with numpy
 #            (cmp.py); TB_DW=17 forces the 2-bit cut that the 256k build makes
 #   tb_test  zcu216_fft_test through the register bus: tones, peaks, window
 # Usage: sim/zcu216/run_sim.sh [tb_dit8|tb_test|all] [TB_DW]   (from fpga/)
@@ -30,7 +31,7 @@ if {[file exists $work/p/p.xpr]} {
   set_property CONFIG.output_ordering {bit_reversed_order} [get_ips xfft_sub]
   set_property CONFIG.xk_index {true} [get_ips xfft_sub]
   generate_target {simulation} [get_ips xfft_sub]
-  foreach f {zcu216_fft_dit8.sv zcu216_tone_gen.sv zcu216_fft_spec.sv zcu216_fft_test.sv} {
+  foreach f {zcu216_fft_dit8.sv zcu216_fft_mag.sv zcu216_fft_reorder.sv zcu216_tone_gen.sv zcu216_fft_spec.sv zcu216_fft_test.sv} {
     add_files -norecurse $fpga/rtl/\$f
   }
   add_files -fileset sim_1 -norecurse [list $here/tb_dit8.sv $here/tb_test.sv]

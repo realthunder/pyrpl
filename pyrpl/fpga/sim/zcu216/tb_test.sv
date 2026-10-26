@@ -41,12 +41,12 @@ module tb_test;
     wr(32'h04, 1);                 // run
     repeat (400) @(posedge sclk);  // ~12 frames of 256 samples
     for (int c = 0; c < 2; c++) begin
-      logic [31:0] fr, pb, pl, ph, ev;
+      logic [31:0] fr, pb, pm, ev;
       rd(32'h60 + 32'h40*c, fr); rd(32'h64 + 32'h40*c, pb);
-      rd(32'h68 + 32'h40*c, pl); rd(32'h6c + 32'h40*c, ph); rd(32'h70 + 32'h40*c, ev);
-      $display("CH%0d frames=%0d peak_bin=%0d peak_mag=%h_%h events=%b", c, fr, pb, ph, pl, ev);
+      rd(32'h68 + 32'h40*c, pm); rd(32'h70 + 32'h40*c, ev);
+      $display("CH%0d frames=%0d peak_bin=%0d peak_mag=%0d events=%b", c, fr, pb, pm, ev[2:0]);
     end
-    wr(32'h10, 96);  wr(32'h14, 24);  wr(32'h18, 1);       // window 96.., arm
+    wr(32'h10, 96);  wr(32'h18, 1);                         // window 96.., arm
     do begin rd(32'h8, v); end while (v[9:8] != 2'b11);
     $display("WINDOW ready, status %h", v);
     for (int i = 0; i < 10; i++) begin

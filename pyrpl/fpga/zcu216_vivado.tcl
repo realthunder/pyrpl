@@ -115,6 +115,8 @@ if {$fft_en} {
     zcu216_gen_tables $path_out $fft_nfft
 
     read_verilog -sv              $path_rtl/zcu216_fft_dit8.sv
+    read_verilog -sv              $path_rtl/zcu216_fft_mag.sv
+    read_verilog -sv              $path_rtl/zcu216_fft_reorder.sv
     read_verilog -sv              $path_rtl/zcu216_tone_gen.sv
     read_verilog -sv              $path_rtl/zcu216_fft_spec.sv
     read_verilog -sv              $path_rtl/zcu216_fft_test.sv

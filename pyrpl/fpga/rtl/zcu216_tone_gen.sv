@@ -51,16 +51,19 @@ always_ff @(posedge clk)
 // noise: one xorshift32 per lane
 logic [31:0] rnd [8];
 
+logic [31:0] rnd1 [8], rnd2 [8], rnd3 [8];
+
+always_comb
+  for (int j = 0; j < 8; j++) begin
+    rnd1[j] = rnd[j]  ^ (rnd[j]  << 13);
+    rnd2[j] = rnd1[j] ^ (rnd1[j] >> 17);
+    rnd3[j] = rnd2[j] ^ (rnd2[j] << 5);
+  end
+
 always_ff @(posedge clk)
   for (int j = 0; j < 8; j++)
     if (!rstn) rnd[j] <= 32'h9e3779b9 * (j + 1);
-    else begin
-      automatic logic [31:0] x = rnd[j];
-      x = x ^ (x << 13);
-      x = x ^ (x >> 17);
-      x = x ^ (x << 5);
-      rnd[j] <= x;
-    end
+    else       rnd[j] <= rnd3[j];
 
 // pipeline: phase -> ROM (2) -> multiply (2) -> sum, saturate
 localparam int LAT = 6;
