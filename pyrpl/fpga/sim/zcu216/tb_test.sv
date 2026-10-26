@@ -7,12 +7,19 @@ module tb_test;
   logic srstn = 0, frstn = 0;
   logic [31:0] sys_addr = 0, sys_wdata = 0, sys_rdata;
   logic sys_wen = 0, sys_ren = 0, sys_err, sys_ack;
+  // the RF Data Converter is not simulated: the DAC stream comes straight back
+  // into all four ADC inputs, a digital stand-in for the XM655 loopback cable
+  logic [127:0] adc_data [4], dac_data;
+  logic         dac_valid;
+  logic [1:0]   sdo_sel;
+  always_ff @(posedge fclk) for (int i = 0; i < 4; i++) adc_data[i] <= dac_data;
 
   zcu216_fft_test #(.NCH(2), .SUB(SUB), .WIN(WIN),
     .TWC_FILE({SIMDIR, "/mem/zcu216_twc.mem"}), .TWF_FILE({SIMDIR, "/mem/zcu216_twf.mem"}),
     .SIN_FILE({SIMDIR, "/mem/zcu216_sin.mem"})) dut (
     .sys_clk(sclk), .sys_rstn(srstn), .sys_addr, .sys_wdata, .sys_wen, .sys_ren,
-    .sys_rdata, .sys_err, .sys_ack, .fclk, .frstn, .flocked(1'b1));
+    .sys_rdata, .sys_err, .sys_ack, .fclk, .frstn, .flocked(1'b1),
+    .adc_data, .adc_valid(4'hf), .dac_data, .dac_valid, .spi_sdo_sel(sdo_sel));
 
   task automatic wr(input logic [31:0] ad, input logic [31:0] d);
     @(negedge sclk); sys_addr = ad; sys_wdata = d; sys_wen = 1;
@@ -53,6 +60,19 @@ module tb_test;
       rd(32'h10000 + 4*(37 - 96 + 64 + i), f0);   // (out of window for ch0: just exercise)
       rd(32'h20000 + 4*i, f1);
       $display("WIN ch1 bin %0d = %0d", 96 + i, f1);
+    end
+    // loopback: DAC tone on bin 50 (+ bin 51 at a quarter), ch1 now takes ADC channel 2
+    wr(32'h200, 32'd50 << (32 - NB));  wr(32'h204, 12000);
+    wr(32'h208, 32'd51 << (32 - NB));  wr(32'h20c, 3000);   wr(32'h214, 1);
+    wr(32'h94, 3);                                         // ch1 source = ADC ch 2
+    wr(32'h24, 2);  rd(32'h24, v);
+    repeat (400) @(posedge sclk);
+    begin
+      logic [31:0] pb, pm, ev, sr;
+      rd(32'h94, sr); rd(32'ha4, pb); rd(32'ha8, pm); rd(32'hb0, ev);
+      $display("LOOP ch1 src=%0d peak_bin=%0d peak_mag=%0d events=%b sdo_sel=%0d", sr, pb, pm, ev[2:0], v);
+      rd(32'h64, pb);
+      $display("LOOP ch0 (tone generator) peak_bin=%0d", pb);
     end
     wr(32'h04, 0);
     repeat (200) @(posedge sclk);

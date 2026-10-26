@@ -5,10 +5,11 @@
 # Register bus: the PS reaches the Red Pitaya register map at 0x8000_0000
 # (Red Pitaya: 0x4000_0000), same offsets; see rtl/zcu216_top.sv.
 #
-# FFT (slot 1), set by make.sh: FFT_IMPL=6 (0 = shell only), FFT_NFFT = log2 of
-# the real FFT length, FFT_CH = channels. The eight xfft sub-cores per channel
-# are generated here (xfft_sub, 2^(FFT_NFFT-3) points), and the twiddle and sine
-# tables are written to out/ (zcu216/gen_tables.tcl).
+# RF + FFT (slots 1 and 2), set by make.sh: FFT_IMPL=6 (0 = shell only),
+# FFT_NFFT = log2 of the real FFT length, FFT_CH = channels. Generated here: the
+# eight xfft sub-cores per channel (xfft_sub, 2^(FFT_NFFT-3) points), the RF Data
+# Converter (rfdc, ip/rfdc_zcu216.tcl), and the twiddle and sine tables in out/
+# (zcu216/gen_tables.tcl). The RTL sees the define ZCU216_RF.
 #
 # Usage (selects this script and the part):
 #   BOARD=zcu216 ./make.sh
@@ -112,8 +113,15 @@ if {$fft_en} {
     set_property generate_synth_checkpoint false [get_files xfft_sub.xci]
     generate_target {synthesis} [get_ips xfft_sub]
 
+    source $path_ip/rfdc_zcu216.tcl
+    rfdc_zcu216_create $path_out/ip
+    set_property generate_synth_checkpoint false [get_files rfdc.xci]
+    generate_target {synthesis} [get_ips rfdc]
+
     source zcu216/gen_tables.tcl
     zcu216_gen_tables $path_out $fft_nfft
+
+    read_verilog -sv              $path_rtl/zcu216_axil_bridge.sv
 
     read_verilog -sv              $path_rtl/zcu216_fft_dit8.sv
     read_verilog -sv              $path_rtl/zcu216_fft_mag.sv
@@ -124,20 +132,23 @@ if {$fft_en} {
 }
 
 read_xdc                          $path_sdc/zcu216.xdc
+if {$fft_en} { read_xdc           $path_sdc/zcu216_rf.xdc }
 
 ################################################################################
 # synthesis
 ################################################################################
 
-synth_design -top zcu216_top -flatten_hierarchy none \
-    -generic FFT_EN=$fft_en -generic FFT_NFFT=$fft_nfft -generic FFT_NCH=$fft_ch
+set rf_define [expr {$fft_en ? {-verilog_define ZCU216_RF} : {}}]
+synth_design -top zcu216_top -flatten_hierarchy none {*}$rf_define \
+    -generic FFT_NFFT=$fft_nfft -generic FFT_NCH=$fft_ch
 
-# pl_clk0 (register bus) and fclk (FFT): every crossing is a quasi-static
-# setting, a per-frame toggle handshake or the dual-clock window RAM
+# pl_clk0 (register bus) and the CLK104 clocks (fclk for the FFT and the RF
+# streams): every crossing is a quasi-static setting, a per-frame toggle
+# handshake, the dual-clock window RAM, or inside the RF Data Converter
 if {$fft_en} {
     set_clock_groups -asynchronous \
         -group [get_clocks clk_pl_0] \
-        -group [get_clocks -of_objects [get_pins -hier -filter {NAME =~ *i_mmcm/CLKOUT0}]]
+        -group [get_clocks -include_generated_clocks pl_clk]
 }
 
 write_checkpoint         -force   $path_out/post_synth

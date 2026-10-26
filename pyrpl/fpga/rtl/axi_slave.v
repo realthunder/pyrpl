@@ -42,7 +42,7 @@
  * received AXI response is created and new AXI is accepted.
  *
  * To prevent AXI lockups because no response is received, this slave creates its
- * own after 32 cycles (ack_cnt).
+ * own after 2^(ACK_W-1) cycles, 32 by default (ack_cnt).
  * 
  */
 
@@ -50,7 +50,9 @@ module axi_slave #(
   parameter           AXI_DW         =  64           , // data width (8,16,...,1024)
   parameter           AXI_AW         =  32           , // address width
   parameter           AXI_IW         =   8           , // ID width
-  parameter           AXI_SW         = AXI_DW >> 3     // strobe width - 1 bit for every data byte
+  parameter           AXI_SW         = AXI_DW >> 3   , // strobe width - 1 bit for every data byte
+  parameter           ACK_W          =   6             // a peripheral that has not acked after
+                                                      // 2^(ACK_W-1) cycles times out (SLVERR)
 )(
   // global signals
   input                     axi_clk_i      ,  //!< AXI global clock
@@ -112,7 +114,7 @@ module axi_slave #(
 //---------------------------------------------------------------------------------
 
 wire                 ack         ;
-reg   [      6-1: 0] ack_cnt     ;
+reg   [ ACK_W-1: 0] ack_cnt     ;
 reg                  sys_ack_d   ;  // sys_ack_i delayed 1 cycle (enforce 2-cycle PS read)
 
 reg                  rd_do       ;
@@ -185,24 +187,24 @@ if (axi_rstn_i == 1'b0) begin
    axi_rresp_o   <= 2'h0 ;
 end else begin
    axi_bvalid_o  <= wr_do && ack  ;
-   axi_bresp_o   <= {(wr_error || ack_cnt[5]),1'b0} ;  // 2'b10 SLVERR    2'b00 OK
+   axi_bresp_o   <= {(wr_error || ack_cnt[ACK_W-1]),1'b0} ;  // 2'b10 SLVERR    2'b00 OK
    axi_rlast_o   <= rd_do && ack  ;
    axi_rvalid_o  <= rd_do && ack  ;
-   axi_rresp_o   <= {(rd_error || ack_cnt[5]),1'b0} ;  // 2'b10 SLVERR    2'b00 OK
+   axi_rresp_o   <= {(rd_error || ack_cnt[ACK_W-1]),1'b0} ;  // 2'b10 SLVERR    2'b00 OK
    axi_rdata_o   <= sys_rdata_i   ;
 end
 
 // acknowledge protection
 always @(posedge axi_clk_i)
 if (axi_rstn_i == 1'b0) begin
-   ack_cnt   <= 6'h0 ;
+   ack_cnt   <= {ACK_W{1'b0}} ;
 end else begin
    if ((axi_arvalid_i && axi_arready_o) || (axi_awvalid_i && axi_awready_o))  // rd || wr request
-      ack_cnt <= 6'h1 ;
+      ack_cnt <= {{ACK_W-1{1'b0}}, 1'b1} ;
    else if (ack)
-      ack_cnt <= 6'h0 ;
+      ack_cnt <= {ACK_W{1'b0}} ;
    else if (|ack_cnt)
-      ack_cnt <= ack_cnt + 6'h1 ;
+      ack_cnt <= ack_cnt + 1'b1 ;
 end
 
 // Enforce a 2-cycle PS read: delay the peripheral ack by one sys-clk cycle so the AXI
@@ -214,7 +216,7 @@ always @(posedge axi_clk_i)
    if (axi_rstn_i == 1'b0) sys_ack_d <= 1'b0;
    else                    sys_ack_d <= sys_ack_i;
 
-assign ack = sys_ack_d || ack_cnt[5] || (rd_do && rd_errorw) || (wr_do && wr_errorw); // bus acknowledge (1-cycle delayed) or timeout or error
+assign ack = sys_ack_d || ack_cnt[ACK_W-1] || (rd_do && rd_errorw) || (wr_do && wr_errorw); // bus acknowledge (1-cycle delayed) or timeout or error
 
 //------------------------------------------
 //  Simple slave interface

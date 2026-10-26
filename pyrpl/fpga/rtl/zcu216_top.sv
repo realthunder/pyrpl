@@ -1,24 +1,29 @@
 /**
  * ZCU216 (XCZU49DR RFSoC) top level.
  *
- * Phase 2 of the Red Pitaya port: the processor reaches the Red Pitaya
- * register bus. M_AXI_HPM0_LPD (0x8000_0000, 16 MB, 32 bits) feeds the Red
- * Pitaya axi_slave, and the bus is split into the same eight 2 MB slots as
- * red_pitaya_top.v, so every register keeps its Red Pitaya offset:
+ * The processor reaches the Red Pitaya register bus: M_AXI_HPM0_LPD (0x8000_0000,
+ * 16 MB, 32 bits) feeds the Red Pitaya axi_slave, and the bus is split into the
+ * same eight 2 MB slots as red_pitaya_top.v, so every register keeps its Red
+ * Pitaya offset (Red Pitaya address = ZCU216 address - 0x4000_0000):
  *
  *   slot 0  0x8000_0000  hk (ID, DNA, LEDs; 0x40 = board 1, 0x44 = DNA[95:64])
- *   slot 1  0x8020_0000  FFT bring-up block (zcu216_fft_test), when FFT_EN
- *   slot 2-7             not built yet: reads return 0, writes are ignored
+ *   slot 1  0x8020_0000  FFT / RF bring-up block (zcu216_fft_test)        [RF]
+ *   slot 2  0x8040_0000  RF Data Converter registers (AXI4-Lite, 256 KB)  [RF]
+ *   slot 3-7             not built yet: reads return 0, writes are ignored
  *
- * The bus runs on pl_clk0 (100 MHz). The FFT runs on fclk, 312.5 MHz from an
- * MMCM on pl_clk0 for now (the RF-ADC tile clock replaces it later): 8 samples
- * per clock is 2.5 GS/s. LEDs 0-6 are hk's LED register (0x30); LED 7 is a
- * heartbeat that toggles every 0.67 s, so a running PL clock is visible before
- * any register access.
+ * [RF] (define ZCU216_RF, set by zcu216_vivado.tcl unless FFT_IMPL=0): the RF
+ * Data Converter (ip/rfdc_zcu216.tcl: ADC tile 224 and DAC tile 228 at 2.5 GS/s)
+ * and the FFT. Their clock, fclk = 312.5 MHz = 2.5 GS/s / 8, comes from the
+ * CLK104's PL_CLK (125 MHz, x2.5 in an MMCM), so it is locked to the sample
+ * clocks. Nothing runs there until zcu216/clk104 has programmed the CLK104 and
+ * the RF tiles have been restarted; the MMCM retries its lock until then.
+ *
+ * The bus runs on pl_clk0 (100 MHz). LEDs 0-6 are hk's LED register (0x30);
+ * LED 7 is a heartbeat that toggles every 0.67 s, so a running PL clock is
+ * visible before any register access.
  */
 
 module zcu216_top #(
-  parameter bit    FFT_EN   = 1,
   parameter int    FFT_NFFT = 18,     // log2 of the real FFT length
   parameter int    FFT_NCH  = 2,
   parameter int    FFT_WIN  = 4096,
@@ -26,6 +31,19 @@ module zcu216_top #(
   parameter string TWF_FILE = "out/zcu216_twf.mem",
   parameter string SIN_FILE = "out/zcu216_sin.mem"
 ) (
+`ifdef ZCU216_RF
+  // CLK104
+  input  logic       pl_clk_p,  pl_clk_n,      // PL_CLK, 125 MHz LVDS
+  output logic [1:0] spi_sdo_sel,              // which chip drives the SPI readback
+  input  logic       adc2_clk_p, adc2_clk_n,   // ADC_REFCLK -> tile 226
+  input  logic       dac2_clk_p, dac2_clk_n,   // DAC_REFCLK -> tile 230
+  input  logic       sysref_in_p, sysref_in_n,
+  // RF-ADC / RF-DAC pins (dedicated)
+  input  logic       vin00_p, vin00_n, vin01_p, vin01_n, vin02_p, vin02_n,
+  input  logic       vin03_p, vin03_n, vin10_p, vin10_n, vin20_p, vin20_n,
+  output logic       vout00_p, vout00_n, vout01_p, vout01_n, vout02_p, vout02_n,
+  output logic       vout03_p, vout03_n, vout10_p, vout10_n, vout20_p, vout20_n,
+`endif
   output logic [7:0] led_g
 );
 
@@ -110,7 +128,8 @@ always_ff @(posedge clk)
 axi_slave #(
   .AXI_DW (32),
   .AXI_AW (32),
-  .AXI_IW (16)
+  .AXI_IW (16),
+  .ACK_W  (10)                // RF Data Converter accesses take longer than 32 cycles
 ) i_axi_slave (
   .axi_clk_i      (sys_clk                                     ),
   .axi_rstn_i     (sys_rstn                                    ),
@@ -176,7 +195,7 @@ assign ps_sys_err   = |(sys_cs & sys_err);
 assign ps_sys_ack   = |(sys_cs & sys_ack);
 
 generate
-for (genvar i = 2; i < 8; i++) begin : g_empty_slot
+for (genvar i = 3; i < 8; i++) begin : g_empty_slot
   assign sys_rdata[i*32+:32] = 32'h0;
   assign sys_err  [i       ] = 1'b0;
   assign sys_ack  [i       ] = 1'b1;
@@ -219,71 +238,166 @@ red_pitaya_hk #(
 );
 
 ////////////////////////////////////////////////////////////////////////////////
-// FFT bring-up (slot 1) on fclk = 312.5 MHz: pl_clk0 x 12.5 / 4 (VCO 1250 MHz)
+// RF Data Converter (slot 2) and FFT / RF bring-up (slot 1)
 ////////////////////////////////////////////////////////////////////////////////
 
-if (FFT_EN) begin : g_fft
-  logic fb, fb_buf, fclk_mmcm, fclk, locked;
+`ifdef ZCU216_RF
+// fclk = PL_CLK (125 MHz) x 10 / 4 = 312.5 MHz (VCO 1250 MHz)
+logic pl_clk_ibuf, pl_clk_bufg, fb, fb_buf, fclk_mmcm, fclk, locked;
 
-  MMCME4_BASE #(
-    .CLKIN1_PERIOD    (10.0 ),
-    .DIVCLK_DIVIDE    (1    ),
-    .CLKFBOUT_MULT_F  (12.5 ),
-    .CLKOUT0_DIVIDE_F (4.0  )
-  ) i_mmcm (
-    .CLKIN1    (clk       ),
-    .CLKFBIN   (fb_buf    ),
-    .CLKFBOUT  (fb        ),
-    .CLKFBOUTB (          ),
-    .CLKOUT0   (fclk_mmcm ),
-    .CLKOUT0B  (          ),
-    .CLKOUT1   (          ),  .CLKOUT1B  (          ),
-    .CLKOUT2   (          ),  .CLKOUT2B  (          ),
-    .CLKOUT3   (          ),  .CLKOUT3B  (          ),
-    .CLKOUT4   (          ),  .CLKOUT5   (          ),
-    .CLKOUT6   (          ),
-    .LOCKED    (locked    ),
-    .PWRDWN    (1'b0      ),
-    .RST       (!ps_rstn  )
-  );
+IBUFDS i_pl_clk_ibuf (.I (pl_clk_p), .IB (pl_clk_n), .O (pl_clk_ibuf));
+BUFG   i_pl_clk_bufg (.I (pl_clk_ibuf), .O (pl_clk_bufg));
 
-  BUFG i_fb_buf  (.I (fb       ), .O (fb_buf));
-  BUFG i_clk_buf (.I (fclk_mmcm), .O (fclk  ));
+// PL_CLK only appears once the CLK104 is programmed: while unlocked, reset the
+// MMCM every 1.3 ms (pl_clk0) so it locks soon after the clock shows up
+(* ASYNC_REG = "TRUE" *) logic [1:0] locked_s;
+logic [16:0] lock_cnt;
+logic        mmcm_rst;
 
-  // fclk reset: held while the MMCM is unlocked or the bus is in reset
-  (* ASYNC_REG = "TRUE" *) logic [2:0] frst_s;
-  logic frstn;
-  always_ff @(posedge fclk or negedge locked)
-    if (!locked) frst_s <= '0;
-    else         frst_s <= {frst_s[1:0], sys_rstn};
-  always_ff @(posedge fclk) frstn <= frst_s[2];
-
-  zcu216_fft_test #(
-    .NCH      (FFT_NCH       ),
-    .SUB      (FFT_NFFT - 3  ),
-    .WIN      (FFT_WIN       ),
-    .TWC_FILE (TWC_FILE      ),
-    .TWF_FILE (TWF_FILE      ),
-    .SIN_FILE (SIN_FILE      )
-  ) i_fft (
-    .sys_clk   (sys_clk            ),
-    .sys_rstn  (sys_rstn           ),
-    .sys_addr  (ps_sys_addr        ),
-    .sys_wdata (ps_sys_wdata       ),
-    .sys_wen   (sys_wen[1]         ),
-    .sys_ren   (sys_ren[1]         ),
-    .sys_rdata (sys_rdata[1*32+:32]),
-    .sys_err   (sys_err[1]         ),
-    .sys_ack   (sys_ack[1]         ),
-    .fclk      (fclk               ),
-    .frstn     (frstn              ),
-    .flocked   (locked             )
-  );
-end else begin : g_no_fft
-  assign sys_rdata[1*32+:32] = 32'h0;
-  assign sys_err  [1]        = 1'b0;
-  assign sys_ack  [1]        = 1'b1;
+always_ff @(posedge clk) begin
+  locked_s <= {locked_s[0], locked};
+  if (locked_s[1]) lock_cnt <= '0;
+  else             lock_cnt <= lock_cnt + 1'b1;
+  mmcm_rst <= !locked_s[1] && lock_cnt[16:4] == '0;   // 16 cycles every 2^17
 end
+
+MMCME4_BASE #(
+  .CLKIN1_PERIOD    (8.0  ),
+  .DIVCLK_DIVIDE    (1    ),
+  .CLKFBOUT_MULT_F  (10.0 ),
+  .CLKOUT0_DIVIDE_F (4.0  )
+) i_mmcm (
+  .CLKIN1    (pl_clk_bufg),
+  .CLKFBIN   (fb_buf    ),
+  .CLKFBOUT  (fb        ),
+  .CLKFBOUTB (          ),
+  .CLKOUT0   (fclk_mmcm ),
+  .CLKOUT0B  (          ),
+  .CLKOUT1   (          ),  .CLKOUT1B  (          ),
+  .CLKOUT2   (          ),  .CLKOUT2B  (          ),
+  .CLKOUT3   (          ),  .CLKOUT3B  (          ),
+  .CLKOUT4   (          ),  .CLKOUT5   (          ),
+  .CLKOUT6   (          ),
+  .LOCKED    (locked    ),
+  .PWRDWN    (1'b0      ),
+  .RST       (mmcm_rst || !ps_rstn)
+);
+
+BUFG i_fb_buf  (.I (fb       ), .O (fb_buf));
+BUFG i_clk_buf (.I (fclk_mmcm), .O (fclk  ));
+
+// fclk reset: held while the MMCM is unlocked or the bus is in reset
+(* ASYNC_REG = "TRUE" *) logic [2:0] frst_s;
+logic frstn;
+always_ff @(posedge fclk or negedge locked)
+  if (!locked) frst_s <= '0;
+  else         frst_s <= {frst_s[1:0], sys_rstn};
+always_ff @(posedge fclk) frstn <= frst_s[2];
+
+// RF Data Converter: AXI4-Lite from slot 2, streams on fclk
+logic [17:0]  rf_awaddr, rf_araddr;
+logic [31:0]  rf_wdata, rf_rdata;
+logic [3:0]   rf_wstrb;
+logic [1:0]   rf_bresp, rf_rresp;
+logic         rf_awvalid, rf_awready, rf_wvalid, rf_wready, rf_bvalid, rf_bready;
+logic         rf_arvalid, rf_arready, rf_rvalid, rf_rready;
+
+zcu216_axil_bridge #(.AW (18)) i_rf_bridge (
+  .clk       (sys_clk            ),
+  .rstn      (sys_rstn           ),
+  .sys_addr  (ps_sys_addr        ),
+  .sys_wdata (ps_sys_wdata       ),
+  .sys_wen   (sys_wen[2]         ),
+  .sys_ren   (sys_ren[2]         ),
+  .sys_rdata (sys_rdata[2*32+:32]),
+  .sys_err   (sys_err[2]         ),
+  .sys_ack   (sys_ack[2]         ),
+  .m_awaddr  (rf_awaddr ), .m_awvalid (rf_awvalid), .m_awready (rf_awready),
+  .m_wdata   (rf_wdata  ), .m_wstrb   (rf_wstrb  ), .m_wvalid  (rf_wvalid ),
+  .m_wready  (rf_wready ), .m_bresp   (rf_bresp  ), .m_bvalid  (rf_bvalid ),
+  .m_bready  (rf_bready ), .m_araddr  (rf_araddr ), .m_arvalid (rf_arvalid),
+  .m_arready (rf_arready), .m_rdata   (rf_rdata  ), .m_rresp   (rf_rresp  ),
+  .m_rvalid  (rf_rvalid ), .m_rready  (rf_rready )
+);
+
+logic [127:0] adc_data [4];
+logic [3:0]   adc_valid;
+logic [127:0] dac_data;
+logic         dac_valid;
+
+rfdc i_rfdc (
+  .adc2_clk_p (adc2_clk_p), .adc2_clk_n (adc2_clk_n),
+  .dac2_clk_p (dac2_clk_p), .dac2_clk_n (dac2_clk_n),
+  .clk_adc0 (), .clk_adc1 (), .clk_adc2 (),
+  .clk_dac0 (), .clk_dac1 (), .clk_dac2 (),
+  .s_axi_aclk    (sys_clk   ), .s_axi_aresetn (sys_rstn  ),
+  .s_axi_awaddr  (rf_awaddr ), .s_axi_awvalid (rf_awvalid), .s_axi_awready (rf_awready),
+  .s_axi_wdata   (rf_wdata  ), .s_axi_wstrb   (rf_wstrb  ), .s_axi_wvalid  (rf_wvalid ),
+  .s_axi_wready  (rf_wready ), .s_axi_bresp   (rf_bresp  ), .s_axi_bvalid  (rf_bvalid ),
+  .s_axi_bready  (rf_bready ), .s_axi_araddr  (rf_araddr ), .s_axi_arvalid (rf_arvalid),
+  .s_axi_arready (rf_arready), .s_axi_rdata   (rf_rdata  ), .s_axi_rresp   (rf_rresp  ),
+  .s_axi_rvalid  (rf_rvalid ), .s_axi_rready  (rf_rready ),
+  .irq (),
+  .sysref_in_p (sysref_in_p), .sysref_in_n (sysref_in_n),
+  .vin00_p (vin00_p), .vin00_n (vin00_n), .vin01_p (vin01_p), .vin01_n (vin01_n),
+  .vin02_p (vin02_p), .vin02_n (vin02_n), .vin03_p (vin03_p), .vin03_n (vin03_n),
+  .vin10_p (vin10_p), .vin10_n (vin10_n), .vin20_p (vin20_p), .vin20_n (vin20_n),
+  .vout00_p (vout00_p), .vout00_n (vout00_n), .vout01_p (vout01_p), .vout01_n (vout01_n),
+  .vout02_p (vout02_p), .vout02_n (vout02_n), .vout03_p (vout03_p), .vout03_n (vout03_n),
+  .vout10_p (vout10_p), .vout10_n (vout10_n), .vout20_p (vout20_p), .vout20_n (vout20_n),
+  .m0_axis_aclk (fclk), .m0_axis_aresetn (frstn),
+  .m00_axis_tdata (adc_data[0]), .m00_axis_tvalid (adc_valid[0]), .m00_axis_tready (1'b1),
+  .m01_axis_tdata (adc_data[1]), .m01_axis_tvalid (adc_valid[1]), .m01_axis_tready (1'b1),
+  .m02_axis_tdata (adc_data[2]), .m02_axis_tvalid (adc_valid[2]), .m02_axis_tready (1'b1),
+  .m03_axis_tdata (adc_data[3]), .m03_axis_tvalid (adc_valid[3]), .m03_axis_tready (1'b1),
+  .m1_axis_aclk (fclk), .m1_axis_aresetn (frstn),
+  .m10_axis_tdata (), .m10_axis_tvalid (), .m10_axis_tready (1'b1),
+  .m2_axis_aclk (fclk), .m2_axis_aresetn (frstn),
+  .m20_axis_tdata (), .m20_axis_tvalid (), .m20_axis_tready (1'b1),
+  .s0_axis_aclk (fclk), .s0_axis_aresetn (frstn),
+  .s00_axis_tdata (dac_data), .s00_axis_tvalid (dac_valid), .s00_axis_tready (),
+  .s01_axis_tdata (dac_data), .s01_axis_tvalid (dac_valid), .s01_axis_tready (),
+  .s02_axis_tdata (dac_data), .s02_axis_tvalid (dac_valid), .s02_axis_tready (),
+  .s03_axis_tdata (dac_data), .s03_axis_tvalid (dac_valid), .s03_axis_tready (),
+  .s1_axis_aclk (fclk), .s1_axis_aresetn (frstn),
+  .s10_axis_tdata ('0), .s10_axis_tvalid (1'b1), .s10_axis_tready (),
+  .s2_axis_aclk (fclk), .s2_axis_aresetn (frstn),
+  .s20_axis_tdata ('0), .s20_axis_tvalid (1'b1), .s20_axis_tready ()
+);
+
+zcu216_fft_test #(
+  .NCH      (FFT_NCH       ),
+  .SUB      (FFT_NFFT - 3  ),
+  .WIN      (FFT_WIN       ),
+  .TWC_FILE (TWC_FILE      ),
+  .TWF_FILE (TWF_FILE      ),
+  .SIN_FILE (SIN_FILE      )
+) i_fft (
+  .sys_clk     (sys_clk            ),
+  .sys_rstn    (sys_rstn           ),
+  .sys_addr    (ps_sys_addr        ),
+  .sys_wdata   (ps_sys_wdata       ),
+  .sys_wen     (sys_wen[1]         ),
+  .sys_ren     (sys_ren[1]         ),
+  .sys_rdata   (sys_rdata[1*32+:32]),
+  .sys_err     (sys_err[1]         ),
+  .sys_ack     (sys_ack[1]         ),
+  .fclk        (fclk               ),
+  .frstn       (frstn              ),
+  .flocked     (locked             ),
+  .adc_data    (adc_data           ),
+  .adc_valid   (adc_valid          ),
+  .dac_data    (dac_data           ),
+  .dac_valid   (dac_valid          ),
+  .spi_sdo_sel (spi_sdo_sel        )
+);
+`else
+for (genvar i = 1; i < 3; i++) begin : g_no_rf
+  assign sys_rdata[i*32+:32] = 32'h0;
+  assign sys_err  [i       ] = 1'b0;
+  assign sys_ack  [i       ] = 1'b1;
+end
+`endif
 
 ////////////////////////////////////////////////////////////////////////////////
 // LEDs

@@ -6,7 +6,8 @@
 #            (cmp.py); TB_DW=17 forces the 2-bit cut that the 256k build makes
 #   tb_test  zcu216_fft_test through the register bus: tones, peaks, window
 #   tb_reorder  zcu216_fft_reorder alone, with tagged bins
-# Usage: sim/zcu216/run_sim.sh [tb_dit8|tb_test|tb_reorder|all] [TB_DW]   (from fpga/)
+#   tb_bridge   zcu216_axil_bridge against an AXI4-Lite memory with random delays
+# Usage: sim/zcu216/run_sim.sh [tb_dit8|tb_test|tb_reorder|tb_bridge|all] [TB_DW]   (from fpga/)
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 fpga=$(cd "$here/../.." && pwd)
@@ -32,15 +33,15 @@ if {[file exists $work/p/p.xpr]} {
   set_property CONFIG.output_ordering {bit_reversed_order} [get_ips xfft_sub]
   set_property CONFIG.xk_index {true} [get_ips xfft_sub]
   generate_target {simulation} [get_ips xfft_sub]
-  foreach f {zcu216_fft_dit8.sv zcu216_fft_mag.sv zcu216_fft_reorder.sv zcu216_tone_gen.sv zcu216_fft_spec.sv zcu216_fft_test.sv} {
+  foreach f {zcu216_fft_dit8.sv zcu216_fft_mag.sv zcu216_fft_reorder.sv zcu216_tone_gen.sv zcu216_fft_spec.sv zcu216_fft_test.sv zcu216_axil_bridge.sv} {
     add_files -norecurse $fpga/rtl/\$f
   }
-  add_files -fileset sim_1 -norecurse [list $here/tb_dit8.sv $here/tb_test.sv $here/tb_reorder.sv]
+  add_files -fileset sim_1 -norecurse [list $here/tb_dit8.sv $here/tb_test.sv $here/tb_reorder.sv $here/tb_bridge.sv]
   set_property include_dirs [list $work] [get_filesets sim_1]
   set_property -name {xsim.simulate.runtime} -value {all} -objects [get_filesets sim_1]
 }
 set_property -name {xsim.compile.xvlog.more_options} -value {-d TB_DW=$dw} -objects [get_filesets sim_1]
-foreach top {$([[ $which == all ]] && echo tb_dit8 tb_test tb_reorder || echo $which)} {
+foreach top {$([[ $which == all ]] && echo tb_dit8 tb_test tb_reorder tb_bridge || echo $which)} {
   set_property top \$top [get_filesets sim_1]
   update_compile_order -fileset sim_1
   launch_simulation -simset sim_1 -mode behavioral
@@ -49,7 +50,7 @@ foreach top {$([[ $which == all ]] && echo tb_dit8 tb_test tb_reorder || echo $w
 TCL
 cd "$work"
 vivado -mode batch -nojournal -nolog -source sim.tcl > sim.log 2>&1 || { tail -30 sim.log; exit 1; }
-grep -E "^(ID|STATUS|CH[0-9]|WIN|TB_DONE|EVENT|RO )" sim.log || true
+grep -E "^(ID|STATUS|CH[0-9]|WIN|LOOP|TB_DONE|EVENT|RO |BRIDGE)" sim.log || true
 if [[ $which == all || $which == tb_dit8 ]]; then
   # the core outputs are cut by max(0, IN_W + SUB - DW) = max(0, 19 - DW) bits
   python3 -I "$here/cmp.py" "$work" 256 $(( dw < 19 ? 1 << (19 - dw) : 1 ))

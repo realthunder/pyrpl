@@ -5,6 +5,9 @@
 #   - eth0 gets the static address below (the router reserves it by MAC);
 #   - HPM0_LPD is set to 32 bits (LPD_SLCR AFI_FS[9:8] = 0), the width the
 #     register bus in zcu216.bit.bin expects;
+#   - the CLK104 is programmed (clk104 program: 2.5 GHz ADC/DAC sample clocks,
+#     125 MHz PL_CLK) before the bitstream, so the RF tiles find their clocks
+#     when they come out of reset;
 #   - zcu216.bit.bin is loaded through the FPGA manager;
 #   - monitor_server_zcu216 is started on port 2222, but only once the load
 #     has succeeded: an access to 0x8000_0000 with no design loaded hangs the
@@ -67,6 +70,12 @@ if [ ! -f $SD/zcu216.bit.bin ]; then
 	exit 0
 fi
 
+if [ -f $SD/clk104 ]; then
+	cp $SD/clk104 /tmp/clk104
+	chmod +x /tmp/clk104
+	/tmp/clk104 program || echo "clk104 program failed"
+fi
+
 fs=$(devmem 0xFF419000 32)
 devmem 0xFF419000 32 $(( fs & ~0x300 ))
 echo "AFI_FS (LPD) $fs -> $(devmem 0xFF419000 32)"
@@ -81,6 +90,18 @@ if [ "$state" != "operating" ]; then
 fi
 
 echo "hk id $(devmem 0x80000000 32) board $(devmem 0x80000040 32)"
+
+# RF build: CLK104 lock, and the RF tiles' power-up state (15 = running) for
+# ADC tiles 224-226 and DAC tiles 228-230 (RF Data Converter registers, slot 2)
+if [ -x /tmp/clk104 ] && [ "$(( $(devmem 0x80200000 32) >> 16 ))" = "$(( 0xf0f6 ))" ]; then
+	/tmp/clk104 status
+	for t in 0 1 2; do
+		echo "ADC tile $((224 + t)): state $(devmem $((0x80414000 + t * 0x4000 + 0xc)) 32)" \
+		     "status $(devmem $((0x80414000 + t * 0x4000 + 0x228)) 32)"
+		echo "DAC tile $((228 + t)): state $(devmem $((0x80404000 + t * 0x4000 + 0xc)) 32)" \
+		     "status $(devmem $((0x80404000 + t * 0x4000 + 0x228)) 32)"
+	done
+fi
 
 cp $SD/monitor_server_zcu216 /tmp/monitor_server
 chmod +x /tmp/monitor_server

@@ -108,9 +108,12 @@ fi
 #   redpitaya (default)  Red Pitaya (xc7z020), red_pitaya_vivado.tcl -> out/red_pitaya.bit
 #   zcu216               AMD ZCU216 (xczu49dr RFSoC), zcu216_vivado.tcl -> out/zcu216.bit
 #                        and out/zcu216.bit.bin. PS, register bus at 0x8000_0000 with
-#                        hk in slot 0, LED heartbeat, and in slot 1 the FFT bring-up
-#                        block (tone generators -> FFT -> peak + window). No HLS
-#                        blocks, so the HLS step is skipped.
+#                        hk in slot 0, LED heartbeat; the RF Data Converter (ADC tile
+#                        224, DAC tile 228, 2.5 GS/s, clocks from the CLK104) with its
+#                        registers in slot 2, and in slot 1 the FFT / RF bring-up
+#                        block (tone generators or RF-ADC -> FFT -> peak + window,
+#                        tone generator -> RF-DAC). No HLS blocks, so the HLS step
+#                        is skipped.
 #                        FFT settings used there (defaults for this board):
 #                          FFT_IMPL=6  radix-8 DIT bank of eight bit-reversed xfft
 #                                      cores (rtl/zcu216_fft_dit8.sv), 8 samples per
@@ -138,7 +141,7 @@ case "$BOARD" in
         fi
         BOARD_TCL=zcu216_vivado.tcl
         BOARD_BIT=zcu216.bit
-        BOARD_WNS_CLOCKS="clk_pl_0|g_fft\.fclk_mmcm" ;;
+        BOARD_WNS_CLOCKS="clk_pl_0|fclk_mmcm" ;;
     *)
         echo "ERROR: unknown BOARD='$BOARD' (known: redpitaya zcu216)" >&2; exit 1 ;;
 esac
