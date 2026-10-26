@@ -12,12 +12,14 @@ monitor_server_0.95:
 	source $(VIVADO_PATH) && arm-linux-gnueabihf-gcc -o monitor_server_0.95 $(SOURCE_FILE) -lpthread
 
 # ZCU216 (Zynq UltraScale+, aarch64): the register map sits at 0x8000_0000.
-# Static, so it runs on whatever glibc the board's Linux has. The Vitis 2025.2
-# glibc needs kernel 5.15+; for the 5.4 kernel of the PetaLinux 2020.1 SD card
-# build it on an aarch64 Ubuntu host (the Jetson): make ... AARCH64_GCC=gcc
-AARCH64_GCC:=/opt/Xilinx/2025.2/gnu/aarch64/lin/aarch64-linux/bin/aarch64-linux-gnu-gcc
+# Static against musl, built with zig (python3 -m venv ~/.venvs/zig &&
+# ~/.venvs/zig/bin/pip install ziglang), so it runs on any aarch64 kernel. A
+# static glibc build does not: the Vitis 2025.2 one needs kernel 5.15+, and an
+# Ubuntu 24.04 one starts but its threads crash in __ctype_init on the 5.4
+# kernel of the PetaLinux 2020.1 SD card.
+ZIG_CC:=$(HOME)/.venvs/zig/bin/python -m ziglang cc
 monitor_server_zcu216:
-	$(AARCH64_GCC) -O2 -Wall -static -DREG_BASE=0x80000000UL -o monitor_server_zcu216 $(SOURCE_FILE) -lpthread
+	$(ZIG_CC) -target aarch64-linux-musl -static -O2 -Wall -Wno-misleading-indentation -DREG_BASE=0x80000000UL -o monitor_server_zcu216 $(SOURCE_FILE) -lpthread
 
 clean: 
 	rm -f monitor_server_*
