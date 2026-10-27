@@ -5,6 +5,8 @@
 #   - eth0 gets the static address below (the router reserves it by MAC);
 #   - HPM0_LPD is set to 32 bits (LPD_SLCR AFI_FS[9:8] = 0), the width the
 #     register bus in zcu216.bit.bin expects;
+#   - S_AXI_HPC0/HPC1 are set to 128 bits (AFIFM RDCTRL/WRCTRL 0x3B0; the
+#     FSBL leaves them at 32): HPC0 carries the point stream;
 #   - the CLK104 is programmed (clk104 program: 2.5 GHz ADC/DAC sample clocks,
 #     125 MHz PL_CLK) before the bitstream, so the RF tiles find their clocks
 #     when they come out of reset;
@@ -79,6 +81,16 @@ fi
 fs=$(devmem 0xFF419000 32)
 devmem 0xFF419000 32 $(( fs & ~0x300 ))
 echo "AFI_FS (LPD) $fs -> $(devmem 0xFF419000 32)"
+
+# S_AXI_HPC0/HPC1 to 128 bits: the stock FSBL leaves their AFIFM RDCTRL/WRCTRL
+# at 0x3B2 (32-bit fabric port), which mangles the point stream's writes on
+# HPC0 (every other packet's header lost its frame index). HP0-HP3 come up at
+# 0x3B0 already.
+for b in 0xFD360000 0xFD370000; do
+	devmem $b 32 0x3B0
+	devmem $((b + 0x14)) 32 0x3B0
+done
+echo "AFIFM HPC0 $(devmem 0xFD360014 32) HPC1 $(devmem 0xFD370014 32)"
 
 fpgautil -b $SD/zcu216.bit.bin
 state=$(cat /sys/class/fpga_manager/fpga0/state)
