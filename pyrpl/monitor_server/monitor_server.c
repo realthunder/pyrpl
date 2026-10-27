@@ -52,9 +52,14 @@ If the command is read, the server will then send the requested 4*n bytes to the
 If the command is write, the server will wait for 4*n bytes of data from the server and write them to the designated FPGA address space. 
 If the command is 'b' (bulk read of the memory window, see MEM_WIN_BASE), bytes
 3+4 are the length in KB (up to 64 MB) and bytes 5-8 the start address, 16-byte
-aligned and inside the window. The server sends the 8-byte header back, then the
-bytes in one stream; a request it cannot serve gets the header back with bytes
-3+4 cleared and no data. A server without 'b' drops the connection instead.
+aligned and inside the window. Byte 2 caps this stream's rate in MB/s (0: no cap
+of its own). The server sends the 8-byte header back, then the bytes in one
+stream; a request it cannot serve gets the header back with bytes 3+4 cleared and
+no data. A server without 'b' drops the connection instead.
+All bulk streams together are paced to BULK_MBPS (TCP pacing, the share of each
+re-evaluated per chunk), so the link keeps room for the point stream's UDP: an
+unpaced stream fills a gigabit link, and point packets are lost on the way to
+the host (in a Windows host's virtual switch in front of WSL).
 If the command is close, or if the connection is broken, the server drops the
 current client and loops back to accept() to wait for the next one (it does NOT
 terminate — TCP keepalive frees a half-open connection from an unplugged host
@@ -128,7 +133,8 @@ typedef uint32_t word_t;
 
 word_t* read_values(word_t a_addr, word_t* a_values_buffer, unsigned long a_len);
 void write_values(word_t a_addr, word_t* a_values, unsigned long a_len);
-static int bulk_read(int sock, word_t a_addr, unsigned long a_bytes, char *buf, size_t buf_len);
+static int bulk_read(int sock, word_t a_addr, unsigned long a_bytes, unsigned cap_mbps,
+                     char *buf, size_t buf_len);
 
 //FPGA memory handlers
 void* map_base = (void*)(-1);
@@ -144,6 +150,13 @@ static pthread_mutex_t g_reg_lock    = PTHREAD_MUTEX_INITIALIZER;  /* register a
 static pthread_mutex_t g_client_lock = PTHREAD_MUTEX_INITIALIZER;
 static int             g_clients     = 0;
 static void *client_thread(void *arg);
+
+/* total rate of all bulk reads ('b'), MB/s (10^6 B/s); 0: unpaced */
+#ifndef BULK_MBPS
+#define BULK_MBPS 80
+#endif
+static pthread_mutex_t g_bulk_lock   = PTHREAD_MUTEX_INITIALIZER;
+static int             g_bulk_active = 0;
 
 /* -------------------------------------------------------------------------
  * DMA point-cloud multicast thread
@@ -553,7 +566,7 @@ static void *client_thread(void *arg)
         }
         else if (buffer[0] == 'b') {             /* bulk read of the memory window */
             if (bulk_read(fd, address, (unsigned long)data_length << 10,
-                          (char *)rw_buffer, sizeof(word_t) * MAX_LENGTH) < 0)
+                          (unsigned char)buffer[1], (char *)rw_buffer, sizeof(word_t) * MAX_LENGTH) < 0)
                 break;
         }
         else break;                              /* 'c', or out of sync */
@@ -741,8 +754,34 @@ static int send_all(int sock, const char *p, size_t n)
     return 0;
 }
 
-static int bulk_read(int sock, word_t a_addr, unsigned long a_bytes, char *buf, size_t buf_len)
+/* the pacing rate of one bulk stream: its share of BULK_MBPS, at most its own
+ * cap (B/s; ~0U: unpaced) */
+static unsigned bulk_rate(unsigned cap_mbps)
 {
+    unsigned long r = ~0UL;
+    int n;
+    pthread_mutex_lock(&g_bulk_lock);
+    n = g_bulk_active;
+    pthread_mutex_unlock(&g_bulk_lock);
+    if (BULK_MBPS > 0 && n > 0)
+        r = (unsigned long)BULK_MBPS * 1000000UL / (unsigned long)n;
+    if (cap_mbps && (unsigned long)cap_mbps * 1000000UL < r)
+        r = (unsigned long)cap_mbps * 1000000UL;
+    return r >= ~0U ? ~0U : (unsigned)r;
+}
+
+static void bulk_active(int d)
+{
+    pthread_mutex_lock(&g_bulk_lock);
+    g_bulk_active += d;
+    pthread_mutex_unlock(&g_bulk_lock);
+}
+
+static int bulk_read(int sock, word_t a_addr, unsigned long a_bytes, unsigned cap_mbps,
+                     char *buf, size_t buf_len)
+{
+    unsigned rate, unpaced = ~0U;
+    int ret = 0;
     static volatile uint8_t *win = NULL;
     char hdr[8];
     unsigned long off = (unsigned long)a_addr - MEM_WIN_BASE;
@@ -763,14 +802,20 @@ static int bulk_read(int sock, word_t a_addr, unsigned long a_bytes, char *buf, 
         if (!win) ok = 0;
     }
     hdr[0] = 'b';
-    hdr[1] = 0;
+    hdr[1] = (char)cap_mbps;
     hdr[2] = ok ? (char)((a_bytes >> 10) & 0xff) : 0;
     hdr[3] = ok ? (char)((a_bytes >> 18) & 0xff) : 0;
     memcpy(hdr + 4, &a_addr, 4);
     if (send_all(sock, hdr, 8) < 0) return -1;
     if (!ok) return 0;
 
+    /* chunks of 64 KB: ~1 ms each at the paced rate, so a stream's share
+     * follows the others starting and ending */
     buf_len &= ~(size_t)15;
+    if (buf_len > 65536) buf_len = 65536;
+    bulk_active(1);
+    rate = bulk_rate(cap_mbps);
+    setsockopt(sock, SOL_SOCKET, SO_MAX_PACING_RATE, &rate, sizeof(rate));
     while (a_bytes) {
         size_t n = a_bytes < buf_len ? a_bytes : buf_len, i;
         const volatile uint8_t *src = win + off;
@@ -787,9 +832,15 @@ static int bulk_read(int sock, word_t a_addr, unsigned long a_bytes, char *buf, 
             memcpy(buf + i, &v, 8);
         }
 #endif
-        if (send_all(sock, buf, n) < 0) return -1;
+        if (send_all(sock, buf, n) < 0) { ret = -1; break; }
         off += n;
         a_bytes -= n;
+        if (bulk_rate(cap_mbps) != rate) {
+            rate = bulk_rate(cap_mbps);
+            setsockopt(sock, SOL_SOCKET, SO_MAX_PACING_RATE, &rate, sizeof(rate));
+        }
     }
-    return 0;
+    bulk_active(-1);
+    setsockopt(sock, SOL_SOCKET, SO_MAX_PACING_RATE, &unpaced, sizeof(unpaced));
+    return ret;
 }

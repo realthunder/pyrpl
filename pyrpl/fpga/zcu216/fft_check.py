@@ -32,19 +32,23 @@ class Link:
         assert d[:8] == h, 'link out of sync'
         return struct.unpack('<%dI' % n, d[8:])
 
-    def bulk(self, addr, nbytes):
+    def bulk(self, addr, nbytes, mbps=0):
         """Bytes [addr, addr + nbytes) of the memory window in one stream ('b').
 
         addr is a client window address (0x4800_0000 + offset), 16-byte aligned;
-        nbytes a multiple of 1 KB. Returns None if the server refuses the range;
-        a server without 'b' drops the connection (ConnectionError).
+        nbytes a multiple of 1 KB; mbps this stream's rate cap in MB/s, 1-255
+        (0: only the server's total cap on all bulk streams). Returns None if
+        the server refuses the range; a server without 'b' drops the
+        connection (ConnectionError).
         """
-        assert nbytes % 1024 == 0 and nbytes >> 10 < 1 << 16
-        h = self._hdr(b'b', addr, nbytes >> 10)
+        assert nbytes % 1024 == 0 and nbytes >> 10 < 1 << 16 and 0 <= mbps <= 255
+        h = bytearray(self._hdr(b'b', addr, nbytes >> 10))
+        h[1] = mbps
         self.s.sendall(h)
         r = self._recv(8)
         if r[2:4] == b'\0\0':
             return None
+        r[1] = h[1]                            # an older server answers 0 there
         assert r == h, 'link out of sync'
         return self._recv(nbytes)
 

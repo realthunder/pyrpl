@@ -210,10 +210,13 @@ class MonitorClient(object):
         with self._io_lock:
             return self.try_n_times(self._writes, addr, values)
     
-    def bulk(self, addr, nbytes):
+    def bulk(self, addr, nbytes, mbps=0):
         """Bytes [addr, addr + nbytes) of monitor_server's memory window in one
         stream ('b' command; ZCU216). addr: client address (window at
-        0x4800_0000), 16-byte aligned; nbytes: a multiple of 1 KB, < 64 MB.
+        0x4800_0000), 16-byte aligned; nbytes: a multiple of 1 KB, < 64 MB;
+        mbps: this stream's rate cap in MB/s, 1-255 (0: only the server's
+        total cap on all bulk streams, which leaves the link room for the
+        point stream).
         Returns a bytearray, or None if the link is down or out of sync.
         Raises BulkReadRefused if the server refuses the range, and
         ConnectionError if the server does not know 'b' (it drops the link)."""
@@ -222,9 +225,11 @@ class MonitorClient(object):
         if nbytes <= 0 or nbytes % 1024 or nbytes >> 10 >= 1 << 16:
             raise ValueError("bulk read of %d bytes: must be a positive multiple "
                              "of 1 KB below 64 MB" % nbytes)
+        if not 0 <= mbps <= 255:
+            raise ValueError("bulk read rate cap %r MB/s: must be 0-255" % mbps)
 
         def _bulk_read(a, _):
-            return self._bulk(a, nbytes)
+            return self._bulk(a, nbytes, int(mbps))
         with self._io_lock:
             return self.try_n_times(_bulk_read, addr, nbytes)
 
@@ -238,13 +243,14 @@ class MonitorClient(object):
             got += k
         return buf
 
-    def _bulk(self, addr, nbytes):
+    def _bulk(self, addr, nbytes, mbps=0):
         kb = nbytes >> 10
-        header = b'b' + bytes(bytearray([0, kb & 0xFF, (kb >> 8) & 0xFF,
+        header = b'b' + bytes(bytearray([mbps, kb & 0xFF, (kb >> 8) & 0xFF,
                                          addr & 0xFF, (addr >> 8) & 0xFF,
                                          (addr >> 16) & 0xFF, (addr >> 24) & 0xFF]))
         self.socket.sendall(header)
         reply = self._recv_exact(8)
+        reply[1] = header[1]                 # an older server answers 0 there
         if reply[:2] == header[:2] and reply[2:4] == b'\0\0' and reply[4:] == header[4:]:
             raise BulkReadRefused("monitor_server refused a bulk read of %d bytes "
                                   "at 0x%08x" % (nbytes, addr))

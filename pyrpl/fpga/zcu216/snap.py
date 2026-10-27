@@ -65,11 +65,11 @@ def capture(L, src, nframes, timeout=5.0):
     return L.read(SNAP + 0x10)[0]
 
 
-def fetch(L, nbytes, bulk=True):
+def fetch(L, nbytes, bulk=True, mbps=0):
     base = L.read(SNAP + 0x14)[0]
     a = WIN_CLIENT + base - WIN_PHYS
     if bulk:                                   # one 'b' stream (frames are whole KB)
-        d = L.bulk(a, nbytes)
+        d = L.bulk(a, nbytes, mbps)
         if d is None:
             raise RuntimeError(f'monitor_server refused a bulk read of {nbytes} bytes at {a:08x}')
         return np.frombuffer(d, dtype=np.uint32)
@@ -90,6 +90,9 @@ def main():
     ap.add_argument('--repeat', type=int, default=1)
     ap.add_argument('--out')
     ap.add_argument('--cfar', action='store_true')
+    ap.add_argument('--mbps', type=int, default=0,
+                    help='cap this fetch at MB/s, 1-255 (default: the server\'s cap on '
+                         'all bulk reads together, 80 MB/s)')
     ap.add_argument('--no-bulk', dest='bulk', action='store_false',
                     help='fetch with register reads (a monitor_server without bulk reads)')
     a = ap.parse_args()
@@ -110,7 +113,7 @@ def main():
         t0 = time.time()
         beats = capture(L, src, a.frames)
         t1 = time.time()
-        w = fetch(L, a.frames * fb, a.bulk)
+        w = fetch(L, a.frames * fb, a.bulk, a.mbps)
         t2 = time.time()
         if a.src == 'mag':
             x = w.reshape(a.frames, -1)
