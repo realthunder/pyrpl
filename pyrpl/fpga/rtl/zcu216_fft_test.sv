@@ -3,8 +3,9 @@
  *   tone generator -> zcu216_fft_dit8 (N = 2^(SUB+3), real input) ->
  *   zcu216_fft_mag (|X|) -> zcu216_fft_reorder (natural order) -> zcu216_fft_spec
  *                                                              -> zcu216_cfar
- * on fclk (8 samples per clock), and zcu216_snap, which writes whole frames of
- * |X| or of an FFT's input samples into DDR on request. Each channel's source is its tone generator or
+ * on fclk (8 samples per clock), zcu216_snap, which writes whole frames of
+ * |X| or of an FFT's input samples into DDR on request, and zcu216_points,
+ * which streams every frame's CFAR results into the DDR ring. Each channel's source is its tone generator or
  * one of the four RF-ADC channels of tile 224 (src register). A third tone
  * generator drives the four RF-DAC channels of tile 228, for the XM655 loopback.
  * Magnitudes are mag = K|X|/2, K = 1.64676 (CORDIC gain). RF samples are 16 bit
@@ -45,6 +46,12 @@
  *                      (beats lost: DDR too slow), [3] AXI error, [15:8] captures done
  *             +0x10 RO beats captured
  *             +0x14 RO physical base   +0x18 RO bytes per frame   +0x1c RO max frames
+ *   0x180 +   point stream into the DDR ring (zcu216_points; monitor_server
+ *             forwards it over UDP, build it with -DDMA_REG_BASE=0x80200180):
+ *             +0x00 RO write pointer (64-bit words into the ring)
+ *             +0x04 RO data words per packet   +0x08 RO {version, NCH, frames per packet}
+ *             = [31:24], [23:16], [15:0]   +0x0c [0] enable   +0x10 RO packets
+ *             +0x14 RO words dropped   +0x18 RO [0] AXI error   +0x1c RO ring words
  *   0x40 + 0x40*c, channel c:
  *     +0x00 inc_a   +0x04 amp_a   +0x08 inc_b   +0x0c amp_b   +0x10 noise bits (0-18)
  *     +0x14 source: 0 = tone generator, 1-4 = RF-ADC tile 224 channel 0-3
@@ -111,7 +118,24 @@ module zcu216_fft_test #(
   input  logic [1:0]   hp_wready,
   input  logic [1:0]   hp_bresp   [2],
   input  logic [1:0]   hp_bvalid,
-  output logic [1:0]   hp_bready
+  output logic [1:0]   hp_bready,
+  // point stream: one AXI4 write master on fclk (S_AXI_HP2)
+  output logic [48:0]  pt_awaddr,
+  output logic [7:0]   pt_awlen,
+  output logic [2:0]   pt_awsize,
+  output logic [1:0]   pt_awburst,
+  output logic [3:0]   pt_awcache,
+  output logic [2:0]   pt_awprot,
+  output logic         pt_awvalid,
+  input  logic         pt_awready,
+  output logic [127:0] pt_wdata,
+  output logic [15:0]  pt_wstrb,
+  output logic         pt_wlast,
+  output logic         pt_wvalid,
+  input  logic         pt_wready,
+  input  logic [1:0]   pt_bresp,
+  input  logic         pt_bvalid,
+  output logic         pt_bready
 );
 
 localparam int RAW = 2048;                    // raw capture depth (beats)
@@ -124,6 +148,9 @@ localparam int GMAX = 16, TMAX = 64, FRAC = 8;
 localparam int GW = $clog2(GMAX + 1), TW = $clog2(TMAX + 1);
 localparam int SNAP_FB = 16 << SUB;                       // bytes per frame
 localparam int SNAP_MAXF = (SNAP_SIZE / SNAP_FB > 255) ? 255 : SNAP_SIZE / SNAP_FB;
+localparam int PT_FPP = 183 / NCH;                         // frames per point packet
+localparam int PT_RING = 16384;                            // words, at the start of the reserved DDR
+localparam logic [3:0] PT_VERSION = 4'd8;
 
 ////////////////////////////////////////////////////////////////////////////////
 // registers (sys_clk)
@@ -157,6 +184,11 @@ logic [7:0]    sn_nf;
 logic [7:0]    s_sn_cnt;
 logic          s_sn_busy, s_sn_ovf, s_sn_err;
 logic [31:0]   s_sn_beats;
+// point stream
+logic          pt_en;
+logic [13:0]   s_pt_ptr;
+logic [31:0]   s_pt_pkts, s_pt_drops;
+logic          s_pt_err;
 
 // results in sys_clk
 logic [31:0]   s_frames [NCH];
@@ -197,6 +229,7 @@ always_ff @(posedge sys_clk)
     sn_pending <= 1'b0;
     sn_src    <= '0;
     sn_nf     <= 8'd1;
+    pt_en     <= 1'b0;
     for (int c = 0; c < NCH; c++) begin
       inc_a[c] <= '0;  amp_a[c] <= '0;
       inc_b[c] <= '0;  amp_b[c] <= '0;
@@ -238,6 +271,7 @@ always_ff @(posedge sys_clk)
                  end
       20'h00144: sn_src    <= {sys_wdata[4], 2'b00, sys_wdata[1:0]};
       20'h00148: sn_nf     <= sys_wdata[7:0];
+      20'h0018c: pt_en     <= sys_wdata[0];
       default: ;
     endcase
     for (int c = 0; c < NCH; c++)
@@ -330,6 +364,14 @@ function automatic logic [31:0] reg_read(input logic [19:0] ad);
     20'h00154: v = SNAP_BASE[31:0];
     20'h00158: v = 32'(SNAP_FB);
     20'h0015c: v = 32'(SNAP_MAXF);
+    20'h00180: v = 32'(s_pt_ptr);
+    20'h00184: v = 32'(PT_FPP * NCH);
+    20'h00188: v = {8'(PT_VERSION), 8'(NCH), 16'(PT_FPP)};
+    20'h0018c: v = 32'(pt_en);
+    20'h00190: v = s_pt_pkts;
+    20'h00194: v = s_pt_drops;
+    20'h00198: v = 32'(s_pt_err);
+    20'h0019c: v = 32'(PT_RING);
     default: ;
   endcase
   for (int c = 0; c < NCH; c++)
@@ -373,6 +415,7 @@ logic [22:0]   f_cf_d0, f_cf_d0_m, f_cf_step, f_cf_step_m;
 logic [4:0]    f_sn_src, f_sn_src_m;
 logic [7:0]    f_sn_nf, f_sn_nf_m;
 (* ASYNC_REG = "TRUE" *) logic f_sn_arm_m, f_sn_arm;
+(* ASYNC_REG = "TRUE" *) logic f_pt_en_m, f_pt_en;
 
 always_ff @(posedge fclk) begin
   {f_cf_ksq,   f_cf_ksq_m}   <= {f_cf_ksq_m,   cf_ksq};
@@ -387,6 +430,7 @@ always_ff @(posedge fclk) begin
   {f_sn_src,   f_sn_src_m}   <= {f_sn_src_m,   sn_src};
   {f_sn_nf,    f_sn_nf_m}    <= {f_sn_nf_m,    sn_nf};
   {f_sn_arm,   f_sn_arm_m}   <= {f_sn_arm_m,   sn_arm};
+  {f_pt_en,    f_pt_en_m}    <= {f_pt_en_m,    pt_en};
 end
 
 always_ff @(posedge fclk) begin
@@ -407,6 +451,11 @@ logic           f_cfg_all;
 // snapshot sources: |X| of each channel (natural order), then each FFT's input
 logic [127:0]     sn_data  [2*NCH];
 logic [2*NCH-1:0] sn_valid, sn_first;
+
+// every channel's CFAR results, and channel 0's frame start, for the point stream
+logic [NCH-1:0]   pt_valid;
+logic [63:0]      pt_word [NCH];
+logic             pt_tick;
 
 assign f_cfg_all = &f_cfg_done;
 
@@ -590,6 +639,12 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
   logic [31:0] f_cf_cnt, f_cf_det, f_cf_ovr;
   logic        f_cf_upd;
 
+  assign pt_valid[c] = cf_valid;
+  assign pt_word[c]  = cf_word;
+  if (c == 0) begin : g_tick
+    assign pt_tick = n_valid && n_first;
+  end
+
   zcu216_cfar #(.SUB(SUB), .DW(32), .GMAX(GMAX), .TMAX(TMAX), .FRAC(FRAC)) i_cfar (
     .clk (fclk), .rstn (frstn),
     .n_mag, .n_t, .n_valid, .n_first, .n_last,
@@ -676,6 +731,33 @@ assign sn_done_edge = sn_done_s[2] != sn_done_s[1];
 assign s_sn_busy    = sn_busy_s[1];
 assign s_sn_ovf     = sn_ovf_s[1];
 assign s_sn_err     = sn_err_s[1];
+
+// point stream
+logic [13:0] f_pt_ptr;
+logic [31:0] f_pt_pkts, f_pt_drops;
+logic        f_pt_err;
+
+zcu216_points #(.NCH(NCH), .FPP(PT_FPP), .BASE(40'h1E00_0000), .RING(PT_RING),
+                .VERSION(PT_VERSION)) i_points (
+  .clk (fclk), .rstn (frstn), .enable (f_pt_en),
+  .tick (pt_tick), .r_valid (pt_valid), .r_word (pt_word),
+  .wr_ptr (f_pt_ptr), .packets (f_pt_pkts), .drops (f_pt_drops), .err (f_pt_err),
+  .m_awaddr (pt_awaddr), .m_awlen (pt_awlen), .m_awsize (pt_awsize),
+  .m_awburst (pt_awburst), .m_awcache (pt_awcache), .m_awprot (pt_awprot),
+  .m_awvalid (pt_awvalid), .m_awready (pt_awready),
+  .m_wdata (pt_wdata), .m_wstrb (pt_wstrb), .m_wlast (pt_wlast),
+  .m_wvalid (pt_wvalid), .m_wready (pt_wready),
+  .m_bresp (pt_bresp), .m_bvalid (pt_bvalid), .m_bready (pt_bready));
+
+zcu216_gray_sync #(.W(14)) i_pt_ptr_s (.src_clk (fclk), .src (f_pt_ptr),
+                                       .dst_clk (sys_clk), .dst (s_pt_ptr));
+zcu216_gray_sync #(.W(32)) i_pt_pkts_s (.src_clk (fclk), .src (f_pt_pkts),
+                                        .dst_clk (sys_clk), .dst (s_pt_pkts));
+zcu216_gray_sync #(.W(32)) i_pt_drops_s (.src_clk (fclk), .src (f_pt_drops),
+                                         .dst_clk (sys_clk), .dst (s_pt_drops));
+(* ASYNC_REG = "TRUE" *) logic [1:0] pt_err_s;
+always_ff @(posedge sys_clk) pt_err_s <= {pt_err_s[0], f_pt_err};
+assign s_pt_err = pt_err_s[1];
 
 (* ASYNC_REG = "TRUE" *) logic [1:0] cfg_s, lock_s;
 always_ff @(posedge sys_clk) begin

@@ -9,7 +9,8 @@
  *   slot 0  0x8000_0000  hk (ID, DNA, LEDs; 0x40 = board 1, 0x44 = DNA[95:64])
  *   slot 1  0x8020_0000  FFT / RF bring-up block (zcu216_fft_test)        [RF]
  *                        (CFAR detectors, frame snapshots into DDR through
- *                        S_AXI_HP0/HP1 on fclk)
+ *                        S_AXI_HP0/HP1, the point stream through S_AXI_HP2,
+ *                        all on fclk)
  *   slot 2  0x8040_0000  RF Data Converter registers (AXI4-Lite, 256 KB)  [RF]
  *   slot 3-7             not built yet: reads return 0, writes are ignored
  *
@@ -93,6 +94,17 @@ logic [1:0]   hp_bvalid, hp_bready;
 logic [127:0] hp_wdata   [2];
 logic [15:0]  hp_wstrb   [2];
 logic [1:0]   hp_bresp   [2];
+// point stream (zcu216_points) into the DDR ring: one AXI4 write port, fclk
+logic [48:0]  pt_awaddr;
+logic [7:0]   pt_awlen;
+logic [2:0]   pt_awsize;
+logic [1:0]   pt_awburst;
+logic [3:0]   pt_awcache;
+logic [2:0]   pt_awprot;
+logic         pt_awvalid, pt_awready, pt_wlast, pt_wvalid, pt_wready, pt_bvalid, pt_bready;
+logic [127:0] pt_wdata;
+logic [15:0]  pt_wstrb;
+logic [1:0]   pt_bresp;
 `endif
 
 system_zcu216_wrapper i_ps (
@@ -140,6 +152,26 @@ system_zcu216_wrapper i_ps (
   .S_AXI_HP0_rresp    (             ),  .S_AXI_HP1_rresp    (             ),
   .S_AXI_HP0_rvalid   (             ),  .S_AXI_HP1_rvalid   (             ),
   .S_AXI_HP0_rready   (1'b1         ),  .S_AXI_HP1_rready   (1'b1         ),
+  .S_AXI_HP2_awaddr   (pt_awaddr    ),  .S_AXI_HP2_awlen    (pt_awlen     ),
+  .S_AXI_HP2_awsize   (pt_awsize    ),  .S_AXI_HP2_awburst  (pt_awburst   ),
+  .S_AXI_HP2_awcache  (pt_awcache   ),  .S_AXI_HP2_awprot   (pt_awprot    ),
+  .S_AXI_HP2_awid     (6'd0         ),  .S_AXI_HP2_awlock   (1'b0         ),
+  .S_AXI_HP2_awqos    (4'd0         ),  .S_AXI_HP2_awuser   (1'b0         ),
+  .S_AXI_HP2_awvalid  (pt_awvalid   ),  .S_AXI_HP2_awready  (pt_awready   ),
+  .S_AXI_HP2_wdata    (pt_wdata     ),  .S_AXI_HP2_wstrb    (pt_wstrb     ),
+  .S_AXI_HP2_wlast    (pt_wlast     ),  .S_AXI_HP2_wvalid   (pt_wvalid    ),
+  .S_AXI_HP2_wready   (pt_wready    ),  .S_AXI_HP2_bid      (             ),
+  .S_AXI_HP2_bresp    (pt_bresp     ),  .S_AXI_HP2_bvalid   (pt_bvalid    ),
+  .S_AXI_HP2_bready   (pt_bready    ),
+  .S_AXI_HP2_araddr   ('0           ),  .S_AXI_HP2_arburst  (2'b01        ),
+  .S_AXI_HP2_arcache  (4'd0         ),  .S_AXI_HP2_arid     (6'd0         ),
+  .S_AXI_HP2_arlen    (8'd0         ),  .S_AXI_HP2_arlock   (1'b0         ),
+  .S_AXI_HP2_arprot   (3'd0         ),  .S_AXI_HP2_arqos    (4'd0         ),
+  .S_AXI_HP2_arsize   (3'b100       ),  .S_AXI_HP2_aruser   (1'b0         ),
+  .S_AXI_HP2_arvalid  (1'b0         ),  .S_AXI_HP2_arready  (             ),
+  .S_AXI_HP2_rdata    (             ),  .S_AXI_HP2_rid      (             ),
+  .S_AXI_HP2_rlast    (             ),  .S_AXI_HP2_rresp    (             ),
+  .S_AXI_HP2_rvalid   (             ),  .S_AXI_HP2_rready   (1'b1         ),
 `endif
   .M_AXI_GP0_araddr   (gp0_araddr ),  .M_AXI_GP0_awaddr   (gp0_awaddr ),
   .M_AXI_GP0_arburst  (gp0_arburst),  .M_AXI_GP0_awburst  (gp0_awburst),
@@ -466,7 +498,10 @@ zcu216_fft_test #(
   .meas_clk    (meas_clk           ),
   .hp_awaddr, .hp_awlen, .hp_awsize, .hp_awburst, .hp_awcache, .hp_awprot,
   .hp_awvalid, .hp_awready, .hp_wdata, .hp_wstrb, .hp_wlast, .hp_wvalid,
-  .hp_wready, .hp_bresp, .hp_bvalid, .hp_bready
+  .hp_wready, .hp_bresp, .hp_bvalid, .hp_bready,
+  .pt_awaddr, .pt_awlen, .pt_awsize, .pt_awburst, .pt_awcache, .pt_awprot,
+  .pt_awvalid, .pt_awready, .pt_wdata, .pt_wstrb, .pt_wlast, .pt_wvalid,
+  .pt_wready, .pt_bresp, .pt_bvalid, .pt_bready
 );
 `else
 for (genvar i = 1; i < 3; i++) begin : g_no_rf

@@ -161,7 +161,12 @@ int newsockfd;
 #endif
 #define DMA_BUF_WORDS        16384       /* must match BUF_WORDS in dma_s2mm */
 #define DMA_BUF_BYTES        (DMA_BUF_WORDS * 8)
-#define DMA_REG_BASE         (REG_BASE + 0xa00000UL) /* slot 5: [0]=wr_ptr [1]=hist_block */
+/* [0] = wr_ptr, [1] = hist_block. Red Pitaya: slot 5. ZCU216: the point stream
+ * in slot 1 (zcu216_points, -DDMA_REG_BASE=0x80200180UL); need not be page
+ * aligned. */
+#ifndef DMA_REG_BASE
+#define DMA_REG_BASE         (REG_BASE + 0xa00000UL)
+#endif
 #define DMA_PKT_WORDS_DEFAULT 184        /* fallback: 1 header + 183 data = 1472 B = one MTU */
 #define DMA_PAD_WORD         ((uint64_t)~0ULL)  /* all-ones idle/pad sentinel (bit63=1 but NOT a real header) */
 /* Fresh-edge guard (words). wr_ptr is a PL register read directly over the GP
@@ -275,10 +280,13 @@ static void *dma_poll_thread(void *arg)
         perror("dma: mmap ring buffer"); close(devfd); return NULL;
     }
 
-    dma_reg = mmap(NULL, 4096, PROT_READ, MAP_SHARED, devfd, DMA_REG_BASE);
-    if (dma_reg == MAP_FAILED) {
-        perror("dma: mmap register"); munmap((void *)dma_buf, DMA_BUF_BYTES);
-        close(devfd); return NULL;
+    {
+        void *m = mmap(NULL, 4096, PROT_READ, MAP_SHARED, devfd, DMA_REG_BASE & ~0xfffUL);
+        if (m == MAP_FAILED) {
+            perror("dma: mmap register"); munmap((void *)dma_buf, DMA_BUF_BYTES);
+            close(devfd); return NULL;
+        }
+        dma_reg = (volatile uint32_t *)((char *)m + (DMA_REG_BASE & 0xfffUL));
     }
 
     /* Discover packet size from the FPGA: dma_reg[1] = HIST_BLOCK_SIZE (data

@@ -24,6 +24,15 @@ module tb_test;
   logic [1:0]   hp_bvalid = 2'b00, hp_bready;
   logic [127:0] hp_wdata [2];
   logic [15:0]  hp_wstrb [2];
+  // the point stream's port: single 64-bit writes
+  logic [48:0]  pt_awaddr;
+  logic [7:0]   pt_awlen;
+  logic [2:0]   pt_awsize, pt_awprot;
+  logic [1:0]   pt_awburst;
+  logic [3:0]   pt_awcache;
+  logic         pt_awvalid, pt_wlast, pt_wvalid, pt_bready, pt_bvalid = 0;
+  logic [127:0] pt_wdata;
+  logic [15:0]  pt_wstrb;
   zcu216_fft_test #(.NCH(2), .SUB(SUB), .WIN(WIN),
     .TWC_FILE({SIMDIR, "/mem/zcu216_twc.mem"}), .TWF_FILE({SIMDIR, "/mem/zcu216_twf.mem"}),
     .SIN_FILE({SIMDIR, "/mem/zcu216_sin.mem"})) dut (
@@ -33,7 +42,10 @@ module tb_test;
     .meas_clk({fclk, sclk, fclk, sclk}),
     .hp_awaddr, .hp_awlen, .hp_awsize, .hp_awburst, .hp_awcache, .hp_awprot,
     .hp_awvalid, .hp_awready, .hp_wdata, .hp_wstrb, .hp_wlast, .hp_wvalid,
-    .hp_wready, .hp_bresp, .hp_bvalid, .hp_bready);
+    .hp_wready, .hp_bresp, .hp_bvalid, .hp_bready,
+    .pt_awaddr, .pt_awlen, .pt_awsize, .pt_awburst, .pt_awcache, .pt_awprot,
+    .pt_awvalid, .pt_awready (1'b1), .pt_wdata, .pt_wstrb, .pt_wlast, .pt_wvalid,
+    .pt_wready (1'b1), .pt_bresp (2'b00), .pt_bvalid, .pt_bready);
 
   logic [127:0] ddr [logic [39:0]];
   for (genvar p = 0; p < 2; p++) begin : g_ddr
@@ -47,6 +59,15 @@ module tb_test;
         beat++;
         if (hp_wlast[p]) begin void'(aq.pop_front()); beat = 0; hp_bvalid[p] <= 1'b1; end
       end
+    end
+  end
+
+  logic [63:0] ring [int];
+  always @(posedge fclk) begin
+    pt_bvalid <= 1'b0;
+    if (pt_awvalid && pt_wvalid) begin            // always ready: both in one cycle
+      ring[int'((pt_awaddr - 49'h1E00_0000) >> 3)] = pt_wstrb[0] ? pt_wdata[63:0] : pt_wdata[127:64];
+      pt_bvalid <= 1'b1;
     end
   end
 
@@ -144,6 +165,39 @@ module tb_test;
                $signed(ddr[40'(base)][15:0]), $signed(ddr[40'(base)][31:16]),
                $signed(ddr[40'(base)][47:32]), $signed(ddr[40'(base)][63:48]));
       if (st[15:8] != 2 || nb != 1 << SUB || ddr.size() != 1 << SUB) $display("ERR SNAP input");
+    end
+    // point stream: two packets of every frame's CFAR results into the ring
+    begin
+      logic [31:0] ptr, dw, desc, pk, dr, er;
+      int fpp, bad = 0, frames = 0, det0 = 0, det1 = 0, has0 = 0, has1 = 0;
+      rd(32'h184, dw); rd(32'h188, desc);
+      fpp = desc[15:0];
+      wr(32'h18c, 1);
+      do rd(32'h190, pk); while (pk < 2);
+      wr(32'h18c, 0);
+      repeat (200) @(posedge sclk);
+      rd(32'h180, ptr); rd(32'h194, dr); rd(32'h198, er);
+      for (int p = 0; p < 2; p++) begin
+        logic [63:0] h = ring[p * (1 + dw)];
+        if (!h[63] || h[62:59] != 2 || h[58:55] != 8) begin $display("ERR POINTS header %h", h); bad++; end
+        for (int f = 0; f < fpp; f++)
+          for (int c = 0; c < 2; c++) begin
+            logic [63:0] w = ring[p * (1 + dw) + 1 + 2 * f + c];
+            if (w[63]) bad++;
+            if (w[62]) begin
+              if (c) has1++; else has0++;
+              if (w[32] && (w[57:33] >> 8) == (c ? 100 : 37)) begin
+                if (c) det1++; else det0++;
+              end
+            end
+          end
+        frames += fpp;
+      end
+      // 32-beat frames: the judge overruns most of them, so few frames carry a result
+      $display("POINTS ptr %0d (%0d words per packet + header), %0d frames per packet, packets %0d drops %0d err %0d: results ch0 %0d (%0d at bin 37), ch1 %0d (%0d at bin 100) in %0d frames",
+               ptr, dw, fpp, pk, dr, er, has0, det0, has1, det1, frames);
+      if (bad || dr != 0 || er != 0 || ptr < 2 * (1 + dw) || has0 == 0 || has1 == 0 || det0 != has0 || det1 != has1)
+        $display("ERR POINTS");
     end
     // clock meters (1 ms gate) and the raw capture
     repeat (210000) @(posedge sclk);

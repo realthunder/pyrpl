@@ -19,7 +19,7 @@ monitor_server_0.95:
 # kernel of the PetaLinux 2020.1 SD card.
 ZIG_CC:=$(HOME)/.venvs/zig/bin/python -m ziglang cc
 monitor_server_zcu216:
-	$(ZIG_CC) -target aarch64-linux-musl -static -O2 -Wall -Wno-misleading-indentation -DREG_BASE=0x80000000UL -o monitor_server_zcu216 $(SOURCE_FILE) -lpthread
+	$(ZIG_CC) -target aarch64-linux-musl -static -O2 -Wall -Wno-misleading-indentation -DREG_BASE=0x80000000UL -DDMA_REG_BASE=0x80200180UL -o monitor_server_zcu216 $(SOURCE_FILE) -lpthread
 
 clean: 
 	rm -f monitor_server_*
