@@ -136,7 +136,14 @@ int fd = -1;
 
 //sockets are globally defined for error handling
 int sockfd;
-int newsockfd;
+int newsockfd = -1;
+
+/* clients are served in parallel (client_thread) */
+#define MAX_CLIENTS 8
+static pthread_mutex_t g_reg_lock    = PTHREAD_MUTEX_INITIALIZER;  /* register accesses */
+static pthread_mutex_t g_client_lock = PTHREAD_MUTEX_INITIALIZER;
+static int             g_clients     = 0;
+static void *client_thread(void *arg);
 
 /* -------------------------------------------------------------------------
  * DMA point-cloud multicast thread
@@ -193,6 +200,7 @@ typedef struct { int port; const char *group; } dma_thread_args_t;
  * main thread and only read by the DMA thread, so plain volatiles suffice. */
 static volatile uint32_t g_uni_ip   = 0;                    /* dest, network order; 0 = off */
 static volatile uint16_t g_uni_port = DMA_DEFAULT_UNI_PORT;  /* dest, host order */
+static volatile int      g_uni_registered = 0;  /* a host registered its address */
 /* Local UDP port the DMA socket binds: where the point cloud egresses from AND
  * where host registration datagrams arrive. Keeping send and recv on one port
  * is what makes the NAT hole-punch work — the board replies to a NAT'd host
@@ -367,6 +375,7 @@ static void *dma_poll_thread(void *arg)
                             (struct sockaddr *)&src, &slen) > 0) {
                 g_uni_ip   = src.sin_addr.s_addr;
                 g_uni_port = ntohs(src.sin_port);
+                g_uni_registered = 1;
             }
         }
 
@@ -506,19 +515,62 @@ void error(const char *msg)
     exit(-1);
 }
 
+/* one client: its own buffer, register accesses under g_reg_lock */
+static void *client_thread(void *arg)
+{
+    int fd = (int)(intptr_t)arg;
+    char *data_buffer = malloc(8 + sizeof(word_t) * MAX_LENGTH);
+    word_t *rw_buffer = (word_t *)(data_buffer + 8);
+    char *buffer = data_buffer;
+    unsigned int data_length;
+    word_t address;
+    int n;
+
+    while (data_buffer) {
+        n = recv(fd, buffer, 8, MSG_WAITALL);
+        if (n != 8) break;                       /* client gone or short read */
+        memcpy(&address, buffer + 4, sizeof(address));
+        data_length = (unsigned char)buffer[2] + ((unsigned char)buffer[3] << 8);
+        if (data_length > MAX_LENGTH)
+            data_length = MAX_LENGTH;
+        if (data_length == 0)
+            continue;
+        else if (buffer[0] == 'r') {
+            pthread_mutex_lock(&g_reg_lock);
+            read_values(address, rw_buffer, data_length);
+            pthread_mutex_unlock(&g_reg_lock);
+            n = send(fd, data_buffer, data_length * sizeof(word_t) + 8, MSG_NOSIGNAL);
+            if (n != (int)(data_length * sizeof(word_t) + 8)) break;
+        }
+        else if (buffer[0] == 'w') {
+            n = recv(fd, rw_buffer, data_length * sizeof(word_t), MSG_WAITALL);
+            if (n != (int)(data_length * sizeof(word_t))) break;
+            pthread_mutex_lock(&g_reg_lock);
+            write_values(address, rw_buffer, data_length);
+            pthread_mutex_unlock(&g_reg_lock);
+            n = send(fd, buffer, 8, MSG_NOSIGNAL);
+            if (n != 8) break;
+        }
+        else if (buffer[0] == 'b') {             /* bulk read of the memory window */
+            if (bulk_read(fd, address, (unsigned long)data_length << 10,
+                          (char *)rw_buffer, sizeof(word_t) * MAX_LENGTH) < 0)
+                break;
+        }
+        else break;                              /* 'c', or out of sync */
+    }
+    close(fd);
+    free(data_buffer);
+    pthread_mutex_lock(&g_client_lock);
+    g_clients--;
+    pthread_mutex_unlock(&g_client_lock);
+    return NULL;
+}
+
 int main(int argc, char *argv[])
 {
      int portno;
-	 unsigned int data_length;
-	 word_t address;
      socklen_t clilen;
-
-     static char data_buffer[8+sizeof(word_t)*MAX_LENGTH] __attribute__((aligned(8)));
-	 word_t * rw_buffer =(word_t*)&(data_buffer[8]);
-	 char* buffer = (char*)&(data_buffer[0]);
-     
      struct sockaddr_in serv_addr, cli_addr;
-     int n;
      if (argc < 2) {
          fprintf(stderr,"ERROR, no port provided\n");
          exit(1);
@@ -562,88 +614,63 @@ int main(int argc, char *argv[])
      if (bind(sockfd, (struct sockaddr *) &serv_addr,
               sizeof(serv_addr)) < 0) 
               error("ERROR on binding");
-     listen(sockfd,5);
-     /* Outer accept loop: serve one client at a time but SURVIVE a client
-      * disconnect. A clean close ('c') or a broken/dead link now drops back to
-      * accept() for the next client instead of terminating the daemon, so a GUI
-      * can reconnect without the monitor_server being killed and relaunched.
-      * (Previously only the DMA multicast thread survived a disconnect; the
-      * register-link server did a single accept() and then exited on the first
-      * client drop, so an unclean disconnect left it blocked forever in recv()
-      * on the half-open socket with no way to service a reconnecting client.) */
+     listen(sockfd, 16);
+     /* Accept loop: every client gets its own thread (up to MAX_CLIENTS at
+      * once), so e.g. the pyrpl GUI, a frame-snapshot tool and a point-stream
+      * tool share the board. Register accesses are serialised (g_reg_lock);
+      * bulk reads of the memory window run in parallel. A client that drops
+      * or closes ('c') only ends its own thread. */
+     signal(SIGPIPE, SIG_IGN);   /* a vanished client must not kill the server */
      while (0==0) {
          clilen = sizeof(cli_addr);
-         newsockfd = accept(sockfd,
-                     (struct sockaddr *) &cli_addr,
-                     &clilen);
-         if (newsockfd < 0) {
+         int cfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
+         if (cfd < 0) {
               perror("ERROR on accept");
               continue;   /* keep the daemon alive; try to accept again */
          }
-         /* TCP keepalive: without it, an unplugged board leaves the recv() below
-          * blocked forever on the half-open connection, so the server never gets
-          * back to accept() and the reconnecting client is never serviced. Detect
-          * a dead peer in ~6s (3s idle + 3 x 1s probes). */
+         /* TCP keepalive: without it, an unplugged host leaves its thread
+          * blocked forever in recv() on the half-open connection. Detect a dead
+          * peer in ~6s (3s idle + 3 x 1s probes). */
          {
               int ka = 1, idle = 3, intvl = 1, cnt = 3;
-              setsockopt(newsockfd, SOL_SOCKET,  SO_KEEPALIVE,  &ka,    sizeof(ka));
-              setsockopt(newsockfd, IPPROTO_TCP, TCP_KEEPIDLE,  &idle,  sizeof(idle));
-              setsockopt(newsockfd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
-              setsockopt(newsockfd, IPPROTO_TCP, TCP_KEEPCNT,   &cnt,   sizeof(cnt));
+              setsockopt(cfd, SOL_SOCKET,  SO_KEEPALIVE,  &ka,    sizeof(ka));
+              setsockopt(cfd, IPPROTO_TCP, TCP_KEEPIDLE,  &idle,  sizeof(idle));
+              setsockopt(cfd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
+              setsockopt(cfd, IPPROTO_TCP, TCP_KEEPCNT,   &cnt,   sizeof(cnt));
          }
-         /* Fallback unicast target: whoever just connected for register access
-          * (the host running the GUI), at the unicast listen port. Good enough
-          * for a directly-reachable host; a NAT'd host (e.g. WSL) instead sends a
+         /* Fallback unicast target: whoever connected for register access (the
+          * host running the GUI), at the unicast listen port, good enough for a
+          * directly-reachable host. A NAT'd host (e.g. WSL) instead sends a
           * registration datagram that the DMA thread uses to learn its real
-          * post-NAT address and port, overriding this. */
-         g_uni_ip   = cli_addr.sin_addr.s_addr;
-         g_uni_port = g_uni_listen_port;
-         fprintf(stderr, "dma: unicast fallback target %s:%d (until host registers)\n",
-                 inet_ntoa(cli_addr.sin_addr), (int)g_uni_port);
-         fprintf(stderr, "Incoming client connection accepted!\n");
-
-         /* service loop for the currently-connected client */
-         while (0==0) {
-             //read next header from client
-             bzero(buffer,8);
-             n = recv(newsockfd,buffer,8,MSG_WAITALL);
-             /* n != 8 => client gone or short read: drop it and re-accept
-              * (was: error()/exit, which killed the whole daemon). */
-             if (n != 8) break;
-             //interpret the header
-             memcpy(&address, buffer + 4, sizeof(address)); //address to be read/written
-             data_length = (unsigned char)buffer[2]+((unsigned char)buffer[3]<<8); //number of 32-bit words to be read/written
-             if (data_length > MAX_LENGTH)
-                 data_length = MAX_LENGTH;
-             if (data_length == 0)
-                 continue;
-             //test for various cases Read, Write, Close
-             else if (buffer[0] == 'r') { //read from FPGA
-                 read_values(address, rw_buffer, data_length);
-                 //send the data
-                 n = send(newsockfd,(void*)data_buffer,data_length*sizeof(word_t)+8,0);
-                 if (n != (int)(data_length*sizeof(word_t)+8)) break; //client gone
-             }
-             else if  (buffer[0] == 'w') { //write to FPGA
-                 //read new data from socket
-                 n = recv(newsockfd,(void*)rw_buffer,data_length*sizeof(word_t),MSG_WAITALL);
-                 if (n != (int)(data_length*sizeof(word_t))) break; //client gone
-                 //write FPGA memory
-                 write_values(address, rw_buffer, data_length);
-                 n=send(newsockfd,buffer,8,0);
-                 if (n != 8) break; //client gone
-             }
-             else if (buffer[0] == 'b') { //bulk read of the memory window
-                 if (bulk_read(newsockfd, address, (unsigned long)data_length << 10,
-                               (char *)rw_buffer, sizeof(word_t) * MAX_LENGTH) < 0)
-                     break; //client gone
-             }
-             else if (buffer[0] == 'c') break; //client asked to close -> re-accept
-             else break; //out of sync: drop this client and re-accept
+          * post-NAT address and port; once one has come, a further connection
+          * (another tool) does not move the stream back to the fallback. */
+         if (!g_uni_registered) {
+              g_uni_ip   = cli_addr.sin_addr.s_addr;
+              g_uni_port = g_uni_listen_port;
+              fprintf(stderr, "dma: unicast fallback target %s:%d (until host registers)\n",
+                      inet_ntoa(cli_addr.sin_addr), (int)g_uni_port);
          }
-         //this client is done; close its socket and wait for the next one
-         close(newsockfd);
-         newsockfd = -1;
+         pthread_mutex_lock(&g_client_lock);
+         int full = g_clients >= MAX_CLIENTS;
+         if (!full) g_clients++;
+         pthread_mutex_unlock(&g_client_lock);
+         if (full) {
+              fprintf(stderr, "client refused: %d clients already\n", MAX_CLIENTS);
+              close(cfd);
+              continue;
+         }
+         pthread_t tid;
+         if (pthread_create(&tid, NULL, client_thread, (void *)(intptr_t)cfd) != 0) {
+              perror("client thread");
+              close(cfd);
+              pthread_mutex_lock(&g_client_lock);
+              g_clients--;
+              pthread_mutex_unlock(&g_client_lock);
+              continue;
+         }
+         pthread_detach(tid);
+         fprintf(stderr, "Incoming client connection accepted (%s)\n",
+                 inet_ntoa(cli_addr.sin_addr));
      }
      //not reached in normal operation (the accept loop above never exits)
      close(sockfd);
@@ -721,13 +748,18 @@ static int bulk_read(int sock, word_t a_addr, unsigned long a_bytes, char *buf, 
     unsigned long off = (unsigned long)a_addr - MEM_WIN_BASE;
     int ok = off < MEM_WIN_SIZE && a_bytes <= MEM_WIN_SIZE - off && (off & 15) == 0;
 
-    if (ok && !win) {
-        int wfd = open("/dev/mem", O_RDONLY | O_SYNC);
-        if (wfd >= 0) {
-            void *m = mmap(0, MEM_WIN_SIZE, PROT_READ, MAP_SHARED, wfd, DMA_BUF_BASE);
-            if (m != MAP_FAILED) win = (volatile uint8_t *)m;
-            close(wfd);
+    if (ok) {
+        static pthread_mutex_t win_lock = PTHREAD_MUTEX_INITIALIZER;
+        pthread_mutex_lock(&win_lock);           /* first use, from any client */
+        if (!win) {
+            int wfd = open("/dev/mem", O_RDONLY | O_SYNC);
+            if (wfd >= 0) {
+                void *m = mmap(0, MEM_WIN_SIZE, PROT_READ, MAP_SHARED, wfd, DMA_BUF_BASE);
+                if (m != MAP_FAILED) win = (volatile uint8_t *)m;
+                close(wfd);
+            }
         }
+        pthread_mutex_unlock(&win_lock);
         if (!win) ok = 0;
     }
     hdr[0] = 'b';
