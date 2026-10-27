@@ -738,9 +738,18 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
   assign sn_data[c]        = {n_mag[3], n_mag[2], n_mag[1], n_mag[0]};
   assign sn_valid[c]       = n_valid;
   assign sn_first[c]       = n_first;
-  assign sn_data[NCH + c]  = s_data;
-  assign sn_valid[NCH + c] = in_accept;
-  assign sn_first[NCH + c] = in_first;
+  // the FFT input for the snapshot and the scope: a copy of its own, so s_data
+  // keeps the xfft cores as its only distant load
+  logic [127:0] t_data;
+  logic         t_valid, t_first;
+  always_ff @(posedge fclk) begin
+    t_data  <= s_data;
+    t_valid <= in_accept;
+    t_first <= in_first;
+  end
+  assign sn_data[NCH + c]  = t_data;
+  assign sn_valid[NCH + c] = t_valid;
+  assign sn_first[NCH + c] = t_first;
 
   // CFAR detector on the natural-order spectrum
   logic        cf_valid, cf_ovr;
@@ -816,6 +825,7 @@ logic [31:0]   f_sc_dly;
 logic [16:0]   f_sc_dec;
 logic [2:0]    f_sc_in [2];
 logic [127:0]  sc_x [2], sc_xr [2];
+logic [127:0]  sc_in_q [0:3+NCH];              // every input, registered (RF-ADC, FFT inputs)
 logic          f_sc_writing, f_sc_dly_do, f_sc_pre, f_sc_arm_ack, f_sc_rst_ack;
 logic          f_sc_ovf, f_sc_err;
 logic [3:0]    f_sc_trig;
@@ -844,15 +854,20 @@ always_ff @(posedge fclk) begin
   f_sc_in <= m_sc_in;
 end
 
-// inputs: 14-bit samples in 16 bits, as the FFTs see them
-always_ff @(posedge fclk)
-  for (int c = 0; c < 2; c++) begin
+// inputs: 14-bit samples in 16 bits, as the FFTs see them. Every candidate is
+// registered first (near its source), then selected: the RF-ADC words and the
+// FFT inputs are far apart and already have other loads.
+always_ff @(posedge fclk) begin
+  for (int i = 0; i < 4; i++)
     for (int j = 0; j < 8; j++)
-      sc_x[c][16*j +: 16] <= (f_sc_in[c] < 4)
-          ? 16'($signed(adc_data[f_sc_in[c][1:0]][16*j +: 16]) >>> 2)
-          : (f_sc_in[c] - 4 < NCH) ? sn_data[NCH + 32'(f_sc_in[c] - 4)][16*j +: 16] : 16'h0;
+      sc_in_q[i][16*j +: 16] <= 16'($signed(adc_data[i][16*j +: 16]) >>> 2);
+  for (int c = 0; c < NCH; c++)
+    sc_in_q[4 + c] <= sn_data[NCH + c];
+  for (int c = 0; c < 2; c++) begin
+    sc_x[c]  <= (32'(f_sc_in[c]) < 4 + NCH) ? sc_in_q[f_sc_in[c]] : '0;
     sc_xr[c] <= sc_x[c];
   end
+end
 
 zcu216_scope #(.L(SC_L), .BASE(SC_BASE)) i_scope (
   .clk (fclk), .rstn (frstn), .x1 (sc_xr[0]), .x2 (sc_xr[1]),

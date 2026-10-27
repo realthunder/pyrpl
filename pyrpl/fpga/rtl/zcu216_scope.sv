@@ -296,7 +296,16 @@ logic [13:0] tick = '0;                        // partial-block flushes at slow 
 wire [31:0] s_next = scnt + 32'(n5);
 wire        word   = (st == S_RUN) && n5 != 0 && 3'(fill) + n5 == 3'd4;
 
-assign pretrig_ok = (dly >= 32'(L)) || (scnt >= 32'(L) - dly);
+// both checks a cycle behind scnt (registered, off the state logic's path): a
+// trigger may wait one beat longer, and up to a word more is written after the
+// last sample, which the ring (2L) has room for
+logic past_stop;                               // scnt is beyond the last sample to keep
+logic trig_d;                                  // triggered a cycle ago: past_stop uses this stop_at
+always_ff @(posedge clk) begin
+  pretrig_ok <= (dly >= 32'(L)) || (scnt >= 32'(L) - dly);
+  past_stop  <= scnt > stop_at;
+  trig_d     <= triggered;
+end
 assign writing    = (st != S_IDLE) || arm_pend;
 
 always_ff @(posedge clk) begin
@@ -363,7 +372,7 @@ always_ff @(posedge clk) begin
         if (word) begin
           sc_push <= 1'b1;
           // done once the word holding the last sample is out
-          if (triggered && s_next - 1 >= stop_at) begin
+          if (triggered && trig_d && past_stop) begin
             dly_do   <= 1'b0;
             trig_src <= '0;
             if (!keep) st <= S_FLUSH;
