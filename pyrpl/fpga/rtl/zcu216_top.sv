@@ -28,6 +28,13 @@
  * The bus runs on pl_clk0 (100 MHz). LEDs 0-6 are hk's LED register (0x30);
  * LED 7 is a heartbeat that toggles every 0.67 s, so a running PL clock is
  * visible before any register access.
+ *
+ * hk's expansion GPIOs are on the PMOD headers: exp_p[7:0] = PMOD0_0..7 (J46),
+ * exp_n[7:0] = PMOD1_0..7 (J47), direction and data per pin as on the Red
+ * Pitaya (hk 0x10-0x24). The pins are 1.8 V (bank 88) behind TXS0108E
+ * auto-direction shifters to the 3.3 V headers: weak drive, no LEDs or heavy
+ * loads, no strong pull-ups. Jumper J27 must stay open (it ties PMOD1_0/1 to
+ * the MSP430's reset and test pins).
  */
 
 module zcu216_top #(
@@ -51,7 +58,9 @@ module zcu216_top #(
   output logic       vout00_p, vout00_n, vout01_p, vout01_n, vout02_p, vout02_n,
   output logic       vout03_p, vout03_n, vout10_p, vout10_n, vout20_p, vout20_n,
 `endif
-  output logic [7:0] led_g
+  output logic [7:0] led_g,
+  inout  wire  [7:0] pmod0,                    // hk exp_p (J46)
+  inout  wire  [7:0] pmod1                     // hk exp_n (J47)
 );
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -356,6 +365,20 @@ endgenerate
 
 logic [8-1:0] hk_led;
 
+// PMOD pins: IOBUFs, inputs through two flops (asynchronous to the bus)
+logic [7:0] exp_p_in, exp_n_in, exp_p_out, exp_n_out, exp_p_dir, exp_n_dir;
+(* ASYNC_REG = "TRUE" *) logic [7:0] exp_p_m, exp_p_s, exp_n_m, exp_n_s;
+
+for (genvar i = 0; i < 8; i++) begin : g_pmod
+  IOBUF i_iobuf_p (.O(exp_p_in[i]), .IO(pmod0[i]), .I(exp_p_out[i]), .T(~exp_p_dir[i]));
+  IOBUF i_iobuf_n (.O(exp_n_in[i]), .IO(pmod1[i]), .I(exp_n_out[i]), .T(~exp_n_dir[i]));
+end
+
+always_ff @(posedge sys_clk) begin
+  exp_p_m <= exp_p_in;  exp_p_s <= exp_p_m;
+  exp_n_m <= exp_n_in;  exp_n_s <= exp_n_m;
+end
+
 red_pitaya_hk #(
   .DNA_W (96),
   .BOARD (4'h1)
@@ -364,12 +387,12 @@ red_pitaya_hk #(
   .rstn_i        (sys_rstn          ),
   .led_o         (hk_led            ),
   .digital_loop  (                  ),
-  .exp_p_dat_i   (8'h0              ),
-  .exp_p_dat_o   (                  ),
-  .exp_p_dir_o   (                  ),
-  .exp_n_dat_i   (8'h0              ),
-  .exp_n_dat_o   (                  ),
-  .exp_n_dir_o   (                  ),
+  .exp_p_dat_i   (exp_p_s           ),
+  .exp_p_dat_o   (exp_p_out         ),
+  .exp_p_dir_o   (exp_p_dir         ),
+  .exp_n_dat_i   (exp_n_s           ),
+  .exp_n_dat_o   (exp_n_out         ),
+  .exp_n_dir_o   (exp_n_dir         ),
   .scope_sigs_i  (4'h0              ),
   .scan_x_i      ('0                ),
   .scan_x_step_i ('0                ),
