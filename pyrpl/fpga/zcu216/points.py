@@ -28,16 +28,17 @@ UDP_PORT = 12466                               # monitor_server's unicast port
 
 def decode(buf, nch, fpp):
     w = np.frombuffer(buf, dtype='<u8')
-    if w.size != 1 + nch * fpp or not w[0] >> 63:
+    if w.size != 1 + nch * fpp or not int(w[0]) >> 63:
         return None
     h = int(w[0])
     first = h & ((1 << 55) - 1)
-    d = w[1:].reshape(fpp, nch)
+    d = w[1:]
+    u = np.uint64
     frame = first + np.repeat(np.arange(fpp), nch)
     ch = np.tile(np.arange(nch), fpp)
-    d = d.ravel()
-    return np.c_[frame, ch, (d >> 62) & 1, (d >> 32) & 1,
-                 ((d >> 33) & ((1 << 25) - 1)) / 256.0, d & 0xffffffff], (h >> 59) & 0xf, (h >> 55) & 0xf
+    rows = np.c_[frame, ch, (d >> u(62)) & u(1), (d >> u(32)) & u(1),
+                 ((d >> u(33)) & u((1 << 25) - 1)) / 256.0, d & u(0xffffffff)]
+    return rows, (h >> 59) & 0xf, (h >> 55) & 0xf
 
 
 def main():
