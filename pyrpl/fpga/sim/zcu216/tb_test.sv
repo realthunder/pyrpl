@@ -33,7 +33,7 @@ module tb_test;
   logic         pt_awvalid, pt_wlast, pt_wvalid, pt_bready, pt_bvalid = 0;
   logic [127:0] pt_wdata;
   logic [15:0]  pt_wstrb;
-  zcu216_fft_test #(.NCH(2), .SUB(SUB), .WIN(WIN),
+  zcu216_fft_test #(.NCH(2), .SUB(SUB), .WIN(WIN), .SC_L(1024),
     .TWC_FILE({SIMDIR, "/mem/zcu216_twc.mem"}), .TWF_FILE({SIMDIR, "/mem/zcu216_twf.mem"}),
     .SIN_FILE({SIMDIR, "/mem/zcu216_sin.mem"})) dut (
     .sys_clk(sclk), .sys_rstn(srstn), .sys_addr, .sys_wdata, .sys_wen, .sys_ren,
@@ -198,6 +198,35 @@ module tb_test;
                ptr, dw, fpp, pk, dr, er, has0, det0, has1, det1, frames);
       if (bad || dr != 0 || er != 0 || ptr < 2 * (1 + dw) || has0 == 0 || has1 == 0 || det0 != has0 || det1 != has1)
         $display("ERR POINTS");
+    end
+    // scope: channel 1 = FFT channel 0's input (the bin-37 tone), channel 2 = channel
+    // 1's; decimation 2, trigger on channel 1 rising through 0 in the middle
+    begin
+      logic [31:0] st, wt, dl, base, rl, ln, fmt;
+      logic signed [15:0] y [$], y2max;
+      int zc = 0, bad = 0;
+      rd(32'h1001e0, ln); rd(32'h1001e4, base); rd(32'h1001e8, rl); rd(32'h1001ec, fmt);
+      wr(32'h1001f0, 4);  wr(32'h1001f4, 5);
+      wr(32'h100014, 2);  wr(32'h100028, 0);  wr(32'h100008, 0);  wr(32'h100020, 20);
+      wr(32'h100000, 2);                                    // reset
+      wr(32'h100010, ln / 2);
+      wr(32'h100000, 1);                                    // arm
+      wr(32'h100004, 2);                                    // channel 1 rising
+      do rd(32'h100000, st); while (st[0] || st[2]);
+      rd(32'h10001c, wt);  rd(32'h100010, dl);  rd(32'h100004, v);
+      y2max = 0;
+      for (int i = 0; i < ln; i++) begin
+        int k = (int'(wt + dl) - int'(ln) + 1 + i + int'(rl)) % int'(rl);
+        logic [127:0] w = ddr[40'(base) + 40'(16 * (k / 4))];
+        y.push_back(w[16 * (k % 4) +: 16]);
+        if ($isunknown(w)) bad++;
+        else if ($signed(w[64 + 16 * (k % 4) +: 16]) > y2max) y2max = w[64 + 16 * (k % 4) +: 16];
+      end
+      for (int i = 1; i < ln; i++) if ((y[i] >= 0) != (y[i-1] >= 0)) zc++;
+      $display("SCOPE L %0d ring %0d base %h format %h: wp_trig %0d, trigger source now %0d; trigger sample %0d after %0d, %0d zero crossings (tone: ~592), ch2 max %0d, %0d unwritten",
+               ln, rl, base, fmt, wt, v, y[ln - dl], y[ln - dl - 1], zc, y2max, bad);
+      if (bad || v != 0 || !(y[ln - dl] >= 0 && y[ln - dl - 1] < 0) || zc < 570 || zc > 610 || y2max < 1000)
+        $display("ERR SCOPE");
     end
     // clock meters (1 ms gate) and the raw capture
     repeat (210000) @(posedge sclk);

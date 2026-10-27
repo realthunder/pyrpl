@@ -1,0 +1,350 @@
+/**
+ * ZCU216 oscilloscope, Red Pitaya scope semantics (red_pitaya_scope.sv, pyrpl
+ * Scope) with the buffer in DDR: two channels of 8 samples per clock (14-bit
+ * values in 16 bits, 2.5 GS/s at fclk = 312.5 MHz), decimated by D = 2^k
+ * (k = 1..16; with average, the mean of each group, else its first sample),
+ * written as a ring of R = 2L samples per channel through zcu216_snap's two DDR
+ * writers. Each 128-bit word holds four consecutive samples of each channel:
+ * [63:0] channel 1, [127:64] channel 2, sample 0 in the low 16 bits. D >= 2:
+ * two channels at 2.5 GS/s would need 10 GB/s.
+ *
+ * As on the Red Pitaya: arm starts writing; once L - dly samples are in (or
+ * dly >= L), a trigger (software, or channel 1/2 crossing thr upwards or
+ * downwards with hysteresis) is taken; dly more samples are written, then
+ * writing stops (keep: continues). wp_trig is the sample before the trigger,
+ * so the trace is the L samples ending at wp_trig + dly. trig_src returns to 0
+ * when the trigger and the delay are done, and writing stays up until the last
+ * word is in DDR, so "writing and dly_do both low" means the trace is readable.
+ * The ring is 2L: the words written past wp_trig + dly (at most 3 samples)
+ * never reach into the trace. wp_cur is the last sample in DDR: in a free run
+ * (no trigger, rolling mode) the PC reads the L samples ending there; slow
+ * rates flush partial blocks so it keeps moving.
+ */
+module zcu216_scope #(
+  parameter int L = 1 << 18,                   // samples per channel per trace
+  localparam int RW = $clog2(2 * L)            // ring index bits (samples)
+) (
+  input  logic          clk,
+  input  logic          rstn,
+  input  logic [127:0]  x1,                    // 8 samples, sample 0 in [15:0]
+  input  logic [127:0]  x2,
+  // settings (quasi-static) and commands (toggles)
+  input  logic [16:0]   dec,
+  input  logic          avg,
+  input  logic signed [15:0] thr,
+  input  logic [15:0]   hyst,
+  input  logic [31:0]   dly,
+  input  logic          keep,
+  input  logic [3:0]    src_val,               // taken on a src_set toggle
+  input  logic          src_set,
+  input  logic          arm,
+  input  logic          rst,
+  // status
+  output logic          writing,
+  output logic          dly_do,
+  output logic [3:0]    trig_src,
+  output logic          pretrig_ok,
+  output logic [RW-1:0] wp_cur,
+  output logic [RW-1:0] wp_trig,
+  output logic          arm_ack,               // follows arm once the arm is taken
+  output logic          rst_ack,
+  // the ring writers (zcu216_snap)
+  output logic          sc_req,
+  input  logic          sc_grant,
+  output logic          sc_start,
+  output logic          sc_push,
+  output logic [127:0]  sc_data,
+  output logic          sc_flush,
+  input  logic          sc_idle,
+  input  logic [31:0]   sc_words
+);
+
+// decimation: k = log2 D, 1..16
+logic [4:0] k;
+always_ff @(posedge clk) begin
+  k <= 5'd1;
+  for (int i = 2; i <= 16; i++) if (dec[i]) k <= 5'(i);
+end
+
+logic signed [15:0] thm, thp;                  // thr - hyst, thr + hyst
+always_ff @(posedge clk) begin
+  thm <= thr - $signed(hyst);
+  thp <= thr + $signed(hyst);
+end
+
+// commands
+logic [2:0] arm_s, rst_s, set_s;
+always_ff @(posedge clk) begin
+  arm_s <= {arm_s[1:0], arm};
+  rst_s <= {rst_s[1:0], rst};
+  set_s <= {set_s[1:0], src_set};
+end
+wire c_arm = arm_s[2] != arm_s[1];
+wire c_rst = rst_s[2] != rst_s[1];
+wire c_set = set_s[2] != set_s[1];
+
+////////////////////////////////////////////////////////////////////////////////
+// decimation: sums of 2, 4 and 8 samples per beat, longer groups over beats
+////////////////////////////////////////////////////////////////////////////////
+
+logic signed [15:0] x  [2][8], xs2 [2][8], xs3 [2][8];
+logic signed [16:0] p1 [2][4], p1s3 [2][4];
+logic signed [17:0] p2 [2][2], p2s3 [2][2];
+logic signed [18:0] p3 [2];
+logic               restart;                   // decimation groups start over (arm)
+logic [3:0]         rs;
+
+always_ff @(posedge clk) begin
+  for (int j = 0; j < 8; j++) begin
+    x[0][j] <= x1[16*j +: 16];
+    x[1][j] <= x2[16*j +: 16];
+  end
+  for (int c = 0; c < 2; c++) begin
+    for (int i = 0; i < 4; i++) p1[c][i] <= x[c][2*i] + x[c][2*i+1];
+    xs2[c] <= x[c];
+    for (int i = 0; i < 2; i++) p2[c][i] <= p1[c][2*i] + p1[c][2*i+1];
+    p1s3[c] <= p1[c];
+    xs3[c]  <= xs2[c];
+    p3[c]   <= p2[c][0] + p2[c][1];
+    p2s3[c] <= p2[c];
+  end
+  rs <= {rs[2:0], restart};
+end
+
+// stage 4: up to four output samples per channel, o[c][0..n-1]
+logic signed [15:0] o [2][4];
+logic [2:0]         n;
+logic signed [34:0] acc [2], asum [2];
+logic signed [15:0] first [2];
+logic [12:0]        gcnt;                      // beats into a group (k >= 4)
+
+always_comb
+  for (int c = 0; c < 2; c++)
+    asum[c] = (gcnt == 0) ? 35'(p3[c]) : acc[c] + 35'(p3[c]);
+
+always_ff @(posedge clk) begin
+  n <= '0;
+  case (k)
+    5'd1: begin
+      n <= 3'd4;
+      for (int c = 0; c < 2; c++)
+        for (int i = 0; i < 4; i++)
+          o[c][i] <= avg ? 16'(p1s3[c][i] >>> 1) : xs3[c][2*i];
+    end
+    5'd2: begin
+      n <= 3'd2;
+      for (int c = 0; c < 2; c++)
+        for (int i = 0; i < 2; i++)
+          o[c][i] <= avg ? 16'(p2s3[c][i] >>> 2) : xs3[c][4*i];
+    end
+    5'd3: begin
+      n <= 3'd1;
+      for (int c = 0; c < 2; c++) o[c][0] <= avg ? 16'(p3[c] >>> 3) : xs3[c][0];
+    end
+    default: begin
+      for (int c = 0; c < 2; c++) begin
+        acc[c] <= asum[c];
+        if (gcnt == 0) first[c] <= xs3[c][0];
+        o[c][0] <= avg ? 16'(asum[c] >>> k) : ((gcnt == 0) ? xs3[c][0] : first[c]);
+      end
+      if (gcnt == 13'((1 << (k - 3)) - 1)) begin
+        n    <= 3'd1;
+        gcnt <= '0;
+      end else
+        gcnt <= gcnt + 1'b1;
+    end
+  endcase
+  if (rs[3]) gcnt <= '0;
+end
+
+////////////////////////////////////////////////////////////////////////////////
+// trigger: Schmitt triggers on both channels over the samples of a beat
+////////////////////////////////////////////////////////////////////////////////
+
+logic signed [15:0] o5 [2][4];
+logic [2:0]         n5;
+logic [3:0]         ge [2], lt [2], le [2], gt [2];
+
+always_ff @(posedge clk) begin
+  o5 <= o;
+  n5 <= n;
+  for (int c = 0; c < 2; c++)
+    for (int i = 0; i < 4; i++) begin
+      ge[c][i] <= o[c][i] >= thr;
+      lt[c][i] <= o[c][i] <  thm;
+      le[c][i] <= o[c][i] <= thr;
+      gt[c][i] <= o[c][i] >  thp;
+    end
+end
+
+// the state before / after each sample and the edges (the state switching on)
+logic [1:0] sp, sn;                            // per channel: above / below
+logic [4:0] ca [2], cb [2];                    // [i] = state before sample i
+logic [3:0] ep [2], en [2];                    // edge at sample i
+logic [1:0] sp_n, sn_n;
+
+always_comb
+  for (int c = 0; c < 2; c++) begin
+    ca[c][0] = sp[c];
+    cb[c][0] = sn[c];
+    for (int i = 0; i < 4; i++) begin
+      if (3'(i) < n5) begin
+        ca[c][i+1] = ge[c][i] || (ca[c][i] && !lt[c][i]);
+        cb[c][i+1] = le[c][i] || (cb[c][i] && !gt[c][i]);
+      end else begin
+        ca[c][i+1] = ca[c][i];
+        cb[c][i+1] = cb[c][i];
+      end
+      ep[c][i] = ca[c][i+1] && !ca[c][i];
+      en[c][i] = cb[c][i+1] && !cb[c][i];
+    end
+    sp_n[c] = ca[c][4];
+    sn_n[c] = cb[c][4];
+  end
+
+always_ff @(posedge clk)
+  if (!rstn) begin
+    sp <= '0;
+    sn <= '0;
+  end else begin
+    sp <= sp_n;
+    sn <= sn_n;
+  end
+
+// edges of the selected source this beat
+logic [3:0] ev;
+always_comb
+  case (trig_src)
+    4'd1:    ev = (n5 != 0) ? 4'b0001 : 4'b0000;  // software / immediately
+    4'd2:    ev = ep[0];
+    4'd3:    ev = en[0];
+    4'd4:    ev = ep[1];
+    4'd5:    ev = en[1];
+    default: ev = '0;
+  endcase
+
+logic [1:0] epos;                              // the first edge
+always_comb begin
+  epos = 2'd0;
+  for (int i = 3; i >= 0; i--) if (ev[i]) epos = 2'(i);
+end
+
+////////////////////////////////////////////////////////////////////////////////
+// acquisition
+////////////////////////////////////////////////////////////////////////////////
+
+typedef enum logic [1:0] {S_IDLE, S_GRANT, S_RUN, S_FLUSH} state_t;
+state_t st;
+
+logic [31:0] scnt;                             // samples since the start
+logic [31:0] stop_at;                          // the last sample to keep
+logic        triggered, arm_pend;
+logic [63:0] pk [2];                           // the word being filled
+logic [1:0]  fill;                             // samples in it (multiple of n)
+logic [13:0] tick = '0;                        // partial-block flushes at slow rates
+
+wire [31:0] s_next = scnt + 32'(n5);
+wire        word   = (st == S_RUN) && n5 != 0 && 3'(fill) + n5 == 3'd4;
+
+assign pretrig_ok = (dly >= 32'(L)) || (scnt >= 32'(L) - dly);
+assign sc_req     = st != S_IDLE;
+assign writing    = (st != S_IDLE) || arm_pend;
+
+always_ff @(posedge clk) begin
+  sc_start <= 1'b0;
+  sc_push  <= 1'b0;
+  restart  <= 1'b0;
+  tick     <= tick + 1'b1;
+  if (!rstn) begin
+    st        <= S_IDLE;
+    triggered <= 1'b0;
+    dly_do    <= 1'b0;
+    arm_pend  <= 1'b0;
+    trig_src  <= '0;
+    wp_trig   <= '0;
+    arm_ack   <= 1'b0;
+    rst_ack   <= 1'b0;
+    sc_flush  <= 1'b0;
+  end else begin
+    if (c_set) trig_src <= src_val;
+    // reset: stop (the writers drain first), back to 0
+    if (c_rst) begin
+      rst_ack   <= !rst_ack;
+      trig_src  <= '0;
+      dly_do    <= 1'b0;
+      triggered <= 1'b0;
+      wp_trig   <= '0;
+      if (st == S_RUN || st == S_GRANT) st <= (st == S_RUN) ? S_FLUSH : S_IDLE;
+    end
+    // arm: start over, after the writers have drained if they are busy
+    if (c_arm) begin
+      arm_ack  <= !arm_ack;
+      arm_pend <= 1'b1;
+      dly_do   <= 1'b0;
+      if (st == S_RUN) st <= S_FLUSH;
+    end
+    case (st)
+      S_IDLE: if (arm_pend && !c_rst) st <= S_GRANT;
+      S_GRANT:
+        if (sc_grant) begin
+          st        <= S_RUN;
+          arm_pend  <= 1'b0;
+          sc_start  <= 1'b1;
+          restart   <= 1'b1;
+          triggered <= 1'b0;
+          scnt      <= '0;
+          fill      <= '0;
+          sc_flush  <= 1'b0;
+        end
+      S_RUN: if (!c_arm && !c_rst) begin
+        // trigger
+        if (!triggered && |ev && pretrig_ok) begin
+          triggered <= 1'b1;
+          dly_do    <= 1'b1;
+          wp_trig   <= RW'(scnt + 32'(epos) - 1);
+          stop_at   <= scnt + 32'(epos) - 1 + dly;
+        end
+        // samples into the word
+        for (int i = 0; i < 4; i++)
+          if (3'(i) < n5) begin
+            pk[0][16*(fill+i) +: 16] <= o5[0][i];
+            pk[1][16*(fill+i) +: 16] <= o5[1][i];
+          end
+        fill <= 2'(3'(fill) + n5);
+        scnt <= s_next;
+        if (word) begin
+          sc_push <= 1'b1;
+          // done once the word holding the last sample is out
+          if (triggered && s_next - 1 >= stop_at) begin
+            dly_do   <= 1'b0;
+            trig_src <= '0;
+            if (!keep) st <= S_FLUSH;
+            else triggered <= 1'b0;
+          end
+        end
+        sc_flush <= (k >= 5'd5) && tick == '1;  // keep a slow free run visible
+      end
+      S_FLUSH: begin
+        sc_flush <= 1'b1;
+        // a cycle with flush up first: the last push is in a FIFO by then
+        if (sc_flush && sc_idle) begin
+          sc_flush <= 1'b0;
+          st       <= arm_pend ? S_GRANT : S_IDLE;
+        end
+      end
+      default: st <= S_IDLE;
+    endcase
+  end
+end
+
+// the word: the samples of this beat land in the same cycle as the push
+always_comb begin
+  sc_data = {pk[1], pk[0]};
+end
+
+// the last sample in DDR, held once the writers are handed back
+always_ff @(posedge clk)
+  if (!rstn) wp_cur <= '1;
+  else if (sc_grant) wp_cur <= RW'({sc_words, 2'b00} - 1);
+
+endmodule

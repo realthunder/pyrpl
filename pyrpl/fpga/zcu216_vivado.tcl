@@ -132,6 +132,7 @@ if {$fft_en} {
     read_verilog -sv              $path_rtl/zcu216_cfar.sv
     read_verilog -sv              $path_rtl/zcu216_snap.sv
     read_verilog -sv              $path_rtl/zcu216_points.sv
+    read_verilog -sv              $path_rtl/zcu216_scope.sv
     read_verilog -sv              $path_rtl/zcu216_fft_test.sv
 }
 

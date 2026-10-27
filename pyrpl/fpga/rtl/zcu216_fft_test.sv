@@ -62,6 +62,22 @@
  *     +0x30 RO sticky xfft events: [0] data_in halt, [1] tlast unexpected,
  *                                  [2] tlast missing
  *   0x10000 * (c+1) + 4*i: RO mag of bin win_start + i, channel c
+ *   0x100000 +  oscilloscope (zcu216_scope), the Red Pitaya scope's registers
+ *             (pyrpl Scope) with the trace in DDR:
+ *             +0x00 W [0] arm, [1] reset, [3] keep writing after the trigger;
+ *                   R [0] writing (until the trace is in DDR), [2] delay running, [3] keep
+ *             +0x04 trigger source: 0 off, 1 now (software), 2/3 channel 1 up/down,
+ *                   4/5 channel 2 up/down; back to 0 when the trigger and delay are done
+ *             +0x08 threshold, +0x20 hysteresis (14-bit signed, of the 14-bit samples)
+ *             +0x10 samples after the trigger   +0x14 decimation (2 .. 65536, powers of 2)
+ *             +0x18 RO last sample in DDR   +0x1c RO sample before the trigger (ring indices)
+ *             +0x28 [0] average   +0x16c RO [0] pre-trigger samples in
+ *             +0x1e0 RO trace length L (samples)   +0x1e4 RO ring base (physical)
+ *             +0x1e8 RO ring length (samples)   +0x1ec RO {bits, channels, samples per
+ *                   channel per 16-byte word} = [23:16], [15:8], [7:0]
+ *             +0x1f0 / +0x1f4 input of channel 1 / 2: 0-3 RF-ADC tile 224 channel 0-3,
+ *                   4 + c the input of FFT channel c   +0x1f8 RO minimum decimation
+ *             +0x1fc RO sample period (ps) before decimation
  *   0x80000 + 4*i: RO raw ADC capture, beat i/4, 32-bit part i%4 (samples 2(i%4), +1)
  *   0x90000 + 4*i: RO raw DAC capture, same layout
  *
@@ -74,7 +90,9 @@ module zcu216_fft_test #(
   parameter int    SUB       = 15,
   parameter int    WIN       = 4096,
   parameter logic [39:0] SNAP_BASE = 40'h1E10_0000,  // reserved DDR (31 MB)
-  parameter int    SNAP_SIZE = 31 << 20,
+  parameter int    SNAP_SIZE = 29 << 20,                // up to the scope ring
+  parameter int    SC_L      = 1 << 18,                  // scope trace length (samples)
+  parameter logic [39:0] SC_BASE = 40'h1FE0_0000,         // scope ring: 2 SC_L samples x 2 x 16 bit
   parameter string TWC_FILE  = "",
   parameter string TWF_FILE  = "",
   parameter string SIN_FILE  = ""
@@ -184,6 +202,15 @@ logic [7:0]    sn_nf;
 logic [7:0]    s_sn_cnt;
 logic          s_sn_busy, s_sn_ovf, s_sn_err;
 logic [31:0]   s_sn_beats;
+// scope
+localparam int SC_RW = $clog2(2 * SC_L);
+logic          sc_arm_t, sc_rst_t, sc_src_t, sc_keep, sc_avg;
+logic [3:0]    sc_src;
+logic [13:0]   sc_thr, sc_hyst;
+logic [31:0]   sc_dly;
+logic [16:0]   sc_dec;
+logic [2:0]    sc_in [2];
+logic [63:0]   s_sc_st;                         // status from fclk (see below)
 // point stream
 logic          pt_en;
 logic [13:0]   s_pt_ptr;
@@ -239,7 +266,7 @@ always_ff @(posedge sys_clk)
     // a capture finished (the arm a write below may make in the same cycle is
     // not pending then: the capture it asks for cannot have finished)
     if (sn_done_edge) sn_pending <= 1'b0;
-    if (sys_wen) begin
+    if (sys_wen && !sys_addr[20]) begin
     case (a)
       20'h00004: run       <= sys_wdata[0];
       20'h0000c: min_bin   <= sys_wdata[BW-1:0];
@@ -303,6 +330,9 @@ always_ff @(posedge sys_clk) begin
     ram_rd <= '0;
   end else if (sys_wen) begin
     sys_ack <= 1'b1;
+  end else if (sys_ren && sys_addr[20]) begin     // scope
+    sys_ack   <= 1'b1;
+    sys_rdata <= sc_read(a);
   end else if (sys_ren) begin
     for (int c = 0; c < NCH; c++)
       if (a == 20'h00058 + 20'h40*c) s_cf_hi[c] <= s_cf_word[c][63:32];
@@ -393,6 +423,62 @@ function automatic logic [31:0] reg_read(input logic [19:0] ad);
       20'h00078 + 20'h40*c: v = s_cf_ovr[c];
       default: ;
     endcase
+  return v;
+endfunction
+
+// scope registers (slot + 0x100000)
+always_ff @(posedge sys_clk)
+  if (!sys_rstn) begin
+    sc_arm_t <= 1'b0;  sc_rst_t <= 1'b0;  sc_src_t <= 1'b0;
+    sc_keep  <= 1'b0;  sc_avg   <= 1'b0;  sc_src   <= '0;
+    sc_thr   <= '0;    sc_hyst  <= 14'd20;
+    sc_dly   <= 32'(SC_L / 2);
+    sc_dec   <= 17'd2;
+    sc_in    <= '{3'd0, 3'd1};
+  end else if (sys_wen && sys_addr[20])
+    case (a)
+      20'h00000: begin
+        if (sys_wdata[0]) sc_arm_t <= !sc_arm_t;
+        if (sys_wdata[1]) sc_rst_t <= !sc_rst_t;
+        sc_keep <= sys_wdata[3];
+      end
+      20'h00004: begin sc_src <= sys_wdata[3:0]; sc_src_t <= !sc_src_t; end
+      20'h00008: sc_thr  <= sys_wdata[13:0];
+      20'h00010: sc_dly  <= sys_wdata;
+      20'h00014: sc_dec  <= (sys_wdata < 2) ? 17'd2 : sys_wdata[16:0];
+      20'h00020: sc_hyst <= sys_wdata[13:0];
+      20'h00028: sc_avg  <= sys_wdata[0];
+      20'h001f0: sc_in[0] <= sys_wdata[2:0];
+      20'h001f4: sc_in[1] <= sys_wdata[2:0];
+      default: ;
+    endcase
+
+// s_sc_st: [0] writing, [1] delay running, [5:2] trigger source, [6] pre-trigger
+// in, [7] arm taken, [8] reset taken, [31:32-SC_RW] wp_cur, [63:64-SC_RW] wp_trig
+function automatic logic [31:0] sc_read(input logic [19:0] ad);
+  logic [31:0] v = 32'h0;
+  logic        busy = s_sc_st[0] || (s_sc_st[7] != sc_arm_t);
+  case (ad)
+    20'h00000: v = {28'h0, sc_keep, s_sc_st[1], 1'b0, busy};
+    20'h00004: v = 32'(s_sc_st[5:2]);
+    20'h00008: v = 32'(sc_thr);
+    20'h00010: v = sc_dly;
+    20'h00014: v = 32'(sc_dec);
+    20'h00018: v = 32'(s_sc_st[31 -: SC_RW]);
+    20'h0001c: v = 32'(s_sc_st[63 -: SC_RW]);
+    20'h00020: v = 32'(sc_hyst);
+    20'h00028: v = 32'(sc_avg);
+    20'h0016c: v = 32'(s_sc_st[6]);
+    20'h001e0: v = 32'(SC_L);
+    20'h001e4: v = SC_BASE[31:0];
+    20'h001e8: v = 32'(2 * SC_L);
+    20'h001ec: v = {8'h0, 8'd16, 8'd2, 8'd4};
+    20'h001f0: v = 32'(sc_in[0]);
+    20'h001f4: v = 32'(sc_in[1]);
+    20'h001f8: v = 32'd2;
+    20'h001fc: v = 32'd400;
+    default: ;
+  endcase
   return v;
 endfunction
 
@@ -699,7 +785,86 @@ logic        f_sn_busy, f_sn_done, f_sn_ovf, f_sn_err;
 logic [31:0] f_sn_beats;
 localparam int SRW = $clog2(2 * NCH);
 
-zcu216_snap #(.NSRC(2 * NCH), .SUB(SUB), .BASE(SNAP_BASE), .SIZE(SNAP_SIZE)) i_snap (
+// oscilloscope: settings into fclk, two channels from the RF-ADC or the FFT inputs
+logic          f_sc_arm, f_sc_rst, f_sc_src_t, f_sc_keep, f_sc_avg;
+logic [3:0]    f_sc_src;
+logic [13:0]   f_sc_thr, f_sc_hyst;
+logic [31:0]   f_sc_dly;
+logic [16:0]   f_sc_dec;
+logic [2:0]    f_sc_in [2];
+logic [127:0]  sc_x [2], sc_xr [2];
+logic          sc_req, sc_grant, sc_start, sc_push, sc_flush, sc_idle;
+logic [127:0]  sc_data;
+logic [31:0]   sc_words;
+logic          f_sc_writing, f_sc_dly_do, f_sc_pre, f_sc_arm_ack, f_sc_rst_ack;
+logic [3:0]    f_sc_trig;
+logic [SC_RW-1:0] f_sc_wp_cur, f_sc_wp_trig;
+
+(* ASYNC_REG = "TRUE" *) logic [1:0] sc_arm_m, sc_rst_m, sc_src_tm;
+logic          m_sc_keep, m_sc_avg;
+logic [3:0]    m_sc_src;
+logic [13:0]   m_sc_thr, m_sc_hyst;
+logic [31:0]   m_sc_dly;
+logic [16:0]   m_sc_dec;
+logic [2:0]    m_sc_in [2];
+always_ff @(posedge fclk) begin
+  {f_sc_arm, sc_arm_m}     <= {sc_arm_m, sc_arm_t};
+  {f_sc_rst, sc_rst_m}     <= {sc_rst_m, sc_rst_t};
+  {f_sc_src_t, sc_src_tm}  <= {sc_src_tm, sc_src_t};
+  // quasi-static: two flops (the commands above arrive after their values)
+  {f_sc_keep, m_sc_keep} <= {m_sc_keep, sc_keep};
+  {f_sc_avg,  m_sc_avg}  <= {m_sc_avg,  sc_avg};
+  {f_sc_src,  m_sc_src}  <= {m_sc_src,  sc_src};
+  {f_sc_thr,  m_sc_thr}  <= {m_sc_thr,  sc_thr};
+  {f_sc_hyst, m_sc_hyst} <= {m_sc_hyst, sc_hyst};
+  {f_sc_dly,  m_sc_dly}  <= {m_sc_dly,  sc_dly};
+  {f_sc_dec,  m_sc_dec}  <= {m_sc_dec,  sc_dec};
+  m_sc_in <= sc_in;
+  f_sc_in <= m_sc_in;
+end
+
+// inputs: 14-bit samples in 16 bits, as the FFTs see them
+always_ff @(posedge fclk)
+  for (int c = 0; c < 2; c++) begin
+    for (int j = 0; j < 8; j++)
+      sc_x[c][16*j +: 16] <= (f_sc_in[c] < 4)
+          ? 16'($signed(adc_data[f_sc_in[c][1:0]][16*j +: 16]) >>> 2)
+          : (f_sc_in[c] - 4 < NCH) ? sn_data[NCH + 32'(f_sc_in[c] - 4)][16*j +: 16] : 16'h0;
+    sc_xr[c] <= sc_x[c];
+  end
+
+zcu216_scope #(.L(SC_L)) i_scope (
+  .clk (fclk), .rstn (frstn), .x1 (sc_xr[0]), .x2 (sc_xr[1]),
+  .dec (f_sc_dec), .avg (f_sc_avg), .thr (16'($signed(f_sc_thr))), .hyst (16'(f_sc_hyst)),
+  .dly (f_sc_dly), .keep (f_sc_keep), .src_val (f_sc_src), .src_set (f_sc_src_t),
+  .arm (f_sc_arm), .rst (f_sc_rst),
+  .writing (f_sc_writing), .dly_do (f_sc_dly_do), .trig_src (f_sc_trig),
+  .pretrig_ok (f_sc_pre), .wp_cur (f_sc_wp_cur), .wp_trig (f_sc_wp_trig),
+  .arm_ack (f_sc_arm_ack), .rst_ack (f_sc_rst_ack),
+  .sc_req, .sc_grant, .sc_start, .sc_push, .sc_data, .sc_flush, .sc_idle, .sc_words);
+
+// status into sys_clk: a snapshot every 64 fclk cycles, taken on its toggle
+logic [63:0] f_sc_st;
+logic [5:0]  f_sc_tick = '0;
+logic        f_sc_upd = 1'b0;
+always_ff @(posedge fclk) begin
+  f_sc_tick <= f_sc_tick + 1'b1;
+  if (f_sc_tick == 0) begin
+    f_sc_st <= '0;
+    f_sc_st[8:0] <= {f_sc_rst_ack, f_sc_arm_ack, f_sc_pre, f_sc_trig, f_sc_dly_do, f_sc_writing};
+    f_sc_st[31 -: SC_RW] <= f_sc_wp_cur;
+    f_sc_st[63 -: SC_RW] <= f_sc_wp_trig;
+    f_sc_upd <= !f_sc_upd;
+  end
+end
+(* ASYNC_REG = "TRUE" *) logic [2:0] sc_upd_s;
+always_ff @(posedge sys_clk) begin
+  sc_upd_s <= {sc_upd_s[1:0], f_sc_upd};
+  if (sc_upd_s[2] != sc_upd_s[1]) s_sc_st <= f_sc_st;
+end
+
+zcu216_snap #(.NSRC(2 * NCH), .SUB(SUB), .BASE(SNAP_BASE), .SIZE(SNAP_SIZE),
+              .SC_BASE(SC_BASE), .SC_BYTES(8 * SC_L)) i_snap (
   .clk (fclk), .rstn (frstn),
   .s_data (sn_data), .s_valid (sn_valid), .s_first (sn_first),
   .arm (f_sn_arm),
@@ -707,6 +872,7 @@ zcu216_snap #(.NSRC(2 * NCH), .SUB(SUB), .BASE(SNAP_BASE), .SIZE(SNAP_SIZE)) i_s
   .nframes (f_sn_nf),
   .busy (f_sn_busy), .done (f_sn_done), .overflow (f_sn_ovf), .err (f_sn_err),
   .beats (f_sn_beats),
+  .sc_req, .sc_grant, .sc_start, .sc_push, .sc_data, .sc_flush, .sc_idle, .sc_words,
   .m_awaddr (hp_awaddr), .m_awlen (hp_awlen), .m_awsize (hp_awsize),
   .m_awburst (hp_awburst), .m_awcache (hp_awcache), .m_awprot (hp_awprot),
   .m_awvalid (hp_awvalid), .m_awready (hp_awready),

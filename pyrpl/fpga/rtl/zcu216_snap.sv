@@ -13,8 +13,15 @@
  * The sources stream one beat per clock without stopping (5 GB/s at 312.5 MHz),
  * more than one HP port sustains into DDR, so consecutive blocks of BLK beats
  * (4 KB; half a frame for frames under 512 beats) alternate between two ports
- * (S_AXI_HP0 / HP1, separate DDR controller ports), each behind its own FIFO. overflow says a FIFO filled and beats were lost; err that
- * a write response was not OKAY. An arm while busy is ignored.
+ * (S_AXI_HP0 / HP1, separate DDR controller ports), each behind its own FIFO.
+ * overflow says a FIFO filled and beats were lost; err that a write response
+ * was not OKAY. An arm while busy is ignored.
+ *
+ * The scope (zcu216_scope) borrows the same two writers for its ring buffer:
+ * sc_req asks for them, sc_grant hands them over once no snapshot is running
+ * (a snapshot arm waits while the scope has them). Its words go to SC_BASE, in
+ * the same alternating blocks, wrapping after SC_BYTES; sc_words counts the
+ * words since sc_start that are in DDR without a gap (write responses back).
  */
 
 module zcu216_snap #(
@@ -23,6 +30,8 @@ module zcu216_snap #(
   parameter logic [39:0] BASE = 40'h1E10_0000,
   parameter int          SIZE = 31 << 20,       // bytes available from BASE
   parameter int          FD   = 10,             // FIFO depth, log2 beats per port
+  parameter logic [39:0] SC_BASE  = 40'h1FE0_0000,
+  parameter int          SC_BYTES = 2 << 20,    // multiple of two blocks
   localparam int         SRW  = $clog2(NSRC)
 ) (
   input  logic           clk,
@@ -39,6 +48,15 @@ module zcu216_snap #(
   output logic           overflow,
   output logic           err,
   output logic [31:0]    beats,                 // beats captured
+  // scope ring (zcu216_scope)
+  input  logic           sc_req,
+  output logic           sc_grant,
+  input  logic           sc_start,              // writers back to SC_BASE (granted only)
+  input  logic           sc_push,
+  input  logic [127:0]   sc_data,
+  input  logic           sc_flush,              // send partial blocks too
+  output logic           sc_idle,
+  output logic [31:0]    sc_words,
   // AXI4 write masters, 128 bits (read channels unused)
   output logic [48:0]    m_awaddr  [2],
   output logic [7:0]     m_awlen   [2],
@@ -80,10 +98,11 @@ always_ff @(posedge clk) begin
 end
 
 logic [2:0]  arm_s;
-logic        armed, cap, start;
+logic        armed, cap, start, arm_pend;
 logic [31:0] total;
 logic [1:0]  wr_idle, wr_ovf, wr_err;
 logic [1:0]  push;
+logic [31:0] acked [2];
 
 always_ff @(posedge clk) arm_s <= {arm_s[1:0], arm};
 
@@ -97,9 +116,16 @@ always_ff @(posedge clk)
     cap   <= 1'b0;
     done  <= 1'b0;
     start <= 1'b0;
+    arm_pend <= 1'b0;
+    sc_grant <= 1'b0;
   end else begin
     start <= 1'b0;
-    if (arm_s[2] != arm_s[1] && !busy) begin
+    // writers to the scope while it asks and no snapshot runs or waits; it
+    // only lets go with them idle
+    sc_grant <= sc_req && (sc_grant || (!busy && !arm_pend));
+    if (arm_s[2] != arm_s[1] && !busy) arm_pend <= 1'b1;
+    if (arm_pend && !busy && !sc_grant && !sc_req) begin
+      arm_pend <= 1'b0;
       busy  <= 1'b1;
       armed <= 1'b1;
       start <= 1'b1;
@@ -123,16 +149,36 @@ assign overflow = |wr_ovf;
 assign err      = |wr_err;
 
 // blocks alternate between the ports
+logic [31:0] sc_cnt;                          // scope words pushed since sc_start
+
+always_ff @(posedge clk)
+  if (sc_start) sc_cnt <= '0;
+  else if (sc_push) sc_cnt <= sc_cnt + 1'b1;
+
 always_comb begin
-  push[0] = go && !beats[LB];
-  push[1] = go &&  beats[LB];
+  push[0] = sc_grant ? sc_push && !sc_cnt[LB] : go && !beats[LB];
+  push[1] = sc_grant ? sc_push &&  sc_cnt[LB] : go &&  beats[LB];
 end
+
+// the scope's words in DDR without a gap: the first word not yet acknowledged
+// on either port, as a word index (port p holds blocks p, p + 2, ...)
+logic [31:0] gnext [2];
+always_comb
+  for (int p = 0; p < 2; p++)
+    gnext[p] = ((acked[p] >> LB) << (LB + 1)) + 32'(p * BLK) + (acked[p] & 32'(BLK - 1));
+always_ff @(posedge clk) sc_words <= (gnext[0] < gnext[1]) ? gnext[0] : gnext[1];
+
+assign sc_idle = &wr_idle;
 
 for (genvar p = 0; p < 2; p++) begin : g_wr
   zcu216_snap_wr #(.FD(FD), .LB(LB)) i_wr (
-    .clk, .rstn, .start, .a0 (BASE + 40'(p * BLK * 16)), .flush (busy && !armed && !cap),
-    .push (push[p]), .din (x_data),
-    .ovf (wr_ovf[p]), .err (wr_err[p]), .idle (wr_idle[p]),
+    .clk, .rstn,
+    .start (sc_grant ? sc_start : start),
+    .a0    (sc_grant ? SC_BASE + 40'(p * BLK * 16) : BASE + 40'(p * BLK * 16)),
+    .a_lim (sc_grant ? SC_BASE + 40'(SC_BYTES) : '1),
+    .flush (sc_grant ? sc_flush : busy && !armed && !cap),
+    .push (push[p]), .din (sc_grant ? sc_data : x_data),
+    .ovf (wr_ovf[p]), .err (wr_err[p]), .idle (wr_idle[p]), .acked (acked[p]),
     .awaddr (m_awaddr[p]), .awlen (m_awlen[p]), .awsize (m_awsize[p]),
     .awburst (m_awburst[p]), .awcache (m_awcache[p]), .awprot (m_awprot[p]),
     .awvalid (m_awvalid[p]), .awready (m_awready[p]),
@@ -146,7 +192,10 @@ endmodule
 
 /**
  * One snapshot port: a FIFO of 2^FD beats and an AXI4 writer that sends it out
- * in bursts of 2^LB beats to every other block: a0, a0 + 2 blocks, ...
+ * in bursts of 2^LB beats to every other block: a0, a0 + 2 blocks, ..., back to
+ * a0 at a_lim. flush also sends what there is of a block; the rest of that
+ * block follows in later bursts. acked counts the beats whose write response is
+ * back (since start).
  */
 module zcu216_snap_wr #(
   parameter int FD = 10,
@@ -156,12 +205,14 @@ module zcu216_snap_wr #(
   input  logic         rstn,
   input  logic         start,                 // new capture: address back to a0
   input  logic [39:0]  a0,
-  input  logic         flush,                 // no more beats: send a partial block too
+  input  logic [39:0]  a_lim,                 // the next block from here on: back to a0
+  input  logic         flush,                 // send a partial block too
   input  logic         push,
   input  logic [127:0] din,
   output logic         ovf,                   // a beat met a full FIFO (since start)
   output logic         err,                   // a response was not OKAY (since start)
   output logic         idle,                  // FIFO empty, nothing in flight
+  output logic [31:0]  acked,                 // beats written (responses back)
   output logic [48:0]  awaddr,
   output logic [7:0]   awlen,
   output logic [2:0]   awsize,
@@ -221,15 +272,22 @@ always_ff @(posedge clk)
       hv <= 1'b0;
   end
 
-// bursts: address, then 2^LB beats (fewer for the remainder of a capture that
-// lost beats); the next address once those are sent
-logic [FD:0] avail;
+// bursts: the rest of the current block once the FIFO holds it (a whole block
+// normally), or what there is when flushing; the next block's address once a
+// block is complete
+logic [FD:0] avail, room;
 logic [7:0]  cnt;
 logic [4:0]  outst;                           // bursts awaiting their response
-logic [39:0] addr;
+logic [39:0] addr, next;
+logic [LB:0] boff;                            // beats of the current block already sent
+logic [8:0]  blen;                            // the pending burst's length
+logic [8:0]  lq [16];                         // lengths of the bursts in flight
+logic [3:0]  lq_wr, lq_rd;
 
 assign avail = used + (FD+1)'(hv);
+assign room  = (FD+1)'(2**LB) - (FD+1)'(boff);
 assign wlast = (cnt == awlen);
+assign next  = addr + 40'(2**LB * 32);       // the other port's block in between
 
 always_ff @(posedge clk)
   if (!rstn || start) begin
@@ -238,24 +296,39 @@ always_ff @(posedge clk)
     cnt     <= '0;
     outst   <= '0;
     addr    <= a0;
+    boff    <= '0;
     err     <= 1'b0;
+    acked   <= '0;
+    lq_wr   <= '0;
+    lq_rd   <= '0;
   end else begin
-    if (!awvalid && !inw && (avail >= (FD+1)'(2**LB) || (flush && avail != 0)) && outst < 5'd16) begin
+    if (!awvalid && !inw && (avail >= room || (flush && avail != 0)) && outst < 5'd16) begin
       awvalid <= 1'b1;
-      awaddr  <= 49'(addr);
-      awlen   <= (avail >= (FD+1)'(2**LB)) ? 8'(2**LB - 1) : 8'(avail - 1'b1);
+      awaddr  <= 49'(addr + 40'({boff, 4'b0}));
+      awlen   <= (avail >= room) ? 8'(room - 1'b1) : 8'(avail - 1'b1);
+      blen    <= (avail >= room) ? 9'(room) : 9'(avail);
     end
     if (awvalid && awready) begin
       awvalid <= 1'b0;
       inw     <= 1'b1;
-      addr    <= addr + 40'(2**LB * 32);    // the other port's block in between
+      lq[lq_wr] <= blen;
+      lq_wr   <= lq_wr + 1'b1;
+      if (9'(boff) + blen == 9'(2**LB)) begin
+        boff <= '0;
+        addr <= (next >= a_lim) ? a0 : next;
+      end else
+        boff <= boff + (LB+1)'(blen);
     end
     if (pop) begin
       cnt <= wlast ? 8'd0 : cnt + 1'b1;
       if (wlast) inw <= 1'b0;
     end
     outst <= outst + (awvalid && awready) - bvalid;
-    if (bvalid && bresp != 2'b00) err <= 1'b1;
+    if (bvalid) begin
+      acked <= acked + 32'(lq[lq_rd]);
+      lq_rd <= lq_rd + 1'b1;
+      if (bresp != 2'b00) err <= 1'b1;
+    end
   end
 
 assign idle = !awvalid && !inw && avail == 0 && outst == 0;
