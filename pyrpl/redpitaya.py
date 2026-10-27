@@ -104,6 +104,10 @@ defaultparameters = dict(
                               # the board and REBOOT it once to apply. See
                               # docs/DmaStreaming.md §9. Set False to skip the
                               # check (e.g. boards without the DMA bitstream).
+    board='redpitaya',  # 'redpitaya', or 'zcu216': the AMD ZCU216 boots its
+                        # bitstream and monitor_server from its SD card, so no
+                        # ssh, FPGA or server handling; pyrpl connects to port
+                        # 2222 and creates hk and the scope (Zcu216Scope) only
     reconnect_retries=-1,  # runtime register-link reconnection budget. When the
                            # live TCP register link drops (board reboot / cable
                            # pull / network blip) the client tries to reconnect.
@@ -258,6 +262,9 @@ class RedPitaya(object):
                                 + self.parameters["hostname"] + ")."
                                 " No hardware modules are available. ")
             return
+        if self.parameters.get('board', 'redpitaya') == 'zcu216':
+            self._start_zcu216()
+            return
         # connect to the redpitaya board
         self.start_ssh()
         # make sure the kernel leaves the FPGA DMA ring window unmanaged; may
@@ -277,6 +284,31 @@ class RedPitaya(object):
             self.start()
         self.logger.info('Successfully connected to Redpitaya with hostname '
                          '%s.'%self.ssh.hostname)
+        self.parent = self
+
+    # the ZCU216's FPGA modules (fpga/rtl/zcu216_top.sv): hk in slot 0 and the
+    # scope in slot 1 + 1 MB; the other Red Pitaya slots hold different blocks.
+    # Named explicitly: the managers find modules by name ('scope', 'hk').
+    zcu216_modules = [('hk', rp.HK), ('scope', rp.Zcu216Scope)]
+
+    def _start_zcu216(self):
+        """connect to a ZCU216 whose monitor_server already runs (started at boot
+        from the SD card): no ssh, no FPGA or server handling"""
+        self.cls_modules = [cls for _, cls in self.zcu216_modules]
+        self.client = redpitaya_client.MonitorClient(
+            self.parameters['hostname'], self.parameters['port'],
+            restartserver=None,
+            reconnect_retries=self.parameters.get('reconnect_retries', -1),
+            on_connection_lost=self._on_connection_lost,
+            on_reconnected=self._on_reconnected)
+        board = self.client.reads(0x40000040, 1)       # hk BOARD: 1 = ZCU216
+        if board is None or int(board[0]) != 1:
+            self.logger.warning("board='zcu216', but hk reports board id %s (expected 1)",
+                                None if board is None else int(board[0]))
+        for name, cls in self.zcu216_modules:
+            self.makemodule(name, cls)
+        self.logger.info('Connected to the ZCU216 at %s:%s.',
+                         self.parameters['hostname'], self.parameters['port'])
         self.parent = self
 
     def start_ssh(self, attempt=0):

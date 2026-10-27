@@ -134,7 +134,9 @@ from ..widgets.module_widgets import ScopeWidget
 
 logger = logging.getLogger(name=__name__)
 
+# trace length of bitstreams without the buffer-length register (0x1E0)
 data_length = 2**14
+DEFAULT_DATA_LENGTH = data_length
 
 class StatusBitsProperty(StringProperty):
     names = {
@@ -215,7 +217,7 @@ class DurationProperty(SelectProperty):
 
 class SamplingTimeProperty(SelectProperty):
     def get_value(self, obj):
-        return 8e-9 * float(obj.decimation)
+        return obj._base_sampling_time * float(obj.decimation)
 
     def validate_and_normalize(self, obj, value):
         # gets next-lower value
@@ -235,7 +237,7 @@ class SamplingTimeProperty(SelectProperty):
         """sets or returns the time separation between two subsequent
         points of a scope trace the rounding makes sure that the actual
         value is shorter or equal to the set value"""
-        instance.decimation = float(value) / 8e-9
+        instance.decimation = float(value) / instance._base_sampling_time
 
 
 class DmaMaxIntervalProperty(FloatProperty):
@@ -372,7 +374,26 @@ class Scope(HardwareModule, AcquisitionModule):
                                            'nfft', 'dma_max_interval', 'dma_unicast']
     # changing these resets the acquisition and autoscale (calls setup())
 
-    data_length = data_length  # to use it in a list comprehension
+    # sample period before decimation (Red Pitaya: 125 MHz)
+    _base_sampling_time = 8e-9
+
+    _data_length_register = IntRegister(0x1E0, doc="trace length [samples] "
+                                        "(0 on bitstreams without the register)")
+
+    @property
+    def data_length(self):
+        """Samples per trace: the FPGA's buffer length (register 0x1E0), or
+        2**14 for a bitstream without that register."""
+        n = getattr(self, '_data_length_cache', None)
+        if n is None:
+            try:
+                v = int(self._data_length_register)
+            except (TypeError, ValueError):     # no link (yet): do not cache
+                return DEFAULT_DATA_LENGTH
+            n = v if 2 ** 10 <= v <= 2 ** 26 and v & (v - 1) == 0 \
+                else DEFAULT_DATA_LENGTH
+            self._data_length_cache = n
+        return n
 
     rolling_mode = BoolProperty(default=True,
                                 doc="In rolling mode, the curve is "
@@ -896,13 +917,13 @@ class Scope(HardwareModule, AcquisitionModule):
 
     sampling_times = [8e-9 * dec for dec in decimations]
 
-    sampling_time = SamplingTimeProperty(options=sampling_times)
+    sampling_time = SamplingTimeProperty(options=lambda obj: obj.sampling_times)
 
-    # list comprehension workaround for python 3 compatibility
-    # cf. http://stackoverflow.com/questions/13905741
+    # Red Pitaya default; an instance's options follow its data_length
     durations = [st * data_length for st in sampling_times]
 
-    duration = DurationProperty(options=durations)
+    duration = DurationProperty(options=lambda obj: [st * obj.data_length
+                                                     for st in obj.sampling_times])
 
     _write_pointer_current = IntRegister(0x18,
                                          doc="current write pointer "
@@ -1272,7 +1293,7 @@ class Scope(HardwareModule, AcquisitionModule):
         """raw data from ch1"""
         # return np.array([self.to_pyint(v) for v in self._reads(0x10000,
         # self.data_length)],dtype=np.int32)
-        x = np.array(self._reads(0x10000, self.data_length), dtype=np.int16)
+        x = self._read_buffer(0x10000)
         x[x >= 2 ** 13] -= 2 ** 14
         return x
 
@@ -1282,9 +1303,17 @@ class Scope(HardwareModule, AcquisitionModule):
         # return np.array([self.to_pyint(v) for v in self._reads(0x20000,
         # self.data_length)],dtype=np.int32)
 
-        x = np.array(self._reads(0x20000, self.data_length), dtype=np.int16)
+        x = self._read_buffer(0x20000)
         x[x >= 2 ** 13] -= 2 ** 14
         return x
+
+    def _read_buffer(self, addr):
+        """a channel buffer (one sample per word), in requests of at most
+        65535 words (the protocol's limit)"""
+        n = self.data_length
+        parts = [np.array(self._reads(addr + 4 * i, min(65535, n - i)), dtype=np.int16)
+                 for i in range(0, n, 65535)]
+        return np.concatenate(parts)
 
     @property
     def _data_ch1(self):

@@ -210,6 +210,50 @@ class MonitorClient(object):
         with self._io_lock:
             return self.try_n_times(self._writes, addr, values)
     
+    def bulk(self, addr, nbytes):
+        """Bytes [addr, addr + nbytes) of monitor_server's memory window in one
+        stream ('b' command; ZCU216). addr: client address (window at
+        0x4800_0000), 16-byte aligned; nbytes: a multiple of 1 KB, < 64 MB.
+        Returns a bytearray, or None if the link is down or out of sync.
+        Raises BulkReadRefused if the server refuses the range, and
+        ConnectionError if the server does not know 'b' (it drops the link)."""
+        if self._connection_lost or self._reconnecting.is_set():
+            return None
+        if nbytes <= 0 or nbytes % 1024 or nbytes >> 10 >= 1 << 16:
+            raise ValueError("bulk read of %d bytes: must be a positive multiple "
+                             "of 1 KB below 64 MB" % nbytes)
+
+        def _bulk_read(a, _):
+            return self._bulk(a, nbytes)
+        with self._io_lock:
+            return self.try_n_times(_bulk_read, addr, nbytes)
+
+    def _recv_exact(self, n):
+        buf = bytearray(n)
+        view, got = memoryview(buf), 0
+        while got < n:
+            k = self.socket.recv_into(view[got:])
+            if not k:
+                raise socket.error("monitor_server closed the connection")
+            got += k
+        return buf
+
+    def _bulk(self, addr, nbytes):
+        kb = nbytes >> 10
+        header = b'b' + bytes(bytearray([0, kb & 0xFF, (kb >> 8) & 0xFF,
+                                         addr & 0xFF, (addr >> 8) & 0xFF,
+                                         (addr >> 16) & 0xFF, (addr >> 24) & 0xFF]))
+        self.socket.sendall(header)
+        reply = self._recv_exact(8)
+        if reply[:2] == header[:2] and reply[2:4] == b'\0\0' and reply[4:] == header[4:]:
+            raise BulkReadRefused("monitor_server refused a bulk read of %d bytes "
+                                  "at 0x%08x" % (nbytes, addr))
+        if reply != header:
+            self.logger.error("Wrong control sequence from server: %s", bytes(reply))
+            self.emptybuffer()
+            return None
+        return self._recv_exact(nbytes)
+
     # the actual code
     def _reads(self, addr, length):
         if length > 65535:
@@ -489,6 +533,11 @@ class MonitorClient(object):
             except BaseException:
                 self.logger.exception("on_connection_lost handler raised")
         return False
+
+
+class BulkReadRefused(ValueError):
+    """monitor_server answered a bulk read ('b') with a cleared length: the
+    range is not inside its memory window or not 16-byte aligned."""
 
 
 class DummyClient(object):  # pragma: no cover
