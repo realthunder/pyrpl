@@ -31,7 +31,7 @@ def cfar(L, nch):
     k = L.read(FFT + 0x124)[0]
     frac = (k >> 16) & 0xf
     for c in range(nch):
-        o = FFT + 0x40 * c
+        o = FFT + 0x40 * (c + 1)                # channel c's registers at 0x40 + 0x40 c
         lo = L.read(o + 0x18)[0]
         hi = L.read(o + 0x1c)[0]               # latched by the low-word read
         n, d, ov = L.read(o + 0x2c)[0], L.read(o + 0x34)[0], L.read(o + 0x38)[0]
