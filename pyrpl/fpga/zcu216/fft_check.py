@@ -32,6 +32,32 @@ class Link:
         assert d[:8] == h, 'link out of sync'
         return struct.unpack('<%dI' % n, d[8:])
 
+    def bulk(self, addr, nbytes):
+        """Bytes [addr, addr + nbytes) of the memory window in one stream ('b').
+
+        addr is a client window address (0x4800_0000 + offset), 16-byte aligned;
+        nbytes a multiple of 1 KB. Returns None if the server refuses the range;
+        a server without 'b' drops the connection (ConnectionError).
+        """
+        assert nbytes % 1024 == 0 and nbytes >> 10 < 1 << 16
+        h = self._hdr(b'b', addr, nbytes >> 10)
+        self.s.sendall(h)
+        r = self._recv(8)
+        if r[2:4] == b'\0\0':
+            return None
+        assert r == h, 'link out of sync'
+        return self._recv(nbytes)
+
+    def _recv(self, n):
+        buf = bytearray(n)
+        v, got = memoryview(buf), 0
+        while got < n:
+            k = self.s.recv_into(v[got:])
+            if not k:
+                raise ConnectionError('monitor_server closed the connection')
+            got += k
+        return buf
+
     def write(self, addr, *vals):
         h = self._hdr(b'w', addr, len(vals))
         self.s.sendall(h + struct.pack('<%dI' % len(vals), *vals))

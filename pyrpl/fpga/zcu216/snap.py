@@ -3,7 +3,8 @@
 
 The PC sets the pace: arm a capture of --frames whole frames, poll until it is
 in DDR, fetch it through monitor_server's memory window (client 0x4800_0000 =
-the reserved DDR at 0x1E00_0000) with ordinary register reads, repeat.
+the reserved DDR at 0x1E00_0000) in one bulk read ('b'; --no-bulk: 64 KB
+register reads, ~17 MB/s), repeat.
 
   --src mag   |X| in natural order, 2^17 32-bit bins per frame (mag = K|X|/2)
   --src in    the FFT's input, 2^18 samples per frame as the FFT sees them:
@@ -64,9 +65,14 @@ def capture(L, src, nframes, timeout=5.0):
     return L.read(SNAP + 0x10)[0]
 
 
-def fetch(L, nbytes):
+def fetch(L, nbytes, bulk=True):
     base = L.read(SNAP + 0x14)[0]
     a = WIN_CLIENT + base - WIN_PHYS
+    if bulk:                                   # one 'b' stream (frames are whole KB)
+        d = L.bulk(a, nbytes)
+        if d is None:
+            raise RuntimeError(f'monitor_server refused a bulk read of {nbytes} bytes at {a:08x}')
+        return np.frombuffer(d, dtype=np.uint32)
     words = []
     for off in range(0, nbytes // 4, CHUNK):
         n = min(CHUNK, nbytes // 4 - off)
@@ -84,6 +90,8 @@ def main():
     ap.add_argument('--repeat', type=int, default=1)
     ap.add_argument('--out')
     ap.add_argument('--cfar', action='store_true')
+    ap.add_argument('--no-bulk', dest='bulk', action='store_false',
+                    help='fetch with register reads (a monitor_server without bulk reads)')
     a = ap.parse_args()
     L = Link(a.host, a.port)
 
@@ -102,7 +110,7 @@ def main():
         t0 = time.time()
         beats = capture(L, src, a.frames)
         t1 = time.time()
-        w = fetch(L, a.frames * fb)
+        w = fetch(L, a.frames * fb, a.bulk)
         t2 = time.time()
         if a.src == 'mag':
             x = w.reshape(a.frames, -1)

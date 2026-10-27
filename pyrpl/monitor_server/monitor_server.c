@@ -50,6 +50,11 @@ Bytes 5-8 are the start address to be written to.
 
 If the command is read, the server will then send the requested 4*n bytes to the client. 
 If the command is write, the server will wait for 4*n bytes of data from the server and write them to the designated FPGA address space. 
+If the command is 'b' (bulk read of the memory window, see MEM_WIN_BASE), bytes
+3+4 are the length in KB (up to 64 MB) and bytes 5-8 the start address, 16-byte
+aligned and inside the window. The server sends the 8-byte header back, then the
+bytes in one stream; a request it cannot serve gets the header back with bytes
+3+4 cleared and no data. A server without 'b' drops the connection instead.
 If the command is close, or if the connection is broken, the server drops the
 current client and loops back to accept() to wait for the next one (it does NOT
 terminate — TCP keepalive frees a half-open connection from an unplugged host
@@ -123,6 +128,7 @@ typedef uint32_t word_t;
 
 word_t* read_values(word_t a_addr, word_t* a_values_buffer, unsigned long a_len);
 void write_values(word_t a_addr, word_t* a_values, unsigned long a_len);
+static int bulk_read(int sock, word_t a_addr, unsigned long a_bytes, char *buf, size_t buf_len);
 
 //FPGA memory handlers
 void* map_base = (void*)(-1);
@@ -619,6 +625,11 @@ int main(int argc, char *argv[])
                  n=send(newsockfd,buffer,8,0);
                  if (n != 8) break; //client gone
              }
+             else if (buffer[0] == 'b') { //bulk read of the memory window
+                 if (bulk_read(newsockfd, address, (unsigned long)data_length << 10,
+                               (char *)rw_buffer, sizeof(word_t) * MAX_LENGTH) < 0)
+                     break; //client gone
+             }
              else if (buffer[0] == 'c') break; //client asked to close -> re-accept
              else break; //out of sync: drop this client and re-accept
          }
@@ -677,4 +688,68 @@ void write_values(word_t a_addr, word_t* a_values, unsigned long a_len) {
     }
     if (munmap(base, len) == -1) FATAL;
     close(fd);
+}
+
+/* 'b': stream [a_addr, a_addr + a_bytes) of the memory window to the client.
+ * The window (reserved, no-map DDR) is device memory to /dev/mem, so the CPU
+ * has one load in flight at a time: 16-byte loads read ~134 MB/s on the ZCU216
+ * (4-byte loads 35 MB/s), more than the gigabit link takes. The window stays
+ * mapped; the kernel sends one chunk while the next is read. */
+static int send_all(int sock, const char *p, size_t n)
+{
+    while (n) {
+        ssize_t k = send(sock, p, n, MSG_NOSIGNAL);
+        if (k <= 0) return -1;
+        p += k;
+        n -= (size_t)k;
+    }
+    return 0;
+}
+
+static int bulk_read(int sock, word_t a_addr, unsigned long a_bytes, char *buf, size_t buf_len)
+{
+    static volatile uint8_t *win = NULL;
+    char hdr[8];
+    unsigned long off = (unsigned long)a_addr - MEM_WIN_BASE;
+    int ok = off < MEM_WIN_SIZE && a_bytes <= MEM_WIN_SIZE - off && (off & 15) == 0;
+
+    if (ok && !win) {
+        int wfd = open("/dev/mem", O_RDONLY | O_SYNC);
+        if (wfd >= 0) {
+            void *m = mmap(0, MEM_WIN_SIZE, PROT_READ, MAP_SHARED, wfd, DMA_BUF_BASE);
+            if (m != MAP_FAILED) win = (volatile uint8_t *)m;
+            close(wfd);
+        }
+        if (!win) ok = 0;
+    }
+    hdr[0] = 'b';
+    hdr[1] = 0;
+    hdr[2] = ok ? (char)((a_bytes >> 10) & 0xff) : 0;
+    hdr[3] = ok ? (char)((a_bytes >> 18) & 0xff) : 0;
+    memcpy(hdr + 4, &a_addr, 4);
+    if (send_all(sock, hdr, 8) < 0) return -1;
+    if (!ok) return 0;
+
+    buf_len &= ~(size_t)15;
+    while (a_bytes) {
+        size_t n = a_bytes < buf_len ? a_bytes : buf_len, i;
+        const volatile uint8_t *src = win + off;
+#if defined(__aarch64__)
+        for (i = 0; i < n; i += 16) {
+            uint64_t lo, hi;
+            __asm__ volatile("ldp %0, %1, [%2]" : "=&r"(lo), "=&r"(hi) : "r"(src + i) : "memory");
+            memcpy(buf + i, &lo, 8);
+            memcpy(buf + i + 8, &hi, 8);
+        }
+#else
+        for (i = 0; i < n; i += 8) {
+            uint64_t v = *(const volatile uint64_t *)(src + i);
+            memcpy(buf + i, &v, 8);
+        }
+#endif
+        if (send_all(sock, buf, n) < 0) return -1;
+        off += n;
+        a_bytes -= n;
+    }
+    return 0;
 }
