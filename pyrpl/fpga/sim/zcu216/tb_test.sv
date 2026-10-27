@@ -254,15 +254,14 @@ module tb_test;
       if (bad || v != 0 || !(y[ln - dl] >= 0 && y[ln - dl - 1] < 0) || zc < 570 || zc > 610 || y2max < 1000)
         $display("ERR SCOPE");
     end
-    // clock meters (1 ms gate) and the raw capture
-    repeat (210000) @(posedge sclk);
+    // the raw capture (the clock meters need a 1 ms gate, 210k bus clocks of
+    // simulation: they are checked on the board, rf_loopback.py)
     begin
-      logic [31:0] k0, k1, k4, w0, w1;
-      rd(32'h300, k0); rd(32'h304, k1); rd(32'h310, k4);
+      logic [31:0] w0, w1;
       wr(32'h2c, 2); wr(32'h28, 1);
       do rd(32'h8, v); while (!v[16]);
       rd(32'h80000, w0); rd(32'h90000, w1);
-      $display("METER fclk-in %0d kHz, sclk-in %0d kHz, fclk %0d kHz; RAW adc[0]=%h dac[0]=%h", k0, k1, k4, w0, w1);
+      $display("RAW adc[0]=%h dac[0]=%h", w0, w1);
     end
     wr(32'h04, 0);
     repeat (200) @(posedge sclk);
