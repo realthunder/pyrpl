@@ -2,8 +2,10 @@
 The ZCU216's oscilloscope (fpga/rtl/zcu216_scope.sv): the Red Pitaya scope's
 registers and acquisition flow, with the trace in DDR instead of block RAM.
 
-- 2.5 GS/s before decimation (0.4 ns), decimation 2 .. 65536 (two channels at
-  full rate would need 10 GB/s into DDR);
+- 2.5 GS/s before decimation (0.4 ns), decimation from the FPGA's recommended
+  minimum (register 0x1F8: 4, half of the scope's own DDR port; 2 would be a
+  word per clock, more than the port's bursts carry) to 65536; a trace that
+  lost words anyway (register 0x1DC) is logged;
 - data_length from the FPGA (register 0x1E0; 2**18 samples per channel);
 - the samples sit in a ring of 2 * data_length in the reserved DDR, four
   consecutive samples of each channel per 16-byte word ([63:0] channel 1,
@@ -71,12 +73,32 @@ class Zcu216Scope(Scope):
 
     _decimations = sorted_dict({2 ** n: 2 ** n for n in range(1, 17)},
                                sort_by_values=True)
-    decimations = _decimations.keys()
+    decimations = _decimations.keys()      # all the FPGA takes; see _decimation_options
+    _min_decimation = IntRegister(0x1F8, doc="recommended minimum decimation")
+    _ring_status = IntRegister(0x1DC, doc="[0] words lost since the arm, [1] AXI error")
+
+    def _decimation_options(self):
+        """decimations from the FPGA's recommended minimum on (read once)"""
+        m = getattr(self, '_min_decimation_cache', None)
+        if m is None:
+            try:
+                v = int(self._min_decimation)
+            except (TypeError, ValueError):     # no link (yet): do not cache
+                v = 0
+            else:
+                m = self._min_decimation_cache = v if v in self._decimations else 2
+            m = m or 2
+        return sorted_dict({d: d for d in self._decimations if d >= m},
+                           sort_by_values=True)
+
     decimation = DecimationRegister(0x14, doc="decimation factor",
                                     default=2 ** 13,
-                                    options=_decimations,
+                                    options=lambda obj: obj._decimation_options(),
                                     call_setup=True)
-    sampling_times = [0.4e-9 * dec for dec in decimations]
+
+    @property
+    def sampling_times(self):
+        return [self._base_sampling_time * d for d in self._decimation_options()]
 
     _ring_base = IntRegister(0x1E4, doc="physical address of the sample ring")
     _ring_length = IntRegister(0x1E8, doc="sample ring length [samples]")
@@ -122,6 +144,12 @@ class Zcu216Scope(Scope):
             % self._ring()[1]
 
     def _get_trace(self):
+        st = self._ring_status
+        if st & 1:
+            self._logger.warning("scope trace lost words: its DDR port fell behind "
+                                 "(decimation %d)", self.decimation)
+        if st & 2:
+            self._logger.warning("scope: a DDR write was refused (AXI error)")
         ch1, ch2 = self._ring_samples(self._trace_end(), self.data_length)
         return np.array((ch1, ch2), dtype=float) / 2 ** 13
 

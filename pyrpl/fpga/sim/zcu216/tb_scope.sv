@@ -1,11 +1,10 @@
 `timescale 1ns/1ps
-// zcu216_scope through zcu216_snap's writers into a DDR model with random
-// delays. Channel 1 is a triangle (for the trigger), channel 2 a sawtooth of
+// zcu216_scope through its two writers into a DDR model with random delays. Channel 1 is a triangle (for the trigger), channel 2 a sawtooth of
 // the input sample index (a time stamp): every trace read back from the ring
 // (the L samples ending at wp_trig + dly, as pyrpl reads them) must be
 // consecutive decimated samples, with the trigger edge at L - dly.
 module tb_scope;
-  localparam int L = 1024, R = 2 * L, SUB = 5;
+  localparam int L = 1024, R = 2 * L;
   localparam logic [39:0] SC_BASE = 40'h1FE0_0000;
   logic clk = 0;  always #1.6 clk = ~clk;
   logic rstn = 0;
@@ -34,37 +33,28 @@ module tb_scope;
   logic writing, dly_do, pretrig_ok, arm_ack, rst_ack;
   logic [3:0] trig_src;
   logic [$clog2(R)-1:0] wp_cur, wp_trig;
-  logic sc_req, sc_grant, sc_start, sc_push, sc_flush, sc_idle;
-  logic [127:0] sc_data;  logic [31:0] sc_words;
-
-  zcu216_scope #(.L(L)) dut (.clk, .rstn, .x1, .x2, .dec, .avg, .thr, .hyst, .dly, .keep,
-    .src_val, .src_set, .arm, .rst, .writing, .dly_do, .trig_src, .pretrig_ok, .wp_cur,
-    .wp_trig, .arm_ack, .rst_ack, .sc_req, .sc_grant, .sc_start, .sc_push, .sc_data,
-    .sc_flush, .sc_idle, .sc_words);
-
   logic [48:0]  awaddr [2];  logic [7:0] awlen [2];  logic [2:0] awsize [2], awprot [2];
   logic [1:0]   awburst [2], bresp [2] = '{2'b00, 2'b00};  logic [3:0] awcache [2];
-  logic [1:0]   awvalid, awready, wlast, wvalid, wready, bvalid = 0, bready;
+  logic [1:0]   awvalid, awready = 0, wlast, wvalid, wready = 0, bvalid = 0, bready;
   logic [127:0] wdata [2];   logic [15:0] wstrb [2];
-  logic busy, done, ovf, err;  logic [31:0] beats;
-  logic [127:0] s_data [1] = '{'0};
+  logic         ovf, err;
 
-  zcu216_snap #(.NSRC(1), .SUB(SUB), .SC_BASE(SC_BASE), .SC_BYTES(R * 4)) snap (
-    .clk, .rstn, .s_data, .s_valid (1'b0), .s_first (1'b0), .arm (1'b0), .src ('0),
-    .nframes (8'd1), .busy, .done, .overflow (ovf), .err, .beats,
-    .sc_req, .sc_grant, .sc_start, .sc_push, .sc_data, .sc_flush, .sc_idle, .sc_words,
+  zcu216_scope #(.L(L), .BASE(SC_BASE)) dut (.clk, .rstn, .x1, .x2, .dec, .avg, .thr,
+    .hyst, .dly, .keep, .src_val, .src_set, .arm, .rst, .writing, .dly_do, .trig_src,
+    .pretrig_ok, .wp_cur, .wp_trig, .arm_ack, .rst_ack, .ovf, .err,
     .m_awaddr (awaddr), .m_awlen (awlen), .m_awsize (awsize), .m_awburst (awburst),
     .m_awcache (awcache), .m_awprot (awprot), .m_awvalid (awvalid), .m_awready (awready),
     .m_wdata (wdata), .m_wstrb (wstrb), .m_wlast (wlast), .m_wvalid (wvalid),
     .m_wready (wready), .m_bresp (bresp), .m_bvalid (bvalid), .m_bready (bready));
 
-  // DDR: random ready, in-order bursts per port
+  // DDR: random ready, in-order bursts per port; heavy: ready a third of the time
   logic [127:0] ddr [logic [39:0]];
+  bit heavy = 0;
   for (genvar p = 0; p < 2; p++) begin : g_ddr
     logic [39:0] aq [$];  int bq [$];  int bt = 0;
     always @(posedge clk) begin
       awready[p] <= ($urandom % 3) != 0;
-      wready[p]  <= ($urandom % 5) != 0;
+      wready[p]  <= heavy ? ($urandom % 3) == 0 : ($urandom % 16) != 0;
       bvalid[p]  <= 1'b0;
       if (awvalid[p] && awready[p]) aq.push_back(40'(awaddr[p]));
       if (wvalid[p] && wready[p]) begin
@@ -129,14 +119,40 @@ module tb_scope;
   initial begin
     repeat (10) @(posedge clk);  rstn = 1;
     repeat (20) @(posedge clk);
-    // 1: D = 2, channel 1 rising through 1000, trigger in the middle
+    // 1: D = 2 (a word per clock: half of each port), channel 1 rising
+    // through 1000, trigger in the middle
     thr = 1000;
     acquire(2, 0, 4'd2, L / 2);
     check("D2 ch1 rising", 2, int'(wp_trig) + L / 2, L - L / 2, 1, 1, 1000);
+    if (ovf) begin $display("ERR D2: words lost"); errs++; end
+    // 1b: D = 2 free-running for 100k clocks: the ports keep up
+    dec = 2; avg = 0;
+    @(negedge clk) rst = !rst;  repeat (30) @(negedge clk);
+    arm = !arm;  repeat (10) @(negedge clk);
+    src_val = 0; src_set = !src_set;
+    repeat (100000) @(posedge clk);
+    begin
+      int e = wp_cur;
+      check("D2 free run, 100k clocks", 2, e, -1, 1, 1, 0);
+    end
+    if (ovf) begin $display("ERR D2 free run: words lost"); errs++; end
+    // 1c: the same with ports ready a third of the time: words are lost, which
+    // must be flagged, and a reset must still bring the scope to rest
+    heavy = 1;
+    @(negedge clk) rst = !rst;  repeat (30) @(negedge clk);
+    arm = !arm;  repeat (10) @(negedge clk);
+    src_val = 0; src_set = !src_set;
+    repeat (30000) @(posedge clk);
+    @(negedge clk) rst = !rst;
+    wait_done();
+    heavy = 0;
+    $display("SCOPE D2 with slow ports: overflow flagged %0d (expected 1), stopped %0d", ovf, !writing);
+    if (!ovf || writing) begin $display("ERR D2 overflow"); errs++; end
     // 2: D = 8 averaged, channel 2 falling through 0 (sawtooth wrap), late trigger
     thr = 0;
     acquire(8, 1, 4'd5, L / 8);
     check("D8 avg ch2 falling", 8, int'(wp_trig) + L / 8, -1, 2, 0, 0);
+    if (ovf) begin $display("ERR D8: words lost"); errs++; end
     // 3: D = 64 averaged, immediately: the whole trace after the trigger
     acquire(64, 1, 4'd1, L);
     check("D64 avg immediately", 64, int'(wp_trig) + L, -1, 1, 1, 0);

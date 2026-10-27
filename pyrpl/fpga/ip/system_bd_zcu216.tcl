@@ -52,28 +52,35 @@ assign_bd_address -offset 0x80000000 -range 16M [get_bd_addr_segs M_AXI_GP0/Reg]
 
 # RF builds ($zcu216_hp, set by zcu216_vivado.tcl): the snapshot DMA's two write
 # ports into DDR, S_AXI_HP0_FPD and S_AXI_HP1_FPD (separate DDR controller
-# ports), and the point stream's, S_AXI_HP2_FPD, 128 bits, brought out as
-# S_AXI_HP0..2 on hp_clk (fclk, 312.5 MHz, from the top level). The PS sees
-# them at their DDR addresses.
+# ports), the oscilloscope's two, S_AXI_HP2_FPD and S_AXI_HP3_FPD, and the
+# point stream's, S_AXI_HPC0_FPD (used as a plain DDR port, through the CCI;
+# a few hundred KB/s), 128 bits, brought out as S_AXI_HP0..3 / S_AXI_HPC0 on hp_clk (fclk, 312.5
+# MHz, from the top level). The PS sees them at their DDR addresses.
 if {[info exists zcu216_hp] && $zcu216_hp} {
     set_property -dict [list \
         CONFIG.PSU__USE__S_AXI_GP2 {1} \
         CONFIG.PSU__USE__S_AXI_GP3 {1} \
         CONFIG.PSU__USE__S_AXI_GP4 {1} \
+        CONFIG.PSU__USE__S_AXI_GP5 {1} \
+        CONFIG.PSU__USE__S_AXI_GP0 {1} \
         CONFIG.PSU__SAXIGP2__DATA_WIDTH {128} \
         CONFIG.PSU__SAXIGP3__DATA_WIDTH {128} \
         CONFIG.PSU__SAXIGP4__DATA_WIDTH {128} \
+        CONFIG.PSU__SAXIGP5__DATA_WIDTH {128} \
+        CONFIG.PSU__SAXIGP0__DATA_WIDTH {128} \
     ] $ps
     create_bd_port -dir I -type clk -freq_hz 312500000 hp_clk
     connect_bd_net [get_bd_ports hp_clk] \
         [get_bd_pins ps/saxihp0_fpd_aclk] [get_bd_pins ps/saxihp1_fpd_aclk] \
-        [get_bd_pins ps/saxihp2_fpd_aclk]
-    foreach {port pin} {S_AXI_HP0 S_AXI_HP0_FPD S_AXI_HP1 S_AXI_HP1_FPD S_AXI_HP2 S_AXI_HP2_FPD} {
+        [get_bd_pins ps/saxihp2_fpd_aclk] [get_bd_pins ps/saxihp3_fpd_aclk] \
+        [get_bd_pins ps/saxihpc0_fpd_aclk]
+    foreach {port pin} {S_AXI_HP0 S_AXI_HP0_FPD S_AXI_HP1 S_AXI_HP1_FPD S_AXI_HP2 S_AXI_HP2_FPD \
+                     S_AXI_HP3 S_AXI_HP3_FPD S_AXI_HPC0 S_AXI_HPC0_FPD} {
         make_bd_intf_pins_external [get_bd_intf_pins ps/$pin]
         set_property NAME $port [get_bd_intf_ports ${pin}_0]
         set_property CONFIG.FREQ_HZ 312500000 [get_bd_intf_ports $port]
     }
-    set_property CONFIG.ASSOCIATED_BUSIF {S_AXI_HP0:S_AXI_HP1:S_AXI_HP2} [get_bd_ports hp_clk]
+    set_property CONFIG.ASSOCIATED_BUSIF {S_AXI_HP0:S_AXI_HP1:S_AXI_HP2:S_AXI_HP3:S_AXI_HPC0} [get_bd_ports hp_clk]
     assign_bd_address
 }
 

@@ -18,7 +18,7 @@
  * frame before the one that just ended.
  *
  * Packets start on enable and always finish. Words go out as single 64-bit AXI
- * writes on a 128-bit port (S_AXI_HP2), one at a time; wr_ptr advances on each
+ * writes on a 128-bit port (S_AXI_HPC0), one at a time; wr_ptr advances on each
  * write response, so it never leads the data in DDR. A word that finds the
  * FIFO full is dropped and counted (monitor_server re-aligns on the headers).
  */

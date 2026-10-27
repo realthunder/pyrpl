@@ -33,6 +33,15 @@ module tb_test;
   logic         pt_awvalid, pt_wlast, pt_wvalid, pt_bready, pt_bvalid = 0;
   logic [127:0] pt_wdata;
   logic [15:0]  pt_wstrb;
+  // the scope's two ports: bursts into the same DDR model
+  logic [48:0]  sc_awaddr [2];
+  logic [7:0]   sc_awlen [2];
+  logic [2:0]   sc_awsize [2], sc_awprot [2];
+  logic [1:0]   sc_awburst [2];
+  logic [3:0]   sc_awcache [2];
+  logic [1:0]   sc_awvalid, sc_wlast, sc_wvalid, sc_bready, sc_bvalid = 0;
+  logic [127:0] sc_wdata [2];
+  logic [15:0]  sc_wstrb [2];
   zcu216_fft_test #(.NCH(2), .SUB(SUB), .WIN(WIN), .SC_L(1024),
     .TWC_FILE({SIMDIR, "/mem/zcu216_twc.mem"}), .TWF_FILE({SIMDIR, "/mem/zcu216_twf.mem"}),
     .SIN_FILE({SIMDIR, "/mem/zcu216_sin.mem"})) dut (
@@ -45,7 +54,10 @@ module tb_test;
     .hp_wready, .hp_bresp, .hp_bvalid, .hp_bready,
     .pt_awaddr, .pt_awlen, .pt_awsize, .pt_awburst, .pt_awcache, .pt_awprot,
     .pt_awvalid, .pt_awready (1'b1), .pt_wdata, .pt_wstrb, .pt_wlast, .pt_wvalid,
-    .pt_wready (1'b1), .pt_bresp (2'b00), .pt_bvalid, .pt_bready);
+    .pt_wready (1'b1), .pt_bresp (2'b00), .pt_bvalid, .pt_bready,
+    .sc_awaddr, .sc_awlen, .sc_awsize, .sc_awburst, .sc_awcache, .sc_awprot,
+    .sc_awvalid, .sc_awready (2'b11), .sc_wdata, .sc_wstrb, .sc_wlast, .sc_wvalid,
+    .sc_wready (2'b11), .sc_bresp ('{2'b00, 2'b00}), .sc_bvalid, .sc_bready);
 
   logic [127:0] ddr [logic [39:0]];
   for (genvar p = 0; p < 2; p++) begin : g_ddr
@@ -58,6 +70,20 @@ module tb_test;
         ddr[aq[0] + 40'(16 * beat)] = hp_wdata[p];
         beat++;
         if (hp_wlast[p]) begin void'(aq.pop_front()); beat = 0; hp_bvalid[p] <= 1'b1; end
+      end
+    end
+  end
+
+  for (genvar p = 0; p < 2; p++) begin : g_sc_ddr
+    logic [39:0] aq [$];
+    int beat = 0;
+    always @(posedge fclk) begin
+      sc_bvalid[p] <= 1'b0;
+      if (sc_awvalid[p]) aq.push_back(40'(sc_awaddr[p]));
+      if (sc_wvalid[p]) begin
+        ddr[aq[0] + 40'(16 * beat)] = sc_wdata[p];
+        beat++;
+        if (sc_wlast[p]) begin void'(aq.pop_front()); beat = 0; sc_bvalid[p] <= 1'b1; end
       end
     end
   end

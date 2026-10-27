@@ -9,8 +9,9 @@
  *   slot 0  0x8000_0000  hk (ID, DNA, LEDs; 0x40 = board 1, 0x44 = DNA[95:64])
  *   slot 1  0x8020_0000  FFT / RF bring-up block (zcu216_fft_test)        [RF]
  *                        (CFAR detectors, frame snapshots into DDR through
- *                        S_AXI_HP0/HP1, the point stream through S_AXI_HP2,
- *                        all on fclk)
+ *                        S_AXI_HP0/HP1, the oscilloscope through S_AXI_HP2 +
+ *                        S_AXI_HP3, the point stream through S_AXI_HPC0 (a
+ *                        few hundred KB/s), all on fclk)
  *   slot 2  0x8040_0000  RF Data Converter registers (AXI4-Lite, 256 KB)  [RF]
  *   slot 3-7             not built yet: reads return 0, writes are ignored
  *
@@ -94,7 +95,7 @@ logic [1:0]   hp_bvalid, hp_bready;
 logic [127:0] hp_wdata   [2];
 logic [15:0]  hp_wstrb   [2];
 logic [1:0]   hp_bresp   [2];
-// point stream (zcu216_points) into the DDR ring: one AXI4 write port, fclk
+// point stream (zcu216_points) into the DDR ring: one AXI4 write port (HPC0), fclk
 logic [48:0]  pt_awaddr;
 logic [7:0]   pt_awlen;
 logic [2:0]   pt_awsize;
@@ -105,6 +106,17 @@ logic         pt_awvalid, pt_awready, pt_wlast, pt_wvalid, pt_wready, pt_bvalid,
 logic [127:0] pt_wdata;
 logic [15:0]  pt_wstrb;
 logic [1:0]   pt_bresp;
+// oscilloscope ring (zcu216_scope): two AXI4 write ports (HP3, HP2), fclk
+logic [48:0]  sc_awaddr  [2];
+logic [7:0]   sc_awlen   [2];
+logic [2:0]   sc_awsize  [2];
+logic [1:0]   sc_awburst [2];
+logic [3:0]   sc_awcache [2];
+logic [2:0]   sc_awprot  [2];
+logic [1:0]   sc_awvalid, sc_awready, sc_wlast, sc_wvalid, sc_wready, sc_bvalid, sc_bready;
+logic [127:0] sc_wdata   [2];
+logic [15:0]  sc_wstrb   [2];
+logic [1:0]   sc_bresp   [2];
 `endif
 
 system_zcu216_wrapper i_ps (
@@ -152,17 +164,57 @@ system_zcu216_wrapper i_ps (
   .S_AXI_HP0_rresp    (             ),  .S_AXI_HP1_rresp    (             ),
   .S_AXI_HP0_rvalid   (             ),  .S_AXI_HP1_rvalid   (             ),
   .S_AXI_HP0_rready   (1'b1         ),  .S_AXI_HP1_rready   (1'b1         ),
-  .S_AXI_HP2_awaddr   (pt_awaddr    ),  .S_AXI_HP2_awlen    (pt_awlen     ),
-  .S_AXI_HP2_awsize   (pt_awsize    ),  .S_AXI_HP2_awburst  (pt_awburst   ),
-  .S_AXI_HP2_awcache  (pt_awcache   ),  .S_AXI_HP2_awprot   (pt_awprot    ),
+  .S_AXI_HPC0_awaddr   (pt_awaddr    ),  .S_AXI_HPC0_awlen    (pt_awlen     ),
+  .S_AXI_HPC0_awsize   (pt_awsize    ),  .S_AXI_HPC0_awburst  (pt_awburst   ),
+  .S_AXI_HPC0_awcache  (pt_awcache   ),  .S_AXI_HPC0_awprot   (pt_awprot    ),
+  .S_AXI_HPC0_awid     (6'd0         ),  .S_AXI_HPC0_awlock   (1'b0         ),
+  .S_AXI_HPC0_awqos    (4'd0         ),  .S_AXI_HPC0_awuser   (1'b0         ),
+  .S_AXI_HPC0_awvalid  (pt_awvalid   ),  .S_AXI_HPC0_awready  (pt_awready   ),
+  .S_AXI_HPC0_wdata    (pt_wdata     ),  .S_AXI_HPC0_wstrb    (pt_wstrb     ),
+  .S_AXI_HPC0_wlast    (pt_wlast     ),  .S_AXI_HPC0_wvalid   (pt_wvalid    ),
+  .S_AXI_HPC0_wready   (pt_wready    ),  .S_AXI_HPC0_bid      (             ),
+  .S_AXI_HPC0_bresp    (pt_bresp     ),  .S_AXI_HPC0_bvalid   (pt_bvalid    ),
+  .S_AXI_HPC0_bready   (pt_bready    ),
+  .S_AXI_HPC0_araddr   ('0           ),  .S_AXI_HPC0_arburst  (2'b01        ),
+  .S_AXI_HPC0_arcache  (4'd0         ),  .S_AXI_HPC0_arid     (6'd0         ),
+  .S_AXI_HPC0_arlen    (8'd0         ),  .S_AXI_HPC0_arlock   (1'b0         ),
+  .S_AXI_HPC0_arprot   (3'd0         ),  .S_AXI_HPC0_arqos    (4'd0         ),
+  .S_AXI_HPC0_arsize   (3'b100       ),  .S_AXI_HPC0_aruser   (1'b0         ),
+  .S_AXI_HPC0_arvalid  (1'b0         ),  .S_AXI_HPC0_arready  (             ),
+  .S_AXI_HPC0_rdata    (             ),  .S_AXI_HPC0_rid      (             ),
+  .S_AXI_HPC0_rlast    (             ),  .S_AXI_HPC0_rresp    (             ),
+  .S_AXI_HPC0_rvalid   (             ),  .S_AXI_HPC0_rready   (1'b1         ),
+  .S_AXI_HP3_awaddr   (sc_awaddr[0] ),  .S_AXI_HP3_awlen    (sc_awlen[0]  ),
+  .S_AXI_HP3_awsize   (sc_awsize[0] ),  .S_AXI_HP3_awburst  (sc_awburst[0]),
+  .S_AXI_HP3_awcache  (sc_awcache[0]),  .S_AXI_HP3_awprot   (sc_awprot[0] ),
+  .S_AXI_HP3_awid     (6'd0         ),  .S_AXI_HP3_awlock   (1'b0         ),
+  .S_AXI_HP3_awqos    (4'd0         ),  .S_AXI_HP3_awuser   (1'b0         ),
+  .S_AXI_HP3_awvalid  (sc_awvalid[0]),  .S_AXI_HP3_awready  (sc_awready[0]),
+  .S_AXI_HP3_wdata    (sc_wdata[0]  ),  .S_AXI_HP3_wstrb    (sc_wstrb[0]  ),
+  .S_AXI_HP3_wlast    (sc_wlast[0]  ),  .S_AXI_HP3_wvalid   (sc_wvalid[0] ),
+  .S_AXI_HP3_wready   (sc_wready[0] ),  .S_AXI_HP3_bid      (             ),
+  .S_AXI_HP3_bresp    (sc_bresp[0]  ),  .S_AXI_HP3_bvalid   (sc_bvalid[0] ),
+  .S_AXI_HP3_bready   (sc_bready[0] ),
+  .S_AXI_HP3_araddr   ('0           ),  .S_AXI_HP3_arburst  (2'b01        ),
+  .S_AXI_HP3_arcache  (4'd0         ),  .S_AXI_HP3_arid     (6'd0         ),
+  .S_AXI_HP3_arlen    (8'd0         ),  .S_AXI_HP3_arlock   (1'b0         ),
+  .S_AXI_HP3_arprot   (3'd0         ),  .S_AXI_HP3_arqos    (4'd0         ),
+  .S_AXI_HP3_arsize   (3'b100       ),  .S_AXI_HP3_aruser   (1'b0         ),
+  .S_AXI_HP3_arvalid  (1'b0         ),  .S_AXI_HP3_arready  (             ),
+  .S_AXI_HP3_rdata    (             ),  .S_AXI_HP3_rid      (             ),
+  .S_AXI_HP3_rlast    (             ),  .S_AXI_HP3_rresp    (             ),
+  .S_AXI_HP3_rvalid   (             ),  .S_AXI_HP3_rready   (1'b1         ),
+  .S_AXI_HP2_awaddr   (sc_awaddr[1] ),  .S_AXI_HP2_awlen    (sc_awlen[1]  ),
+  .S_AXI_HP2_awsize   (sc_awsize[1] ),  .S_AXI_HP2_awburst  (sc_awburst[1]),
+  .S_AXI_HP2_awcache  (sc_awcache[1]),  .S_AXI_HP2_awprot   (sc_awprot[1] ),
   .S_AXI_HP2_awid     (6'd0         ),  .S_AXI_HP2_awlock   (1'b0         ),
   .S_AXI_HP2_awqos    (4'd0         ),  .S_AXI_HP2_awuser   (1'b0         ),
-  .S_AXI_HP2_awvalid  (pt_awvalid   ),  .S_AXI_HP2_awready  (pt_awready   ),
-  .S_AXI_HP2_wdata    (pt_wdata     ),  .S_AXI_HP2_wstrb    (pt_wstrb     ),
-  .S_AXI_HP2_wlast    (pt_wlast     ),  .S_AXI_HP2_wvalid   (pt_wvalid    ),
-  .S_AXI_HP2_wready   (pt_wready    ),  .S_AXI_HP2_bid      (             ),
-  .S_AXI_HP2_bresp    (pt_bresp     ),  .S_AXI_HP2_bvalid   (pt_bvalid    ),
-  .S_AXI_HP2_bready   (pt_bready    ),
+  .S_AXI_HP2_awvalid  (sc_awvalid[1]),  .S_AXI_HP2_awready  (sc_awready[1]),
+  .S_AXI_HP2_wdata    (sc_wdata[1]  ),  .S_AXI_HP2_wstrb    (sc_wstrb[1]  ),
+  .S_AXI_HP2_wlast    (sc_wlast[1]  ),  .S_AXI_HP2_wvalid   (sc_wvalid[1] ),
+  .S_AXI_HP2_wready   (sc_wready[1] ),  .S_AXI_HP2_bid      (             ),
+  .S_AXI_HP2_bresp    (sc_bresp[1]  ),  .S_AXI_HP2_bvalid   (sc_bvalid[1] ),
+  .S_AXI_HP2_bready   (sc_bready[1] ),
   .S_AXI_HP2_araddr   ('0           ),  .S_AXI_HP2_arburst  (2'b01        ),
   .S_AXI_HP2_arcache  (4'd0         ),  .S_AXI_HP2_arid     (6'd0         ),
   .S_AXI_HP2_arlen    (8'd0         ),  .S_AXI_HP2_arlock   (1'b0         ),
@@ -501,7 +553,10 @@ zcu216_fft_test #(
   .hp_wready, .hp_bresp, .hp_bvalid, .hp_bready,
   .pt_awaddr, .pt_awlen, .pt_awsize, .pt_awburst, .pt_awcache, .pt_awprot,
   .pt_awvalid, .pt_awready, .pt_wdata, .pt_wstrb, .pt_wlast, .pt_wvalid,
-  .pt_wready, .pt_bresp, .pt_bvalid, .pt_bready
+  .pt_wready, .pt_bresp, .pt_bvalid, .pt_bready,
+  .sc_awaddr, .sc_awlen, .sc_awsize, .sc_awburst, .sc_awcache, .sc_awprot,
+  .sc_awvalid, .sc_awready, .sc_wdata, .sc_wstrb, .sc_wlast, .sc_wvalid,
+  .sc_wready, .sc_bresp, .sc_bvalid, .sc_bready
 );
 `else
 for (genvar i = 1; i < 3; i++) begin : g_no_rf

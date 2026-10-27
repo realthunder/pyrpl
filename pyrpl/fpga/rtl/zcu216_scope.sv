@@ -3,10 +3,13 @@
  * Scope) with the buffer in DDR: two channels of 8 samples per clock (14-bit
  * values in 16 bits, 2.5 GS/s at fclk = 312.5 MHz), decimated by D = 2^k
  * (k = 1..16; with average, the mean of each group, else its first sample),
- * written as a ring of R = 2L samples per channel through zcu216_snap's two DDR
- * writers. Each 128-bit word holds four consecutive samples of each channel:
- * [63:0] channel 1, [127:64] channel 2, sample 0 in the low 16 bits. D >= 2:
- * two channels at 2.5 GS/s would need 10 GB/s.
+ * written as a ring of R = 2L samples per channel at BASE through two DDR ports
+ * of its own (S_AXI_HP3 and S_AXI_HP2, 4 KB blocks alternating, as the frame
+ * snapshots do on HP0/HP1), so it runs alongside the snapshots and the point
+ * stream (HPC0). Each 128-bit word holds four consecutive samples of each
+ * channel: [63:0] channel 1, [127:64] channel 2, sample 0 in the low 16 bits.
+ * D = 2 is one word per clock (5 GB/s), half of each port; ovf says a port fell
+ * behind and words were lost.
  *
  * As on the Red Pitaya: arm starts writing; once L - dly samples are in (or
  * dly >= L), a trigger (software, or channel 1/2 crossing thr upwards or
@@ -21,8 +24,10 @@
  * rates flush partial blocks so it keeps moving.
  */
 module zcu216_scope #(
-  parameter int L = 1 << 18,                   // samples per channel per trace
-  localparam int RW = $clog2(2 * L)            // ring index bits (samples)
+  parameter int          L    = 1 << 18,       // samples per channel per trace
+  parameter logic [39:0] BASE = 40'h1FE0_0000, // the ring: 8L bytes
+  parameter int          FD   = 10,            // writer FIFO depth, log2 words per port
+  localparam int         RW   = $clog2(2 * L)  // ring index bits (samples)
 ) (
   input  logic          clk,
   input  logic          rstn,
@@ -48,16 +53,61 @@ module zcu216_scope #(
   output logic [RW-1:0] wp_trig,
   output logic          arm_ack,               // follows arm once the arm is taken
   output logic          rst_ack,
-  // the ring writers (zcu216_snap)
-  output logic          sc_req,
-  input  logic          sc_grant,
-  output logic          sc_start,
-  output logic          sc_push,
-  output logic [127:0]  sc_data,
-  output logic          sc_flush,
-  input  logic          sc_idle,
-  input  logic [31:0]   sc_words
+  output logic          ovf,                   // words lost since the arm (DDR too slow)
+  output logic          err,                   // a write response was not OKAY
+  // two AXI4 write masters, 128 bits
+  output logic [48:0]   m_awaddr  [2],
+  output logic [7:0]    m_awlen   [2],
+  output logic [2:0]    m_awsize  [2],
+  output logic [1:0]    m_awburst [2],
+  output logic [3:0]    m_awcache [2],
+  output logic [2:0]    m_awprot  [2],
+  output logic [1:0]    m_awvalid,
+  input  logic [1:0]    m_awready,
+  output logic [127:0]  m_wdata   [2],
+  output logic [15:0]   m_wstrb   [2],
+  output logic [1:0]    m_wlast,
+  output logic [1:0]    m_wvalid,
+  input  logic [1:0]    m_wready,
+  input  logic [1:0]    m_bresp   [2],
+  input  logic [1:0]    m_bvalid,
+  output logic [1:0]    m_bready
 );
+
+localparam int LB = 8, BLK = 1 << LB;           // 4 KB blocks, alternating ports
+
+logic         sc_start, sc_push, sc_flush, sc_idle;
+logic [127:0] sc_data;
+logic [31:0]  sc_words;                        // words in DDR since the start, no gap
+logic [31:0]  wcnt;                            // words pushed since the start
+logic [31:0]  acked [2], gnext [2];
+logic [1:0]   w_idle, w_ovf, w_err;
+
+always_ff @(posedge clk)
+  if (sc_start) wcnt <= '0;
+  else if (sc_push) wcnt <= wcnt + 1'b1;
+
+for (genvar p = 0; p < 2; p++) begin : g_wr
+  zcu216_snap_wr #(.FD(FD), .LB(LB), .STEP(2)) i_wr (
+    .clk, .rstn, .start (sc_start), .a0 (BASE + 40'(p * BLK * 16)),
+    .a_lim (BASE + 40'(8 * L)), .flush (sc_flush),
+    .push (sc_push && wcnt[LB] == 1'(p)), .din (sc_data),
+    .ovf (w_ovf[p]), .err (w_err[p]), .idle (w_idle[p]), .acked (acked[p]),
+    .awaddr (m_awaddr[p]), .awlen (m_awlen[p]), .awsize (m_awsize[p]),
+    .awburst (m_awburst[p]), .awcache (m_awcache[p]), .awprot (m_awprot[p]),
+    .awvalid (m_awvalid[p]), .awready (m_awready[p]),
+    .wdata (m_wdata[p]), .wstrb (m_wstrb[p]), .wlast (m_wlast[p]),
+    .wvalid (m_wvalid[p]), .wready (m_wready[p]),
+    .bresp (m_bresp[p]), .bvalid (m_bvalid[p]), .bready (m_bready[p]));
+  // the first word of this port not yet acknowledged, as a ring word index
+  // (port p holds blocks p, p + 2, ...)
+  assign gnext[p] = ((acked[p] >> LB) << (LB + 1)) + 32'(p * BLK) + (acked[p] & 32'(BLK - 1));
+end
+
+always_ff @(posedge clk) sc_words <= (gnext[0] < gnext[1]) ? gnext[0] : gnext[1];
+assign sc_idle = &w_idle;
+assign ovf     = |w_ovf;
+assign err     = |w_err;
 
 // decimation: k = log2 D, 1..16
 logic [4:0] k;
@@ -233,7 +283,7 @@ end
 // acquisition
 ////////////////////////////////////////////////////////////////////////////////
 
-typedef enum logic [1:0] {S_IDLE, S_GRANT, S_RUN, S_FLUSH} state_t;
+typedef enum logic [1:0] {S_IDLE, S_START, S_RUN, S_FLUSH} state_t;
 state_t st;
 
 logic [31:0] scnt;                             // samples since the start
@@ -247,7 +297,6 @@ wire [31:0] s_next = scnt + 32'(n5);
 wire        word   = (st == S_RUN) && n5 != 0 && 3'(fill) + n5 == 3'd4;
 
 assign pretrig_ok = (dly >= 32'(L)) || (scnt >= 32'(L) - dly);
-assign sc_req     = st != S_IDLE;
 assign writing    = (st != S_IDLE) || arm_pend;
 
 always_ff @(posedge clk) begin
@@ -274,7 +323,7 @@ always_ff @(posedge clk) begin
       dly_do    <= 1'b0;
       triggered <= 1'b0;
       wp_trig   <= '0;
-      if (st == S_RUN || st == S_GRANT) st <= (st == S_RUN) ? S_FLUSH : S_IDLE;
+      if (st == S_RUN || st == S_START) st <= (st == S_RUN) ? S_FLUSH : S_IDLE;
     end
     // arm: start over, after the writers have drained if they are busy
     if (c_arm) begin
@@ -284,9 +333,8 @@ always_ff @(posedge clk) begin
       if (st == S_RUN) st <= S_FLUSH;
     end
     case (st)
-      S_IDLE: if (arm_pend && !c_rst) st <= S_GRANT;
-      S_GRANT:
-        if (sc_grant) begin
+      S_IDLE: if (arm_pend && !c_rst) st <= S_START;
+      S_START: begin
           st        <= S_RUN;
           arm_pend  <= 1'b0;
           sc_start  <= 1'b1;
@@ -329,7 +377,7 @@ always_ff @(posedge clk) begin
         // a cycle with flush up first: the last push is in a FIFO by then
         if (sc_flush && sc_idle) begin
           sc_flush <= 1'b0;
-          st       <= arm_pend ? S_GRANT : S_IDLE;
+          st       <= arm_pend ? S_START : S_IDLE;
         end
       end
       default: st <= S_IDLE;
@@ -342,9 +390,9 @@ always_comb begin
   sc_data = {pk[1], pk[0]};
 end
 
-// the last sample in DDR, held once the writers are handed back
+// the last sample in DDR
 always_ff @(posedge clk)
   if (!rstn) wp_cur <= '1;
-  else if (sc_grant) wp_cur <= RW'({sc_words, 2'b00} - 1);
+  else wp_cur <= RW'({sc_words, 2'b00} - 1);
 
 endmodule
