@@ -2,7 +2,7 @@
 The ZCU216's oscilloscope (fpga/rtl/zcu216_scope.sv): the Red Pitaya scope's
 registers and acquisition flow, with the trace in DDR instead of block RAM.
 
-- 2.5 GS/s before decimation (0.4 ns), decimation from the FPGA's recommended
+- the sample period from the FPGA (register 0x1FC, ps: 400 at 2.5 GS/s), decimation from the FPGA's recommended
   minimum (register 0x1F8: 4, half of the scope's own DDR port; 2 would be a
   word per clock, more than the port's bursts carry) to 65536; a trace that
   lost words anyway (register 0x1DC) is logged;
@@ -12,8 +12,9 @@ registers and acquisition flow, with the trace in DDR instead of block RAM.
   [127:64] channel 2); a trace is fetched with one bulk read ('b') through
   monitor_server's memory window, not register reads;
 - inputs: RF-ADC tile 224 channels 0-3, or the input of FFT channel 0/1;
-- triggers: off, immediately, channel 1/2 rising or falling edge (no external,
-  ASG or DSP triggers on this board).
+- triggers: off, immediately, channel 1/2 rising or falling edge, and the
+  external input (PMOD0_0, J46 pin 1) rising or falling edge (no ASG or DSP
+  triggers on this board).
 
 The registers sit in the upper half of FPGA slot 1 (client 0x4030_0000); the
 lower half is the FFT block.
@@ -33,7 +34,6 @@ MEM_WIN_PHYS = 0x1E000000
 class Zcu216Scope(Scope):
     addr_base = 0x40300000
     name = 'scope'
-    _base_sampling_time = 0.4e-9
 
     _setup_attributes = Scope._gui_attributes + ["rolling_mode"]
 
@@ -59,7 +59,9 @@ class Zcu216Scope(Scope):
                                     "ch1_positive_edge": 2,
                                     "ch1_negative_edge": 3,
                                     "ch2_positive_edge": 4,
-                                    "ch2_negative_edge": 5},
+                                    "ch2_negative_edge": 5,
+                                    "ext_positive_edge": 6,   # PMOD0_0
+                                    "ext_negative_edge": 7},
                                    sort_by_values=True)
     trigger_sources = _trigger_sources.keys()
     _trigger_source_register = SelectRegister(0x4, doc="Trigger source",
@@ -95,10 +97,6 @@ class Zcu216Scope(Scope):
                                     default=2 ** 13,
                                     options=lambda obj: obj._decimation_options(),
                                     call_setup=True)
-
-    @property
-    def sampling_times(self):
-        return [self._base_sampling_time * d for d in self._decimation_options()]
 
     _ring_base = IntRegister(0x1E4, doc="physical address of the sample ring")
     _ring_length = IntRegister(0x1E8, doc="sample ring length [samples]")

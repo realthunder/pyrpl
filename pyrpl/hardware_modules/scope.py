@@ -138,6 +138,18 @@ logger = logging.getLogger(name=__name__)
 data_length = 2**14
 DEFAULT_DATA_LENGTH = data_length
 
+
+class PerBoard(object):
+    """A table with a class-level default (the Red Pitaya's, for code that
+    reads e.g. Scope.sampling_times) that an instance computes from what its
+    FPGA reports."""
+    def __init__(self, default, fget):
+        self.default = default
+        self.fget = fget
+
+    def __get__(self, obj, cls=None):
+        return self.default if obj is None else self.fget(obj)
+
 class StatusBitsProperty(StringProperty):
     names = {
         0:'busy',
@@ -374,8 +386,31 @@ class Scope(HardwareModule, AcquisitionModule):
                                            'nfft', 'dma_max_interval', 'dma_unicast']
     # changing these resets the acquisition and autoscale (calls setup())
 
-    # sample period before decimation (Red Pitaya: 125 MHz)
-    _base_sampling_time = 8e-9
+    _sample_period_register = IntRegister(0x1FC, doc="sample period before "
+                                          "decimation [ps] (0 on bitstreams "
+                                          "without the register)")
+
+    @property
+    def _base_sampling_time(self):
+        """Sample period before decimation [s]: the scope's own register
+        (0x1FC, ps), else the ADC rate the FPGA reports (rp.caps), else the
+        Red Pitaya's 8 ns."""
+        t = getattr(self, '_base_sampling_time_cache', None)
+        if t is None:
+            caps = getattr(self._rp, 'caps', None)
+            fallback = caps.adc_dt if caps is not None else 8e-9
+            try:
+                v = int(self._sample_period_register)
+            except (TypeError, ValueError):     # no link (yet): do not cache
+                return fallback
+            # 10 ps .. 1 us; anything else (0: no register) is not a period
+            t = 10 <= v <= 10 ** 6 and v * 1e-12 or fallback
+            self._base_sampling_time_cache = t
+        return t
+
+    def _decimation_options(self):
+        """the decimations this scope takes (subclasses narrow them)"""
+        return self._decimations
 
     _data_length_register = IntRegister(0x1E0, doc="trace length [samples] "
                                         "(0 on bitstreams without the register)")
@@ -915,12 +950,16 @@ class Scope(HardwareModule, AcquisitionModule):
 
     _decimation_register = IntRegister(0x14, doc="decimation register value", call_setup=True)
 
-    sampling_times = [8e-9 * dec for dec in decimations]
+    # on the class, the Red Pitaya's; on an instance, from its FPGA
+    sampling_times = PerBoard([8e-9 * dec for dec in decimations],
+                              lambda obj: [obj._base_sampling_time * d
+                                           for d in obj._decimation_options()])
 
     sampling_time = SamplingTimeProperty(options=lambda obj: obj.sampling_times)
 
-    # Red Pitaya default; an instance's options follow its data_length
-    durations = [st * data_length for st in sampling_times]
+    durations = PerBoard([8e-9 * dec * data_length for dec in decimations],
+                         lambda obj: [st * obj.data_length
+                                      for st in obj.sampling_times])
 
     duration = DurationProperty(options=lambda obj: [st * obj.data_length
                                                      for st in obj.sampling_times])

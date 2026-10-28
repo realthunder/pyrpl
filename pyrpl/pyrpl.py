@@ -369,8 +369,10 @@ class Pyrpl(object):
         # software modules are Managers for various modules plus those defined in the config file
         soft_mod_names = ['Asgs', 'Iqs', 'Pids', 'Scopes', 'Iirs', 'Trigs','Pwms',
                           'Hks'] + self.c.pyrpl.modules
-        if self.rp.parameters.get('board', 'redpitaya') == 'zcu216':
-            # no ASG, IQ, PID or IIR on that board: only what needs no DSP
+        caps = getattr(self.rp, 'caps', None)
+        if caps is not None and not (caps.has('asg0') or caps.has('iq0')):
+            # no ASG or IQ in the bitstream (e.g. the ZCU216): only what
+            # needs no DSP
             soft_mod_names = ['Scopes', 'Hks'] + [
                 m for m in self.c.pyrpl.modules
                 if m not in ('NetworkAnalyzer', 'SpectrumAnalyzer', 'Lockbox')]

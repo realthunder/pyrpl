@@ -22,6 +22,7 @@ from .sshshell import SshShell
 from .pyrpl_utils import get_unique_name_list_from_class_list, update_with_typeconversion
 from .memory import MemoryTree
 from .errors import ExpectedPyrplError
+from .board_caps import BoardCaps
 from .widgets.startup_widget import HostnameSelectorWidget
 
 import logging
@@ -104,10 +105,12 @@ defaultparameters = dict(
                               # the board and REBOOT it once to apply. See
                               # docs/DmaStreaming.md §9. Set False to skip the
                               # check (e.g. boards without the DMA bitstream).
-    board='redpitaya',  # 'redpitaya', or 'zcu216': the AMD ZCU216 boots its
-                        # bitstream and monitor_server from its SD card, so no
-                        # ssh, FPGA or server handling; pyrpl connects to port
-                        # 2222 and creates hk and the scope (Zcu216Scope) only
+    board='redpitaya',  # how to reach the board: 'redpitaya' (ssh, FPGA and
+                        # server handling) or 'zcu216' (the AMD ZCU216 boots
+                        # its bitstream and monitor_server from its SD card, so
+                        # pyrpl only connects to port 2222). Rates, lengths and
+                        # the modules come from the FPGA either way (rp.caps,
+                        # board_caps.py)
     reconnect_retries=-1,  # runtime register-link reconnection budget. When the
                            # live TCP register link drops (board reboot / cable
                            # pull / network blip) the client tries to reconnect.
@@ -245,6 +248,7 @@ class RedPitaya(object):
         self.client = None  # client class
         self._slaves = []  # slave interfaces to same redpitaya
         self.modules = OrderedDict()  # all submodules
+        self.caps = BoardCaps.legacy(0)  # replaced by the FPGA's own on connect
         # QObject carrying board-level Qt signals (connection_lost / reconnected).
         # Created here on the GUI thread so cross-thread emission works.
         self.signal_launcher = RedPitayaSignalLauncher()
@@ -286,27 +290,19 @@ class RedPitaya(object):
                          '%s.'%self.ssh.hostname)
         self.parent = self
 
-    # the ZCU216's FPGA modules (fpga/rtl/zcu216_top.sv): hk in slot 0 and the
-    # scope in slot 1 + 1 MB; the other Red Pitaya slots hold different blocks.
-    # Named explicitly: the managers find modules by name ('scope', 'hk').
-    zcu216_modules = [('hk', rp.HK), ('scope', rp.Zcu216Scope)]
-
     def _start_zcu216(self):
         """connect to a ZCU216 whose monitor_server already runs (started at boot
         from the SD card): no ssh, no FPGA or server handling"""
-        self.cls_modules = [cls for _, cls in self.zcu216_modules]
         self.client = redpitaya_client.MonitorClient(
             self.parameters['hostname'], self.parameters['port'],
             restartserver=None,
             reconnect_retries=self.parameters.get('reconnect_retries', -1),
             on_connection_lost=self._on_connection_lost,
             on_reconnected=self._on_reconnected)
-        board = self.client.reads(0x40000040, 1)       # hk BOARD: 1 = ZCU216
-        if board is None or int(board[0]) != 1:
-            self.logger.warning("board='zcu216', but hk reports board id %s (expected 1)",
-                                None if board is None else int(board[0]))
-        for name, cls in self.zcu216_modules:
-            self.makemodule(name, cls)
+        self.makemodules()
+        if self.caps.board != 1:
+            self.logger.warning("board='zcu216', but the FPGA reports %s",
+                                self.caps.board_name)
         self.logger.info('Connected to the ZCU216 at %s:%s.',
                          self.parameters['hostname'], self.parameters['port'])
         self.parent = self
@@ -1228,34 +1224,43 @@ class RedPitaya(object):
 
     def startdummyclient(self):
         self.client = redpitaya_client.DummyClient()
-        self.makemodules()
+        self.makemodules(caps=BoardCaps.legacy(0))
 
     def makemodule(self, name, cls):
         module = cls(self, name)
         setattr(self, name, module)
         self.modules[name] = module
 
-    def makemodules(self):
+    def makemodules(self, caps=None):
         """
         Automatically generates modules from the list RedPitaya.cls_modules
 
-        Modules whose name is listed in the 'disabled_modules' parameter are
-        skipped (not instantiated and not added to self.modules), which makes
-        the client safe to run against reduced FPGA bitstreams that omit them
-        (e.g. ['iir','pid1','pid2','iq1','iq2']). Names are generated from the
-        full class list first, so numbering is preserved (skipping 'pid1' still
+        The FPGA's capability block (self.caps, board_caps.py) says which of
+        them the bitstream holds; the others are skipped, and the scope is the
+        DDR-ring scope (Zcu216Scope) where the FPGA says so. Modules whose name
+        is listed in the 'disabled_modules' parameter are skipped as well
+        (not instantiated and not added to self.modules), for bitstreams
+        without the capability block that omit some (e.g.
+        ['iir','pid1','pid2','iq1','iq2']). Names are generated from the full
+        class list first, so numbering is preserved (skipping 'pid1' still
         leaves the remaining module named 'pid2').
         """
+        self.caps = caps if caps is not None else BoardCaps.read(self.client)
         names = get_unique_name_list_from_class_list(self.cls_modules)
         disabled = self.parameters.get('disabled_modules', []) or []
         if isinstance(disabled, str):  # tolerate "iir,pid1" from env/config
             disabled = [s.strip() for s in disabled.replace(',', ' ').split()]
         disabled = set(disabled)
         for cls, name in zip(self.cls_modules, names):
+            if not self.caps.has(name):
+                self.logger.debug("Module '%s' is not in this bitstream.", name)
+                continue
             if name in disabled:
                 self.logger.info("Skipping module '%s' (listed in "
                                  "disabled_modules).", name)
                 continue
+            if name == 'scope' and self.caps.has('ddr_scope'):
+                cls = rp.Zcu216Scope
             self.makemodule(name, cls)
 
     def make_a_slave(self, port=None, monitor_server_name=None, gui=False):
