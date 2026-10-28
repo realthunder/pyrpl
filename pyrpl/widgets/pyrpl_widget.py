@@ -141,6 +141,53 @@ class FloatingTitleBar(QtWidgets.QWidget):
         super(FloatingTitleBar, self).mouseDoubleClickEvent(event)
 
 
+class _WaylandDockResizer(QtCore.QObject):
+    """Resizes a floating dock (frameless: it has a FloatingTitleBar) on
+    Wayland. Qt's own resize handler drags the frame from the global pointer
+    position and places the window itself; a Wayland client knows neither,
+    so nothing happens. A left press within EDGE pixels of the floating
+    window's border, on the dock or any widget inside it, hands the drag to
+    the compositor (startSystemResize), as the title bar does for moving.
+    Installed once on the application, only when Qt runs on Wayland."""
+    EDGE = 6
+
+    _installed = None
+
+    @classmethod
+    def install(cls):
+        if cls._installed is None and APP is not None and \
+                QtWidgets.QApplication.platformName() == 'wayland':
+            cls._installed = cls(APP)
+            APP.installEventFilter(cls._installed)
+
+    def eventFilter(self, obj, event):
+        if event.type() != QtCore.QEvent.MouseButtonPress or \
+                event.button() != QtCore.Qt.LeftButton or \
+                not isinstance(obj, QtWidgets.QWidget):
+            return False
+        win = obj.window()
+        if not isinstance(win, MyDockWidget) or not win.isFloating() or \
+                win.titleBarWidget() is None:
+            return False
+        p = obj.mapTo(win, event.pos()) if obj is not win else event.pos()
+        e = self.EDGE
+        edges = QtCore.Qt.Edges()
+        if p.x() < e:
+            edges |= QtCore.Qt.LeftEdge
+        elif p.x() >= win.width() - e:
+            edges |= QtCore.Qt.RightEdge
+        if p.y() < e:
+            edges |= QtCore.Qt.TopEdge
+        elif p.y() >= win.height() - e:
+            edges |= QtCore.Qt.BottomEdge
+        if not int(edges):
+            return False
+        handle = win.windowHandle()
+        if handle is None or not hasattr(handle, 'startSystemResize'):
+            return False
+        return bool(handle.startSystemResize(edges))
+
+
 class MyDockWidget(QtWidgets.QDockWidget):
     """
     A DockWidget where the inner widget is only created when needed (To reduce load times).
@@ -161,6 +208,7 @@ class MyDockWidget(QtWidgets.QDockWidget):
         self.create_widget_func = create_widget_func
         self.widget = None
         self.topLevelChanged.connect(self._update_title_bar)
+        _WaylandDockResizer.install()
 
     def _update_title_bar(self, floating=None):
         # a "Dock" button is needed while floating since drag-docking does
