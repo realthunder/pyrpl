@@ -504,7 +504,39 @@ wire    [14-1: 0] scan_y;
 wire    [14-1: 0] scan_x_step;
 wire    [14-1: 0] scan_y_step;
 
-red_pitaya_hk i_hk (
+// hk capability bitmap (red_pitaya_hk.v, 0x5C): the modules this image has,
+// following red_pitaya_dsp.v's guards; bits 24/25 = the scope's FFT and DMA
+`ifdef DSP_LEAN
+localparam [31:0] HK_DSP_LEAN = 32'h0;
+`else
+localparam [31:0] HK_DSP_LEAN = (32'h1 << 11) | (32'h1 << 14);              // iq0, pid0
+`endif
+`ifdef ENABLE_IQ1
+localparam [31:0] HK_IQ1 = 32'h1 << 12;
+`else
+localparam [31:0] HK_IQ1 = 32'h0;
+`endif
+`ifdef ENABLE_IQ2
+localparam [31:0] HK_IQ2 = 32'h1 << 13;
+`else
+localparam [31:0] HK_IQ2 = 32'h0;
+`endif
+`ifdef ENABLE_PID_EXTRA
+localparam [31:0] HK_PID_EXTRA = 32'h3 << 15;
+`else
+localparam [31:0] HK_PID_EXTRA = 32'h0;
+`endif
+`ifdef ENABLE_IIR
+localparam [31:0] HK_IIR = 32'h1 << 18;
+`else
+localparam [31:0] HK_IIR = 32'h0;
+`endif
+localparam [31:0] HK_MODULES = 32'h0000_07FF      // ams, scope, sampler, asg0-3, pwm0-3
+                             | (32'h1 << 17)     // trig
+                             | (32'h3 << 24)     // the scope's FFT and DMA
+                             | HK_DSP_LEAN | HK_IQ1 | HK_IQ2 | HK_PID_EXTRA | HK_IIR;
+
+red_pitaya_hk #(.MODULES (HK_MODULES)) i_hk (
   // system signals
   .clk_i           (  adc_clk                    ),  // clock
   .rstn_i          (  adc_rstn                   ),  // reset - active low

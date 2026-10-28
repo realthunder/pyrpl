@@ -379,9 +379,23 @@ always_ff @(posedge sys_clk) begin
   exp_n_m <= exp_n_in;  exp_n_s <= exp_n_m;
 end
 
+// hk capabilities (red_pitaya_hk.v 0x48..0x5C): RF-ADC/DAC 2.5 GS/s, 14 bits,
+// four channels each (ADC tile 224, DAC tile 228); the bus runs on pl_clk0.
+// Modules: the scope (DDR ring) and the RF FFT block, or none in a shell image.
+`ifdef ZCU216_RF
+localparam logic [31:0] HK_MODULES = (32'h1 << 1) | (32'h1 << 26) | (32'h1 << 27);
+`else
+localparam logic [31:0] HK_MODULES = 32'h0;
+`endif
+
 red_pitaya_hk #(
-  .DNA_W (96),
-  .BOARD (4'h1)
+  .DNA_W   (96),
+  .BOARD   (4'h1),
+  .ADC_HZ  (32'd2500000000),
+  .DAC_HZ  (32'd2500000000),
+  .SYS_HZ  (32'd100000000),
+  .CONV    (32'h040E_040E),
+  .MODULES (HK_MODULES)
 ) i_hk (
   .clk_i         (sys_clk           ),
   .rstn_i        (sys_rstn          ),
@@ -571,6 +585,7 @@ zcu216_fft_test #(
   .dac_valid   (dac_valid          ),
   .spi_sdo_sel (spi_sdo_sel        ),
   .meas_clk    (meas_clk           ),
+  .ext_trig    (exp_p_in[0]        ),  // PMOD0_0 (J46 pin 1), the scope trigger 6/7
   .hp_awaddr, .hp_awlen, .hp_awsize, .hp_awburst, .hp_awcache, .hp_awprot,
   .hp_awvalid, .hp_awready, .hp_wdata, .hp_wstrb, .hp_wlast, .hp_wvalid,
   .hp_wready, .hp_bresp, .hp_bvalid, .hp_bready,

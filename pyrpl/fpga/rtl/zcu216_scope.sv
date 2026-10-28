@@ -12,8 +12,9 @@
  * behind and words were lost.
  *
  * As on the Red Pitaya: arm starts writing; once L - dly samples are in (or
- * dly >= L), a trigger (software, or channel 1/2 crossing thr upwards or
- * downwards with hysteresis) is taken; dly more samples are written, then
+ * dly >= L), a trigger (software, channel 1/2 crossing thr upwards or
+ * downwards with hysteresis, or an edge of the external input ext: sources
+ * 6 rising / 7 falling, as on the Red Pitaya) is taken; dly more samples are written, then
  * writing stops (keep: continues). wp_trig is the sample before the trigger,
  * so the trace is the L samples ending at wp_trig + dly. trig_src returns to 0
  * when the trigger and the delay are done, and writing stays up until the last
@@ -44,6 +45,7 @@ module zcu216_scope #(
   input  logic          src_set,
   input  logic          arm,
   input  logic          rst,
+  input  logic          ext,                   // external trigger (asynchronous)
   // status
   output logic          writing,
   output logic          dly_do,
@@ -261,6 +263,25 @@ always_ff @(posedge clk)
     sn <= sn_n;
   end
 
+// external input: synchronised; an edge waits for the next beat that carries
+// samples and lands on its first one (beat resolution, 8 input samples)
+(* ASYNC_REG = "TRUE" *) logic [1:0] ext_m;
+logic       ext_d, xr_p, xf_p;                 // rising / falling edge pending
+always_ff @(posedge clk) begin
+  ext_m <= {ext_m[0], ext};
+  ext_d <= ext_m[1];
+  if (!rstn) begin
+    xr_p <= 1'b0;
+    xf_p <= 1'b0;
+  end else if (n5 != 0) begin
+    xr_p <= ext_m[1] && !ext_d;
+    xf_p <= !ext_m[1] && ext_d;
+  end else begin
+    xr_p <= xr_p || (ext_m[1] && !ext_d);
+    xf_p <= xf_p || (!ext_m[1] && ext_d);
+  end
+end
+
 // edges of the selected source this beat
 logic [3:0] ev;
 always_comb
@@ -270,6 +291,8 @@ always_comb
     4'd3:    ev = en[0];
     4'd4:    ev = ep[1];
     4'd5:    ev = en[1];
+    4'd6:    ev = (n5 != 0 && xr_p) ? 4'b0001 : 4'b0000;
+    4'd7:    ev = (n5 != 0 && xf_p) ? 4'b0001 : 4'b0000;
     default: ev = '0;
   endcase
 

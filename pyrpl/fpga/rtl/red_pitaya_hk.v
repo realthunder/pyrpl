@@ -33,6 +33,13 @@ module red_pitaya_hk #(
   parameter [57-1:0] DNA = 57'h0823456789ABCDE,
   parameter DNA_W = 57, // 57 = 7-series DNA_PORT, 96 = UltraScale+ DNA_PORTE2
   parameter [3:0] BOARD = 4'h0, // read at 0x40: 0 = Red Pitaya, 1 = ZCU216
+  // capability block (0x48..0x5C), so the host learns the board from the FPGA;
+  // a bitstream without it reads 0 at 0x48 and the host assumes a Red Pitaya
+  parameter [31:0] ADC_HZ  = 32'd125000000,  // ADC sample rate
+  parameter [31:0] DAC_HZ  = 32'd125000000,  // DAC sample rate
+  parameter [31:0] SYS_HZ  = 32'd125000000,  // this bus / hk clock
+  parameter [31:0] CONV    = 32'h020E_020E,  // {DAC ch, DAC bits, ADC ch, ADC bits}
+  parameter [31:0] MODULES = 32'h0,          // module bitmap (0x5C, see below)
   // parameter CNT = 2083, // default clock counter, equal to freq 1/(2083*2*8ns) ~ 30KHz
   parameter CNT = 6249, // default clock counter, equal to freq 1/(6249*2*8ns) ~ 10KHz
   parameter CSZ = 16 // clock counter width
@@ -265,6 +272,17 @@ end else begin
     20'h0003C: begin sys_ack <= sys_en;  sys_rdata <= {{32-1{1'b0}}, scope_debug_en}      ; end
     20'h00040: begin sys_ack <= sys_en;  sys_rdata <= {{32-4{1'b0}}, BOARD}               ; end
     20'h00044: begin sys_ack <= sys_en;  sys_rdata <= {                dna_value[96-1:64]}; end
+
+    // capabilities: 0x48 {16'hCA95, version}; 0x5C bits: 0 ams, 1 scope,
+    // 2 sampler, 3-6 asg0-3, 7-10 pwm0-3, 11-13 iq0-2, 14-16 pid0-2, 17 trig,
+    // 18 iir, 24 FFT/peak/CFAR inside the scope, 25 DMA point stream of the
+    // scope, 26 RF FFT block (ZCU216 slot 1), 27 the scope is the DDR-ring scope
+    20'h00048: begin sys_ack <= sys_en;  sys_rdata <= 32'hCA95_0001                       ; end
+    20'h0004C: begin sys_ack <= sys_en;  sys_rdata <= ADC_HZ                              ; end
+    20'h00050: begin sys_ack <= sys_en;  sys_rdata <= DAC_HZ                              ; end
+    20'h00054: begin sys_ack <= sys_en;  sys_rdata <= SYS_HZ                              ; end
+    20'h00058: begin sys_ack <= sys_en;  sys_rdata <= CONV                                ; end
+    20'h0005C: begin sys_ack <= sys_en;  sys_rdata <= MODULES                             ; end
 
       default: begin sys_ack <= sys_en;  sys_rdata <=  32'h0                              ; end
   endcase

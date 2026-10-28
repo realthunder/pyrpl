@@ -48,7 +48,7 @@ module tb_test;
     .sys_clk(sclk), .sys_rstn(srstn), .sys_addr, .sys_wdata, .sys_wen, .sys_ren,
     .sys_rdata, .sys_err, .sys_ack, .fclk, .frstn, .flocked(1'b1),
     .adc_data, .adc_valid(4'hf), .dac_data, .dac_valid, .spi_sdo_sel(sdo_sel),
-    .meas_clk({fclk, sclk, fclk, sclk}),
+    .meas_clk({fclk, sclk, fclk, sclk}), .ext_trig(1'b0),
     .hp_awaddr, .hp_awlen, .hp_awsize, .hp_awburst, .hp_awcache, .hp_awprot,
     .hp_awvalid, .hp_awready, .hp_wdata, .hp_wstrb, .hp_wlast, .hp_wvalid,
     .hp_wready, .hp_bresp, .hp_bvalid, .hp_bready,

@@ -67,7 +67,8 @@
  *             +0x00 W [0] arm, [1] reset, [3] keep writing after the trigger;
  *                   R [0] writing (until the trace is in DDR), [2] delay running, [3] keep
  *             +0x04 trigger source: 0 off, 1 now (software), 2/3 channel 1 up/down,
- *                   4/5 channel 2 up/down; back to 0 when the trigger and delay are done
+ *                   4/5 channel 2 up/down, 6/7 external (PMOD0_0) rising/falling;
+ *                   back to 0 when the trigger and delay are done
  *             +0x08 threshold, +0x20 hysteresis (14-bit signed, of the 14-bit samples)
  *             +0x10 samples after the trigger   +0x14 decimation (2 .. 65536, powers of 2)
  *             +0x18 RO last sample in DDR   +0x1c RO sample before the trigger (ring indices)
@@ -124,6 +125,7 @@ module zcu216_fft_test #(
   output logic [1:0]   spi_sdo_sel,
   // clocks to measure (debug)
   input  logic [3:0]   meas_clk,
+  input  logic         ext_trig,             // scope external trigger (async, PMOD0_0)
   // snapshot DMA: two AXI4 write masters on fclk (S_AXI_HP0/HP1)
   output logic [48:0]  hp_awaddr  [2],
   output logic [7:0]   hp_awlen   [2],
@@ -873,7 +875,7 @@ zcu216_scope #(.L(SC_L), .BASE(SC_BASE)) i_scope (
   .clk (fclk), .rstn (frstn), .x1 (sc_xr[0]), .x2 (sc_xr[1]),
   .dec (f_sc_dec), .avg (f_sc_avg), .thr (16'($signed(f_sc_thr))), .hyst (16'(f_sc_hyst)),
   .dly (f_sc_dly), .keep (f_sc_keep), .src_val (f_sc_src), .src_set (f_sc_src_t),
-  .arm (f_sc_arm), .rst (f_sc_rst),
+  .arm (f_sc_arm), .rst (f_sc_rst), .ext (ext_trig),
   .writing (f_sc_writing), .dly_do (f_sc_dly_do), .trig_src (f_sc_trig),
   .pretrig_ok (f_sc_pre), .wp_cur (f_sc_wp_cur), .wp_trig (f_sc_wp_trig),
   .arm_ack (f_sc_arm_ack), .rst_ack (f_sc_rst_ack), .ovf (f_sc_ovf), .err (f_sc_err),
