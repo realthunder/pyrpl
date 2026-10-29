@@ -11,7 +11,8 @@ registers and acquisition flow, with the trace in DDR instead of block RAM.
   consecutive samples of each channel per 16-byte word ([63:0] channel 1,
   [127:64] channel 2); a trace is fetched with one bulk read ('b') through
   monitor_server's memory window, not register reads;
-- inputs: RF-ADC tile 224 channels 0-3, or the input of FFT channel 0/1;
+- inputs: RF-ADC tile 224 channels 0-3, the input of FFT channel 0/1, or
+  ASG channel 0-3 (bitstreams with the ASG; 100 MS/s, each sample held);
 - triggers: off, immediately, channel 1/2 rising or falling edge, and the
   external input (PMOD0_0, J46 pin 1) rising or falling edge (no ASG or DSP
   triggers on this board).
@@ -45,14 +46,16 @@ class Zcu216Scope(Scope):
     nfft = IntProperty(default=0, doc="no FFT in this scope")
 
     _inputs = sorted_dict({"adc0": 0, "adc1": 1, "adc2": 2, "adc3": 3,
-                           "fft0": 4, "fft1": 5}, sort_by_values=True)
+                           "fft0": 4, "fft1": 5,
+                           "asg0": 8, "asg1": 9, "asg2": 10, "asg3": 11},
+                          sort_by_values=True)
     inputs = _inputs.keys()
     input1 = SelectRegister(0x1F0, options=_inputs, default="adc0",
-                            doc="channel 1: RF-ADC tile 224 channel 0-3, or the "
-                                "input of FFT channel 0/1")
+                            doc="channel 1: RF-ADC tile 224 channel 0-3, the "
+                                "input of FFT channel 0/1, or ASG channel 0-3")
     input2 = SelectRegister(0x1F4, options=_inputs, default="adc1",
-                            doc="channel 2: RF-ADC tile 224 channel 0-3, or the "
-                                "input of FFT channel 0/1")
+                            doc="channel 2: RF-ADC tile 224 channel 0-3, the "
+                                "input of FFT channel 0/1, or ASG channel 0-3")
 
     _trigger_sources = sorted_dict({"off": 0,
                                     "immediately": 1,

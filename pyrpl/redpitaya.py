@@ -1261,6 +1261,10 @@ class RedPitaya(object):
                 continue
             if name == 'scope' and self.caps.has('ddr_scope'):
                 cls = rp.Zcu216Scope
+            base = self.caps.module_base(name)
+            if base is not None and base != getattr(cls, 'addr_base', None):
+                # set before __init__: a module may read registers there
+                cls = type(cls.__name__, (cls,), {'addr_base': base})
             self.makemodule(name, cls)
 
     def make_a_slave(self, port=None, monitor_server_name=None, gui=False):

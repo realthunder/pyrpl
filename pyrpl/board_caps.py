@@ -34,6 +34,12 @@ FEATURE_BITS = {'scope_fft': 24,   # FFT / peak / CFAR inside the scope (Red Pit
 
 BOARD_NAMES = {0: 'Red Pitaya', 1: 'ZCU216'}
 
+# modules at another bus address than the Red Pitaya's (the class addr_base),
+# by board: the ZCU216 has the RF Data Converter in slot 2, so the ASG is in
+# slot 4
+MODULE_BASE = {1: {'asg0': 0x40800000, 'asg1': 0x40800000,
+                   'asg2': 0x40800000, 'asg3': 0x40800000}}
+
 
 def _bits(names, table):
     m = 0
@@ -101,6 +107,11 @@ class BoardCaps(object):
                    modules=w[7])
         logger.info("FPGA capabilities: %s", caps)
         return caps
+
+    def module_base(self, name):
+        """the bus address of module `name` on this board, or None for the
+        Red Pitaya's (the module class's addr_base)"""
+        return MODULE_BASE.get(self.board, {}).get(name)
 
     def has(self, name):
         """a module (MODULE_BITS) or feature (FEATURE_BITS) of this bitstream"""

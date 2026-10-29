@@ -661,6 +661,15 @@ class FrequencyRegister(FloatRegister, FrequencyProperty):
     # attention: no bitmask can be defined for frequencyregisters
     CLOCK_FREQUENCY = 125e6
 
+    def _clock(self, obj):
+        """the clock the register's phase step counts in: the module's own
+        _register_clock_hz where it has one (the ASG: the bus clock, which
+        differs by board), else CLOCK_FREQUENCY"""
+        try:
+            return float(obj._register_clock_hz) or self.CLOCK_FREQUENCY
+        except AttributeError:
+            return self.CLOCK_FREQUENCY
+
     def __init__(self, address, **kwargs):
         FloatRegister.__init__(self, address, **kwargs)
         self.min = 0
@@ -675,12 +684,12 @@ class FrequencyRegister(FloatRegister, FrequencyProperty):
         else:
             # round and normalize
             value = int(round(
-                value / self.CLOCK_FREQUENCY * 2 ** self.bits))  # Seems correct (should not be 2**bits -1): 125 MHz
+                value / self._clock(obj) * 2 ** self.bits))  # Seems correct (should not be 2**bits -1): 125 MHz
             # out of reach because 2**bits is out of reach
         return value
 
     def to_python(self, obj, value):
-        return 125e6 / 2 ** self.bits * float(
+        return self._clock(obj) / 2 ** self.bits * float(
             value) * obj._frequency_correction
 
     def validate_and_normalize(self, obj, value):
