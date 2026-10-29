@@ -82,13 +82,6 @@
  *                   Red Pitaya ASG in slot 4, 100 MS/s, each sample held over
  *                   the 2.5 GS/s beats)   +0x1f8 RO recommended minimum decimation
  *             +0x1fc RO sample period (ps) before decimation
-             +0x1c8 [0] time average (zcu216_scope_tavg): each sample becomes the
-                   running mean of the samples at its place after the external
-                   input's edges (one record per chirp), 4x scale (two fraction bits)
-             +0x1cc [0] its record edge: 0 rising, 1 falling   +0x1d0 [3:0] log2 of
-                   the records in the mean   +0x1d4 W any write: start over;
-                   R records since then   +0x1d8 RO [16:0] samples in the last
-                   whole record (2^TPL: longer, or none), [31:24] TPL
  *             The trace goes to DDR through two ports of its own (S_AXI_HP3, S_AXI_HP2).
  *   0x80000 + 4*i: RO raw ADC capture, beat i/4, 32-bit part i%4 (samples 2(i%4), +1)
  *   0x90000 + 4*i: RO raw DAC capture, same layout
@@ -106,7 +99,6 @@ module zcu216_fft_test #(
   parameter int    SC_L      = 1 << 18,                  // scope trace length (samples)
   parameter logic [39:0] SC_BASE = 40'h1FE0_0000,         // scope ring: 2 SC_L samples x 2 x 16 bit
   parameter int    SC_MIN_DEC = 2,                       // two ports: half of each at D = 2
-  parameter int    SC_TPL    = 15,                       // scope time average: log2 samples per record
   parameter string TWC_FILE  = "",
   parameter string TWF_FILE  = "",
   parameter string SIN_FILE  = ""
@@ -243,9 +235,7 @@ logic [13:0]   sc_thr, sc_hyst;
 logic [31:0]   sc_dly;
 logic [16:0]   sc_dec;
 logic [3:0]    sc_in [2];
-logic          sc_ta_en, sc_ta_fall, sc_ta_clr_t;
-logic [3:0]    sc_ta_k;
-logic [95:0]   s_sc_st;                         // status from fclk (see below)
+logic [63:0]   s_sc_st;                         // status from fclk (see below)
 // point stream
 logic          pt_en;
 logic [13:0]   s_pt_ptr;
@@ -470,7 +460,6 @@ always_ff @(posedge sys_clk)
     sc_dly   <= 32'(SC_L / 2);
     sc_dec   <= 17'(SC_MIN_DEC);
     sc_in    <= '{4'd0, 4'd1};
-    sc_ta_en <= 1'b0;  sc_ta_fall <= 1'b0;  sc_ta_k <= 4'd8;  sc_ta_clr_t <= 1'b0;
   end else if (sys_wen && sys_addr[20])
     case (a)
       20'h00000: begin
@@ -484,10 +473,6 @@ always_ff @(posedge sys_clk)
       20'h00014: sc_dec  <= (sys_wdata < 2) ? 17'd2 : sys_wdata[16:0];
       20'h00020: sc_hyst <= sys_wdata[13:0];
       20'h00028: sc_avg  <= sys_wdata[0];
-      20'h001c8: sc_ta_en   <= sys_wdata[0];
-      20'h001cc: sc_ta_fall <= sys_wdata[0];
-      20'h001d0: sc_ta_k    <= sys_wdata[3:0];
-      20'h001d4: sc_ta_clr_t <= !sc_ta_clr_t;
       20'h001f0: sc_in[0] <= sys_wdata[3:0];
       20'h001f4: sc_in[1] <= sys_wdata[3:0];
       default: ;
@@ -495,8 +480,7 @@ always_ff @(posedge sys_clk)
 
 // s_sc_st: [0] writing, [1] delay running, [5:2] trigger source, [6] pre-trigger
 // in, [7] arm taken, [8] reset taken, [9] words lost, [10] AXI error,
-// [31:32-SC_RW] wp_cur, [63:64-SC_RW] wp_trig, [79:64] time-average records,
-// [80+SC_TPL:80] time-average period
+// [31:32-SC_RW] wp_cur, [63:64-SC_RW] wp_trig
 function automatic logic [31:0] sc_read(input logic [19:0] ad);
   logic [31:0] v = 32'h0;
   logic        busy = s_sc_st[0] || (s_sc_st[7] != sc_arm_t);
@@ -511,11 +495,6 @@ function automatic logic [31:0] sc_read(input logic [19:0] ad);
     20'h00020: v = 32'(sc_hyst);
     20'h00028: v = 32'(sc_avg);
     20'h0016c: v = 32'(s_sc_st[6]);
-    20'h001c8: v = 32'(sc_ta_en);
-    20'h001cc: v = 32'(sc_ta_fall);
-    20'h001d0: v = 32'(sc_ta_k);
-    20'h001d4: v = 32'(s_sc_st[79:64]);
-    20'h001d8: v = {8'(SC_TPL), 7'h0, 17'(s_sc_st[80 +: SC_TPL + 1])};
     20'h001dc: v = 32'(s_sc_st[10:9]);
     20'h001e0: v = 32'(SC_L);
     20'h001e4: v = SC_BASE[31:0];
@@ -844,10 +823,6 @@ localparam int SRW = $clog2(2 * NCH);
 
 // oscilloscope: settings into fclk, two channels from the RF-ADC or the FFT inputs
 logic          f_sc_arm, f_sc_rst, f_sc_src_t, f_sc_keep, f_sc_avg;
-logic          f_sc_ta_en, f_sc_ta_fall, f_sc_ta_clr;
-logic [3:0]    f_sc_ta_k;
-logic [15:0]   f_sc_ta_recs;
-logic [SC_TPL:0] f_sc_ta_per;
 logic [3:0]    f_sc_src;
 logic [13:0]   f_sc_thr, f_sc_hyst;
 logic [31:0]   f_sc_dly;
@@ -862,9 +837,7 @@ logic [3:0]    f_sc_trig;
 logic [SC_RW-1:0] f_sc_wp_cur, f_sc_wp_trig;
 
 (* ASYNC_REG = "TRUE" *) logic [1:0] sc_arm_m, sc_rst_m, sc_src_tm;
-(* ASYNC_REG = "TRUE" *) logic sc_ta_clr_m;
-logic          m_sc_keep, m_sc_avg, m_sc_ta_en, m_sc_ta_fall;
-logic [3:0]    m_sc_ta_k;
+logic          m_sc_keep, m_sc_avg;
 logic [3:0]    m_sc_src;
 logic [13:0]   m_sc_thr, m_sc_hyst;
 logic [31:0]   m_sc_dly;
@@ -874,13 +847,9 @@ always_ff @(posedge fclk) begin
   {f_sc_arm, sc_arm_m}     <= {sc_arm_m, sc_arm_t};
   {f_sc_rst, sc_rst_m}     <= {sc_rst_m, sc_rst_t};
   {f_sc_src_t, sc_src_tm}  <= {sc_src_tm, sc_src_t};
-  {f_sc_ta_clr, sc_ta_clr_m} <= {sc_ta_clr_m, sc_ta_clr_t};
   // quasi-static: two flops (the commands above arrive after their values)
   {f_sc_keep, m_sc_keep} <= {m_sc_keep, sc_keep};
   {f_sc_avg,  m_sc_avg}  <= {m_sc_avg,  sc_avg};
-  {f_sc_ta_en,   m_sc_ta_en}   <= {m_sc_ta_en,   sc_ta_en};
-  {f_sc_ta_fall, m_sc_ta_fall} <= {m_sc_ta_fall, sc_ta_fall};
-  {f_sc_ta_k,    m_sc_ta_k}    <= {m_sc_ta_k,    sc_ta_k};
   {f_sc_src,  m_sc_src}  <= {m_sc_src,  sc_src};
   {f_sc_thr,  m_sc_thr}  <= {m_sc_thr,  sc_thr};
   {f_sc_hyst, m_sc_hyst} <= {m_sc_hyst, sc_hyst};
@@ -910,13 +879,11 @@ always_ff @(posedge fclk) begin
   end
 end
 
-zcu216_scope #(.L(SC_L), .BASE(SC_BASE), .TPL(SC_TPL)) i_scope (
+zcu216_scope #(.L(SC_L), .BASE(SC_BASE)) i_scope (
   .clk (fclk), .rstn (frstn), .x1 (sc_xr[0]), .x2 (sc_xr[1]),
   .dec (f_sc_dec), .avg (f_sc_avg), .thr (16'($signed(f_sc_thr))), .hyst (16'(f_sc_hyst)),
   .dly (f_sc_dly), .keep (f_sc_keep), .src_val (f_sc_src), .src_set (f_sc_src_t),
   .arm (f_sc_arm), .rst (f_sc_rst), .ext (ext_trig),
-  .ta_en (f_sc_ta_en), .ta_fall (f_sc_ta_fall), .ta_k (f_sc_ta_k), .ta_clr (f_sc_ta_clr),
-  .ta_recs (f_sc_ta_recs), .ta_period (f_sc_ta_per),
   .writing (f_sc_writing), .dly_do (f_sc_dly_do), .trig_src (f_sc_trig),
   .pretrig_ok (f_sc_pre), .wp_cur (f_sc_wp_cur), .wp_trig (f_sc_wp_trig),
   .arm_ack (f_sc_arm_ack), .rst_ack (f_sc_rst_ack), .ovf (f_sc_ovf), .err (f_sc_err),
@@ -928,7 +895,7 @@ zcu216_scope #(.L(SC_L), .BASE(SC_BASE), .TPL(SC_TPL)) i_scope (
   .m_bresp (sc_bresp), .m_bvalid (sc_bvalid), .m_bready (sc_bready));
 
 // status into sys_clk: a snapshot every 64 fclk cycles, taken on its toggle
-logic [95:0] f_sc_st;
+logic [63:0] f_sc_st;
 logic [5:0]  f_sc_tick = '0;
 logic        f_sc_upd = 1'b0;
 always_ff @(posedge fclk) begin
@@ -939,8 +906,6 @@ always_ff @(posedge fclk) begin
                       f_sc_dly_do, f_sc_writing};
     f_sc_st[31 -: SC_RW] <= f_sc_wp_cur;
     f_sc_st[63 -: SC_RW] <= f_sc_wp_trig;
-    f_sc_st[79:64] <= f_sc_ta_recs;
-    f_sc_st[80 +: SC_TPL + 1] <= f_sc_ta_per;
     f_sc_upd <= !f_sc_upd;
   end
 end

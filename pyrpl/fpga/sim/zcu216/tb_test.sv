@@ -15,14 +15,6 @@ module tb_test;
   always_ff @(posedge fclk) for (int i = 0; i < 4; i++) adc_data[i] <= dac_data;
   // the ASG (red_pitaya_asg + zcu216_asg_cdc in zcu216_top): constants here
   logic [13:0]  asg_data [4] = '{14'(1234), 14'(-2000), 14'(77), 14'(-1)};
-  // the external trigger input: with ext_on, a pulse every 200 fclk cycles
-  bit ext_on = 0;
-  logic ext = 0;
-  int unsigned ext_cnt = 0;
-  always @(posedge fclk) begin
-    ext_cnt <= (ext_cnt == 199) ? 0 : ext_cnt + 1;
-    ext     <= ext_on && ext_cnt < 20;
-  end
 
   // DDR behind the two snapshot ports: always ready, OKAY responses
   logic [48:0]  hp_awaddr [2];
@@ -58,7 +50,7 @@ module tb_test;
     .sys_clk(sclk), .sys_rstn(srstn), .sys_addr, .sys_wdata, .sys_wen, .sys_ren,
     .sys_rdata, .sys_err, .sys_ack, .fclk, .frstn, .flocked(1'b1),
     .adc_data, .adc_valid(4'hf), .dac_data, .dac_valid, .spi_sdo_sel(sdo_sel),
-    .meas_clk({fclk, sclk, fclk, sclk}), .ext_trig(ext), .asg_data,
+    .meas_clk({fclk, sclk, fclk, sclk}), .ext_trig(1'b0), .asg_data,
     .hp_awaddr, .hp_awlen, .hp_awsize, .hp_awburst, .hp_awcache, .hp_awprot,
     .hp_awvalid, .hp_awready, .hp_wdata, .hp_wstrb, .hp_wlast, .hp_wvalid,
     .hp_wready, .hp_bresp, .hp_bvalid, .hp_bready,
@@ -286,37 +278,6 @@ module tb_test;
       $display("SCOPE ASG input1 reads back %0d: %0d samples, ch1 != 1234: %0d, ch2 != -2000: %0d",
                v, ln, bad1, bad2);
       if (v != 8 || bad1 || bad2) $display("ERR SCOPE ASG");
-    end
-    // the time average on the ASG constants: records of 200 beats at D = 2
-    // (800 samples), the trace triggered on ext; the means are 4x the inputs
-    begin
-      logic [31:0] ln, base, rl, st, wt, dl, en, fl, kk, nr, per;
-      int bad1 = 0, bad2 = 0;
-      ext_on = 1;
-      rd(32'h1001e0, ln); rd(32'h1001e4, base); rd(32'h1001e8, rl);
-      wr(32'h1001c8, 1); wr(32'h1001cc, 0); wr(32'h1001d0, 3); wr(32'h1001d4, 0);
-      rd(32'h1001c8, en); rd(32'h1001cc, fl); rd(32'h1001d0, kk);
-      repeat (2000) @(posedge sclk);                        // ~30 records
-      wr(32'h100000, 2);                                    // reset
-      wr(32'h100010, ln / 2);
-      wr(32'h100000, 1);                                    // arm
-      wr(32'h100004, 6);                                    // ext rising
-      do rd(32'h100000, st); while (st[0] || st[2]);
-      rd(32'h10001c, wt);  rd(32'h100010, dl);
-      repeat (200) @(posedge sclk);                         // the status snapshot
-      rd(32'h1001d4, nr);  rd(32'h1001d8, per);
-      for (int i = 0; i < ln; i++) begin
-        int k = (int'(wt + dl) - int'(ln) + 1 + i + int'(rl)) % int'(rl);
-        logic [127:0] w = ddr[40'(base) + 40'(16 * (k / 4))];
-        if ($signed(w[16 * (k % 4) +: 16]) != 4 * 1234) bad1++;
-        if ($signed(w[64 + 16 * (k % 4) +: 16]) != -4 * 2000) bad2++;
-      end
-      $display("SCOPE TAVG en %0d edge %0d k %0d: records %0d, period %0d (800), TPL %0d; %0d samples, ch1 != 4936: %0d, ch2 != -8000: %0d",
-               en, fl, kk, nr, per[16:0], per[31:24], ln, bad1, bad2);
-      if (en != 1 || fl != 0 || kk != 3 || nr < 20 || per[16:0] != 800 || per[31:24] != 15
-          || bad1 || bad2) $display("ERR SCOPE TAVG");
-      wr(32'h1001c8, 0);
-      ext_on = 0;
     end
     // the raw capture (the clock meters need a 1 ms gate, 210k bus clocks of
     // simulation: they are checked on the board, rf_loopback.py)

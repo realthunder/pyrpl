@@ -12,7 +12,7 @@ tb="${1:-tb_snap}"
 case $tb in
   tb_snap) rtl="zcu216_snap.sv" ;;
   tb_points) rtl="zcu216_points.sv" ;;
-  tb_scope) rtl="zcu216_scope.sv zcu216_scope_tavg.sv zcu216_snap.sv" ;;   # the writer is zcu216_snap_wr
+  tb_scope) rtl="zcu216_scope.sv zcu216_snap.sv" ;;   # the writer is zcu216_snap_wr
   tb_axi_slave) rtl="axi_slave.v" ;;
   *) echo "unknown testbench $tb"; exit 1 ;;
 esac

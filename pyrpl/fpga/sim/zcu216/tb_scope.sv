@@ -5,7 +5,6 @@
 // consecutive decimated samples, with the trigger edge at L - dly.
 module tb_scope;
   localparam int L = 1024, R = 2 * L;
-  localparam int TPL = 10;                        // time average: 1024 samples per record
   localparam logic [39:0] SC_BASE = 40'h1FE0_0000;
   logic clk = 0;  always #1.6 clk = ~clk;
   logic rstn = 0;
@@ -13,18 +12,6 @@ module tb_scope;
   // inputs: sample t = 8 * beat + lane
   int unsigned beat = 0;
   logic [127:0] x1, x2;
-  // time-average mode: period pb beats, ext high over its first 40 beats;
-  // channel 1 a sine (64 samples) + uniform noise, channel 2 a sawtooth of
-  // t mod P (exactly periodic: its mean is itself)
-  bit tmode = 0;
-  int pb = 256;
-  logic ext = 0;
-  function automatic logic signed [15:0] sine_w(int unsigned t);
-    return 16'(int'($rtoi(2000.0 * $sin(6.283185307179586 * (t % 64) / 64.0))));
-  endfunction
-  function automatic logic signed [15:0] saw_p(int unsigned t);
-    return 16'(4 * int'(t % (8 * pb)) - 4000);
-  endfunction
   function automatic logic signed [15:0] tri_w(int unsigned t);
     int p = t % 1000;                            // period 1000 samples, -4000..4000
     return 16'(p < 500 ? -4000 + 16 * p : 4000 - 16 * (p - 500));
@@ -34,11 +21,9 @@ module tb_scope;
   endfunction
   always @(posedge clk) begin
     beat <= beat + 1;
-    ext  <= tmode && (beat % pb) < 40;
     for (int j = 0; j < 8; j++) begin
-      x1[16*j +: 16] <= tmode ? 16'(sine_w(8 * beat + j) + int'($urandom % 4001) - 2000)
-                              : tri_w(8 * beat + j);
-      x2[16*j +: 16] <= tmode ? saw_p(8 * beat + j) : saw(8 * beat + j);
+      x1[16*j +: 16] <= tri_w(8 * beat + j);
+      x2[16*j +: 16] <= saw(8 * beat + j);
     end
   end
 
@@ -53,13 +38,9 @@ module tb_scope;
   logic [1:0]   awvalid, awready = 0, wlast, wvalid, wready = 0, bvalid = 0, bready;
   logic [127:0] wdata [2];   logic [15:0] wstrb [2];
   logic         ovf, err;
-  logic ta_en = 0, ta_fall = 0, ta_clr = 0;  logic [3:0] ta_k = 6;
-  logic [15:0] ta_recs;  logic [TPL:0] ta_period;
 
-  zcu216_scope #(.L(L), .BASE(SC_BASE), .TPL(TPL)) dut (.clk, .rstn, .x1, .x2, .dec, .avg, .thr,
-    .hyst, .dly, .keep, .src_val, .src_set, .arm, .rst, .ext,
-    .ta_en, .ta_fall, .ta_k, .ta_clr, .ta_recs, .ta_period,
-    .writing, .dly_do, .trig_src,
+  zcu216_scope #(.L(L), .BASE(SC_BASE)) dut (.clk, .rstn, .x1, .x2, .dec, .avg, .thr,
+    .hyst, .dly, .keep, .src_val, .src_set, .arm, .rst, .writing, .dly_do, .trig_src,
     .pretrig_ok, .wp_cur, .wp_trig, .arm_ack, .rst_ack, .ovf, .err,
     .m_awaddr (awaddr), .m_awlen (awlen), .m_awsize (awsize), .m_awburst (awburst),
     .m_awcache (awcache), .m_awprot (awprot), .m_awvalid (awvalid), .m_awready (awready),
@@ -135,57 +116,6 @@ module tb_scope;
     wait_done();
   endtask
 
-  // time average: D, period pbeats, nrec records after the restart, then a
-  // trace triggered on ext rising. Channel 2's mean must be exactly 4x its
-  // (periodic) input: steps of 16 D along the sawtooth, 0 past 2^TPL samples
-  // into a record; channel 1, against 4x the clean sine at the same place (the
-  // sawtooth gives t mod P), must have its noise down by the mean over 2^k.
-  task automatic ta_test(logic [16:0] d, int pbeats, int nrec, int k);
-    int P = 8 * pbeats, ns = P / d, nzero = 0, bad = 0, n1 = 0;
-    int zexp = (ns > (1 << TPL)) ? ns - (1 << TPL) : 0;
-    real se = 0, rms, rms_in = 4001.0 / $sqrt(12.0);
-    int e;
-    tmode = 1;  pb = pbeats;  ta_k = k;  ta_en = 1;  dec = d;  avg = 0;
-    @(negedge clk) ta_clr = !ta_clr;
-    repeat (nrec * pbeats) @(posedge clk);
-    dly = L / 2;
-    @(negedge clk) rst = !rst;  repeat (30) @(negedge clk);
-    arm = !arm;  repeat (10) @(negedge clk);
-    src_val = 4'd6;  src_set = !src_set;
-    wait_done();
-    e = int'(wp_trig) + L / 2;
-    for (int i = 0; i < L; i++) begin
-      logic signed [15:0] a = smp(2, e - L + 1 + i), b = smp(2, e - L + i), y1 = smp(1, e - L + 1 + i);
-      if (a == 0 && y1 == 0) begin nzero++; continue; end
-      if (i > 0 && b != 0) begin
-        int dt = ((int'(a) - int'(b)) % (16 * P) + 16 * P) % (16 * P);
-        if (dt != 16 * d) begin
-          if (bad < 3) $display("  TA D%0d: sample %0d: %0d after %0d", d, i, a, b);
-          bad++;
-        end
-      end
-      begin
-        int tm = (int'(a) + 16000) / 16;
-        real err = real'(y1) / 4.0 - real'(sine_w(tm));
-        se += err * err;  n1++;
-      end
-    end
-    rms = $sqrt(se / (n1 > 0 ? n1 : 1));
-    // the trace holds L samples: about L / ns records' worth of zero runs
-    $display("SCOPE TA D%0d k%0d P%0d: records %0d, period %0d (expected %0d), zeros %0d (%0d per record expected), ch1 noise %.1f -> %.1f, %0d bad",
-             d, k, P, ta_recs, ta_period, ns > (1 << TPL) ? (1 << TPL) : ns, nzero, zexp,
-             rms_in, rms, bad);
-    if (ta_period != ((ns > (1 << TPL)) ? (1 << TPL) : ns)) bad++;
-    // the records go on during the acquisition (up to the trace, 2L D samples)
-    if (ta_recs < nrec || ta_recs > nrec + 2 * L * d / P + 4) bad++;
-    if ((zexp == 0) != (nzero == 0)) bad++;
-    // exponential mean over 2^k: noise power down by 2^(k+1) - 1
-    if (rms > 1.2 * rms_in / $sqrt(real'((2 << k) - 1))) bad++;
-    errs += bad;
-    ta_en = 0;  tmode = 0;
-    @(negedge clk) rst = !rst;  wait_done();
-  endtask
-
   initial begin
     repeat (10) @(posedge clk);  rstn = 1;
     repeat (20) @(posedge clk);
@@ -240,12 +170,6 @@ module tb_scope;
     @(negedge clk) rst = !rst;
     wait_done();
     if (ovf || err) begin $display("ERR overflow %0d err %0d", ovf, err); errs++; end
-    // 5: time average at D = 2 (4 samples a clock), 8 (1) and 32 (1 in 4
-    // clocks); then a record longer than 2^TPL samples (its tail is 0)
-    ta_test(2, 256, 400, 6);
-    ta_test(8, 256, 400, 6);
-    ta_test(32, 256, 400, 6);
-    ta_test(2, 288, 200, 4);
     $display("SCOPE done, %0d errors", errs);
     $finish;
   end
