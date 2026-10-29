@@ -23,11 +23,20 @@
  * never reach into the trace. wp_cur is the last sample in DDR: in a free run
  * (no trigger, rolling mode) the PC reads the L samples ending there; slow
  * rates flush partial blocks so it keeps moving.
+ *
+ * Time average (ta_en, zcu216_scope_tavg): between the decimator and the
+ * triggers, every edge of ext starts a record, and each decimated sample is
+ * replaced by the running mean of the samples at its place in the records
+ * (2^ta_k records, up to 2^TPL samples per record, 0 past that), with two
+ * fraction bits (4x scale; the channel thresholds scale along). Triggered on
+ * ext as well, a trace then holds the mean over the chirps, as fresh as the
+ * last one. The averager delays samples and ext edges alike, on or off.
  */
 module zcu216_scope #(
   parameter int          L    = 1 << 18,       // samples per channel per trace
   parameter logic [39:0] BASE = 40'h1FE0_0000, // the ring: 8L bytes
   parameter int          FD   = 10,            // writer FIFO depth, log2 words per port
+  parameter int          TPL  = 15,            // time average: log2 samples per record
   localparam int         RW   = $clog2(2 * L)  // ring index bits (samples)
 ) (
   input  logic          clk,
@@ -46,6 +55,13 @@ module zcu216_scope #(
   input  logic          arm,
   input  logic          rst,
   input  logic          ext,                   // external trigger (asynchronous)
+  // time average (zcu216_scope_tavg): records start on the edges of ext
+  input  logic          ta_en,
+  input  logic          ta_fall,
+  input  logic [3:0]    ta_k,
+  input  logic          ta_clr,                // toggle: start over
+  output logic [15:0]   ta_recs,
+  output logic [TPL:0]  ta_period,
   // status
   output logic          writing,
   output logic          dly_do,
@@ -118,10 +134,14 @@ always_ff @(posedge clk) begin
   for (int i = 2; i <= 16; i++) if (dec[i]) k <= 5'(i);
 end
 
-logic signed [15:0] thm, thp;                  // thr - hyst, thr + hyst
+// thr, thr - hyst, thr + hyst; 4x with the time average (its samples carry two
+// fraction bits)
+logic signed [15:0] thq, hyq, thm, thp;
 always_ff @(posedge clk) begin
-  thm <= thr - $signed(hyst);
-  thp <= thr + $signed(hyst);
+  thq <= ta_en ? thr <<< 2 : thr;
+  hyq <= ta_en ? $signed(hyst) <<< 2 : $signed(hyst);
+  thm <= thq - hyq;
+  thp <= thq + hyq;
 end
 
 // commands
@@ -210,22 +230,59 @@ always_ff @(posedge clk) begin
 end
 
 ////////////////////////////////////////////////////////////////////////////////
+// external input: synchronised; an edge waits for the next beat that carries
+// samples and lands on its first one (beat resolution, 8 input samples). The
+// flags ride with the samples through the time average.
+////////////////////////////////////////////////////////////////////////////////
+
+(* ASYNC_REG = "TRUE" *) logic [1:0] ext_m;
+logic       ext_d, xr_p, xf_p;                 // rising / falling edge pending
+always_ff @(posedge clk) begin
+  ext_m <= {ext_m[0], ext};
+  ext_d <= ext_m[1];
+  if (!rstn) begin
+    xr_p <= 1'b0;
+    xf_p <= 1'b0;
+  end else if (n != 0) begin
+    xr_p <= ext_m[1] && !ext_d;
+    xf_p <= !ext_m[1] && ext_d;
+  end else begin
+    xr_p <= xr_p || (ext_m[1] && !ext_d);
+    xf_p <= xf_p || (!ext_m[1] && ext_d);
+  end
+end
+wire [1:0] xe = (n != 0) ? {xf_p, xr_p} : 2'b00;
+
+// the time average (or the samples passing through it, as long)
+logic signed [15:0] oa [2][4];
+logic [2:0]         na;
+logic [1:0]         ea;
+
+zcu216_scope_tavg #(.PL(TPL)) i_tavg (
+  .clk, .rstn, .d_in (o), .n_in (n), .e_in (xe),
+  .en (ta_en), .fall (ta_fall), .k (ta_k), .clr (ta_clr),
+  .d_out (oa), .n_out (na), .e_out (ea),
+  .recs (ta_recs), .period (ta_period));
+
+////////////////////////////////////////////////////////////////////////////////
 // trigger: Schmitt triggers on both channels over the samples of a beat
 ////////////////////////////////////////////////////////////////////////////////
 
 logic signed [15:0] o5 [2][4];
 logic [2:0]         n5;
+logic [1:0]         e5;                        // external edge at sample 0
 logic [3:0]         ge [2], lt [2], le [2], gt [2];
 
 always_ff @(posedge clk) begin
-  o5 <= o;
-  n5 <= n;
+  o5 <= oa;
+  n5 <= na;
+  e5 <= ea;
   for (int c = 0; c < 2; c++)
     for (int i = 0; i < 4; i++) begin
-      ge[c][i] <= o[c][i] >= thr;
-      lt[c][i] <= o[c][i] <  thm;
-      le[c][i] <= o[c][i] <= thr;
-      gt[c][i] <= o[c][i] >  thp;
+      ge[c][i] <= oa[c][i] >= thq;
+      lt[c][i] <= oa[c][i] <  thm;
+      le[c][i] <= oa[c][i] <= thq;
+      gt[c][i] <= oa[c][i] >  thp;
     end
 end
 
@@ -263,25 +320,6 @@ always_ff @(posedge clk)
     sn <= sn_n;
   end
 
-// external input: synchronised; an edge waits for the next beat that carries
-// samples and lands on its first one (beat resolution, 8 input samples)
-(* ASYNC_REG = "TRUE" *) logic [1:0] ext_m;
-logic       ext_d, xr_p, xf_p;                 // rising / falling edge pending
-always_ff @(posedge clk) begin
-  ext_m <= {ext_m[0], ext};
-  ext_d <= ext_m[1];
-  if (!rstn) begin
-    xr_p <= 1'b0;
-    xf_p <= 1'b0;
-  end else if (n5 != 0) begin
-    xr_p <= ext_m[1] && !ext_d;
-    xf_p <= !ext_m[1] && ext_d;
-  end else begin
-    xr_p <= xr_p || (ext_m[1] && !ext_d);
-    xf_p <= xf_p || (!ext_m[1] && ext_d);
-  end
-end
-
 // edges of the selected source this beat
 logic [3:0] ev;
 always_comb
@@ -291,8 +329,8 @@ always_comb
     4'd3:    ev = en[0];
     4'd4:    ev = ep[1];
     4'd5:    ev = en[1];
-    4'd6:    ev = (n5 != 0 && xr_p) ? 4'b0001 : 4'b0000;
-    4'd7:    ev = (n5 != 0 && xf_p) ? 4'b0001 : 4'b0000;
+    4'd6:    ev = e5[0] ? 4'b0001 : 4'b0000;
+    4'd7:    ev = e5[1] ? 4'b0001 : 4'b0000;
     default: ev = '0;
   endcase
 
