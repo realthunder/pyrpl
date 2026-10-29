@@ -314,7 +314,7 @@ class PyrplWidget(QtWidgets.QMainWindow):
         typ, val, tb = typ_val_tb
         self.timer_toolbar.stop()
         self.status_bar.showMessage(''.join(format_exception_only(typ, val)))
-        self.status_bar.setStyleSheet('color: white;background-color: red;')
+        self._bar_style('color: white;background-color: red;')
         self._next_toolbar_style = 'color: orange;'
         self.status_bar.setToolTip(''.join(format_exception(typ, val, tb)))
         self._hold(logging.ERROR)
@@ -351,7 +351,7 @@ class PyrplWidget(QtWidgets.QMainWindow):
         self.status_bar.showMessage(record)
         self.status_bar.setToolTip(record if cls != logging.NOTSET else '')
         fresh, faded = self._LOG_STYLES[cls]
-        self.status_bar.setStyleSheet(fresh)
+        self._bar_style(fresh)
         self._next_toolbar_style = faded
         if cls in self.HOLD_S:
             self._hold(cls)
@@ -364,7 +364,13 @@ class PyrplWidget(QtWidgets.QMainWindow):
         """
         Toolbar becomes orange after (called 1s after exception occured)
         """
-        self.status_bar.setStyleSheet(self._next_toolbar_style)
+        self._bar_style(self._next_toolbar_style)
+
+    def _bar_style(self, css):
+        """Style the status bar alone. A rule without a selector also styles
+        the tooltips Qt shows, so every tooltip took the bar's last colour
+        (red after an error, grey after an info message)."""
+        self.status_bar.setStyleSheet('QStatusBar { %s }' % css)
 
     def _clear(self):
         for timer in self.timers:
