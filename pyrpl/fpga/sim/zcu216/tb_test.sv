@@ -314,6 +314,21 @@ module tb_test;
           || per != 800 || sk != 0 || n != 256 || w1 != 40 || a2 != 160 || ctl != 1
           || pa != 37 || pb != 100)
         $display("ERR FRAMING");
+      // power average over 4 frames: a quarter of the frames come out, the
+      // tones still on their bins
+      wr(32'h1001d8, 2);
+      repeat (200) @(posedge sclk);
+      rd(32'h60, fa0); rd(32'ha0, fb0); rd(32'h1001cc, sy0);
+      repeat (1600) @(posedge sclk);
+      rd(32'h60, fa1); rd(32'ha0, fb1); rd(32'h1001cc, sy1);
+      rd(32'h64, pa); rd(32'ha4, pb); rd(32'h1001d8, n);
+      $display("FRAMING average m %0d: syncs %0d, frames out up %0d down %0d (a quarter), peaks %0d/%0d",
+               n, sy1 - sy0, fa1 - fa0, fb1 - fb0, pa, pb);
+      if (n != 2 || (fa1 - fa0) * 4 < sy1 - sy0 - 4 || (fa1 - fa0) * 4 > sy1 - sy0 + 4
+          || (fb1 - fb0) * 4 < sy1 - sy0 - 4 || (fb1 - fb0) * 4 > sy1 - sy0 + 4
+          || pa != 37 || pb != 100)
+        $display("ERR FRAMING average");
+      wr(32'h1001d8, 0);
       wr(32'h1001c8, 0);                                    // free-running again
       ext_on = 0;
       repeat (100) @(posedge sclk);

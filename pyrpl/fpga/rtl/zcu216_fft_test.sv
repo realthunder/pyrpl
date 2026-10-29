@@ -82,6 +82,16 @@
  *                   Red Pitaya ASG in slot 4, 100 MS/s, each sample held over
  *                   the 2.5 GS/s beats)   +0x1f8 RO recommended minimum decimation
  *             +0x1fc RO sample period (ps) before decimation
+             chirp-synced FFT (lidar/docs/Zcu216ChirpFft.md), ADC samples:
+             +0x058 wait1  +0x05c wait2  +0x060 acq1  +0x064 acq2 (<= N), the Red
+                   Pitaya's fft window offsets (zcu216_fft_frame: even FFT
+                   channels take the up window, odd ones the down window)
+             +0x1a0 delay from the laser sync to wait1   +0x08c RO N
+             +0x1c8 [0] framing on (off: free-running frames), [1] falling edge
+             +0x1cc RO syncs   +0x1d0 RO period between syncs   +0x1d4 RO frames
+                   skipped (engine busy) [15:0] up, [31:16] down
+             +0x1d8 [3:0] m: every channel's frames are the RMS of 2^m frames'
+                   power (zcu216_fft_avg; 0 = each frame); a write restarts
  *             The trace goes to DDR through two ports of its own (S_AXI_HP3, S_AXI_HP2).
  *   0x80000 + 4*i: RO raw ADC capture, beat i/4, 32-bit part i%4 (samples 2(i%4), +1)
  *   0x90000 + 4*i: RO raw DAC capture, same layout
@@ -240,6 +250,8 @@ logic [159:0]  s_sc_st;                         // status from fclk (see below)
 // fft window offsets: samples at the ADC rate
 logic [23:0]   fr_w1, fr_w2, fr_a1, fr_a2, fr_dly;
 logic [1:0]    fr_ctl;                          // [0] framing on, [1] falling edge
+logic [3:0]    av_m;                            // power average over 2^m frames
+logic          av_rs;                           // toggle: restart the average
 // point stream
 logic          pt_en;
 logic [13:0]   s_pt_ptr;
@@ -465,6 +477,7 @@ always_ff @(posedge sys_clk)
     sc_dec   <= 17'(SC_MIN_DEC);
     sc_in    <= '{4'd0, 4'd1};
     fr_w1 <= '0;  fr_w2 <= '0;  fr_a1 <= '0;  fr_a2 <= '0;  fr_dly <= '0;  fr_ctl <= '0;
+    av_m  <= '0;  av_rs <= 1'b0;
   end else if (sys_wen && sys_addr[20])
     case (a)
       20'h00000: begin
@@ -484,6 +497,7 @@ always_ff @(posedge sys_clk)
       20'h00064: fr_a2  <= sys_wdata[23:0];
       20'h001a0: fr_dly <= sys_wdata[23:0];
       20'h001c8: fr_ctl <= sys_wdata[1:0];
+      20'h001d8: begin av_m <= sys_wdata[3:0]; av_rs <= !av_rs; end
       20'h001f0: sc_in[0] <= sys_wdata[3:0];
       20'h001f4: sc_in[1] <= sys_wdata[3:0];
       default: ;
@@ -517,6 +531,7 @@ function automatic logic [31:0] sc_read(input logic [19:0] ad);
     20'h001cc: v = s_sc_st[95:64];
     20'h001d0: v = s_sc_st[127:96] << 3;
     20'h001d4: v = s_sc_st[159:128];
+    20'h001d8: v = 32'(av_m);
     20'h001dc: v = 32'(s_sc_st[10:9]);
     20'h001e0: v = 32'(SC_L);
     20'h001e4: v = SC_BASE[31:0];
@@ -589,6 +604,9 @@ logic [FCW-1:0] f_off [2], f_acq [2];           // [0] up, [1] down
 logic           f_fx_d, f_sync;
 logic [31:0]    f_syncs, f_per, f_per_cnt;
 logic [15:0]    f_skip [NCH];
+logic [3:0]     f_av_m, f_av_m_m;
+(* ASYNC_REG = "TRUE" *) logic f_av_rs_m;
+logic           f_av_rs;
 
 always_ff @(posedge fclk) begin
   {f_fr_w1,  f_fr_w1_m}  <= {f_fr_w1_m,  fr_w1};
@@ -597,6 +615,8 @@ always_ff @(posedge fclk) begin
   {f_fr_a2,  f_fr_a2_m}  <= {f_fr_a2_m,  fr_a2};
   {f_fr_dly, f_fr_dly_m} <= {f_fr_dly_m, fr_dly};
   {f_fr_ctl, f_fr_ctl_m} <= {f_fr_ctl_m, fr_ctl};
+  {f_av_m,   f_av_m_m}   <= {f_av_m_m,   av_m};
+  {f_av_rs,  f_av_rs_m}  <= {f_av_rs_m,  av_rs};
   // samples -> beats: up = delay + wait1, down = up + acq1 + wait2
   f_off[0] <= FCW'((26'(f_fr_dly) + 26'(f_fr_w1)) >> 3);
   f_off[1] <= FCW'((26'(f_fr_dly) + 26'(f_fr_w1) + 26'(f_fr_a1) + 26'(f_fr_w2)) >> 3);
@@ -794,9 +814,9 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
     else f_events <= f_events | {ev_miss, ev_unexp, ev_halt};
   end
 
-  logic [31:0]    m_mag [4], n_mag [4];
-  logic [SUB-1:0] m_k, n_t;
-  logic           m_valid, m_last, n_valid, n_first, n_last;
+  logic [31:0]    m_mag [4], r_mag [4], n_mag [4];
+  logic [SUB-1:0] m_k, r_t, n_t;
+  logic           m_valid, m_last, r_valid, r_first, r_last, n_valid, n_first, n_last;
 
   zcu216_fft_mag #(.XW(XW), .SUB(SUB)) i_mag (
     .clk (fclk), .x_re, .x_im, .x_k, .x_valid, .x_last,
@@ -804,6 +824,13 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
 
   zcu216_fft_reorder #(.SUB(SUB)) i_reorder (
     .clk (fclk), .rstn (frstn), .m_mag, .m_k, .m_valid, .m_last,
+    .n_mag (r_mag), .n_t (r_t), .n_valid (r_valid), .n_first (r_first), .n_last (r_last));
+
+  // per-bin power average over 2^m frames: the RMS magnitude of every 2^m-th
+  // frame goes on (m = 0: every frame, unchanged)
+  zcu216_fft_avg #(.SUB(SUB)) i_avg (
+    .clk (fclk), .rstn (frstn), .m (f_av_m), .restart (f_av_rs),
+    .r_mag, .r_t, .r_valid, .r_first, .r_last,
     .n_mag, .n_t, .n_valid, .n_first, .n_last);
 
   logic          f_upd, f_done;

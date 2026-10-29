@@ -26,7 +26,8 @@ Bitstreams with chirp framing (lidar/docs/Zcu216ChirpFft.md) start the frames
 on the laser's chirp sync: channel 0 transforms the up window, channel 1 the
 down window, set with the Red Pitaya scope's fft window registers
 (fft_wait1_cnt .. fft_acq2_cnt, fft_trig_delay: here in ADC samples) and
-fft_framing; older ones frame free-running.
+fft_framing; older ones frame free-running. With fft_average = n each
+channel's frames are the RMS of 2**n frames' power (zcu216_fft_avg).
 """
 import numpy as np
 
@@ -235,6 +236,15 @@ class Zcu216Scope(Scope):
                                "up, [31:16] down")
     _fft_len_reg = IntRegister(0x8C, doc="FFT length; 0 on bitstreams without "
                                "chirp framing")
+    fft_average = IntRegister(0x1D8, bits=4, min=0, max=8,
+                              doc="the FFT frames are the RMS of 2**n frames' "
+                                  "power (a per-bin power average over 2**n "
+                                  "chirps when framed); 0 = every frame as is. "
+                                  "Writing restarts the average.")
+
+    def fft_average_restart(self):
+        """start the power average over (the next frame begins a group)"""
+        self._write(0x1D8, int(self.fft_average))
 
     @property
     def fft_framing_available(self):

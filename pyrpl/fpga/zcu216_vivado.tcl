@@ -139,6 +139,7 @@ if {$fft_en} {
     read_verilog -sv              $path_rtl/zcu216_scope.sv
     read_verilog -sv              $path_rtl/zcu216_asg_cdc.sv
     read_verilog -sv              $path_rtl/zcu216_fft_frame.sv
+    read_verilog -sv              $path_rtl/zcu216_fft_avg.sv
     read_verilog -sv              $path_rtl/zcu216_fft_test.sv
 }
 

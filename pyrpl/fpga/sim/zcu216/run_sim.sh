@@ -38,7 +38,7 @@ if {[file exists $work/p/p.xpr]} {
   set_property -name {xsim.simulate.runtime} -value {all} -objects [get_filesets sim_1]
 }
 # (also on an existing project: files added since it was made)
-foreach f {zcu216_fft_dit8.sv zcu216_fft_mag.sv zcu216_fft_reorder.sv zcu216_tone_gen.sv zcu216_fft_spec.sv zcu216_fft_test.sv zcu216_axil_bridge.sv zcu216_cfar.sv zcu216_snap.sv zcu216_points.sv zcu216_scope.sv zcu216_fft_frame.sv} {
+foreach f {zcu216_fft_dit8.sv zcu216_fft_mag.sv zcu216_fft_reorder.sv zcu216_tone_gen.sv zcu216_fft_spec.sv zcu216_fft_test.sv zcu216_axil_bridge.sv zcu216_cfar.sv zcu216_snap.sv zcu216_points.sv zcu216_scope.sv zcu216_fft_frame.sv zcu216_fft_avg.sv} {
   if {![llength [get_files -quiet $fpga/rtl/\$f]]} { add_files -norecurse $fpga/rtl/\$f }
 }
 set_property -name {xsim.compile.xvlog.more_options} -value {-d TB_DW=$dw} -objects [get_filesets sim_1]
