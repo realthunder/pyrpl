@@ -15,6 +15,16 @@ module tb_test;
   always_ff @(posedge fclk) for (int i = 0; i < 4; i++) adc_data[i] <= dac_data;
   // the ASG (red_pitaya_asg + zcu216_asg_cdc in zcu216_top): constants here
   logic [13:0]  asg_data [4] = '{14'(1234), 14'(-2000), 14'(77), 14'(-1)};
+  // the laser's chirp sync on the external input: with ext_on, a pulse every
+  // EXT_P fclk cycles (EXT_P x 8 samples)
+  localparam int EXT_P = 100;
+  bit ext_on = 0;
+  logic ext = 0;
+  int unsigned ext_cnt = 0;
+  always @(posedge fclk) begin
+    ext_cnt <= (ext_cnt == EXT_P - 1) ? 0 : ext_cnt + 1;
+    ext     <= ext_on && ext_cnt < 10;
+  end
 
   // DDR behind the two snapshot ports: always ready, OKAY responses
   logic [48:0]  hp_awaddr [2];
@@ -50,7 +60,7 @@ module tb_test;
     .sys_clk(sclk), .sys_rstn(srstn), .sys_addr, .sys_wdata, .sys_wen, .sys_ren,
     .sys_rdata, .sys_err, .sys_ack, .fclk, .frstn, .flocked(1'b1),
     .adc_data, .adc_valid(4'hf), .dac_data, .dac_valid, .spi_sdo_sel(sdo_sel),
-    .meas_clk({fclk, sclk, fclk, sclk}), .ext_trig(1'b0), .asg_data,
+    .meas_clk({fclk, sclk, fclk, sclk}), .ext_trig(ext), .asg_data,
     .hp_awaddr, .hp_awlen, .hp_awsize, .hp_awburst, .hp_awcache, .hp_awprot,
     .hp_awvalid, .hp_awready, .hp_wdata, .hp_wstrb, .hp_wlast, .hp_wvalid,
     .hp_wready, .hp_bresp, .hp_bvalid, .hp_bready,
@@ -278,6 +288,38 @@ module tb_test;
       $display("SCOPE ASG input1 reads back %0d: %0d samples, ch1 != 1234: %0d, ch2 != -2000: %0d",
                v, ln, bad1, bad2);
       if (v != 8 || bad1 || bad2) $display("ERR SCOPE ASG");
+    end
+    // chirp framing: a sync every EXT_P beats (800 samples); up window at
+    // beat 5 for 20 beats, down at beat 35 for 20 (frames of 32 beats, zero
+    // padded): one frame per sync on each channel, none skipped, the tones on
+    // their bins (37 and 100) in the shortened, padded frames
+    begin
+      logic [31:0] fa0, fb0, fa1, fb1, pa, pb, sy0, sy1, per, sk, n, w1, a2, ctl;
+      wr(32'h54, 0);  wr(32'h94, 0);                        // both on their tone generators
+      wr(32'h100058, 40);  wr(32'h10005c, 80);              // wait1, wait2 (samples)
+      wr(32'h100060, 160); wr(32'h100064, 160);             // acq1, acq2
+      wr(32'h1001a0, 0);                                    // delay
+      ext_on = 1;
+      wr(32'h1001c8, 1);                                    // framing on, rising edge
+      repeat (300) @(posedge sclk);                         // settle (~10 periods)
+      rd(32'h60, fa0); rd(32'ha0, fb0); rd(32'h1001cc, sy0);
+      repeat (1600) @(posedge sclk);                        // ~50 periods
+      rd(32'h60, fa1); rd(32'ha0, fb1); rd(32'h1001cc, sy1);
+      rd(32'h1001d0, per); rd(32'h1001d4, sk); rd(32'h10008c, n);
+      rd(32'h100058, w1);  rd(32'h100064, a2); rd(32'h1001c8, ctl);
+      rd(32'h64, pa); rd(32'ha4, pb);
+      $display("FRAMING syncs %0d, frames up %0d down %0d, period %0d samples (800), skipped %h, N %0d, regs %0d/%0d/%0d, peaks %0d/%0d",
+               sy1 - sy0, fa1 - fa0, fb1 - fb0, per, sk, n, w1, a2, ctl, pa, pb);
+      if (sy1 - sy0 < 40 || (fa1 - fa0) - (sy1 - sy0) + 1 > 2 || (fb1 - fb0) - (sy1 - sy0) + 1 > 2
+          || per != 800 || sk != 0 || n != 256 || w1 != 40 || a2 != 160 || ctl != 1
+          || pa != 37 || pb != 100)
+        $display("ERR FRAMING");
+      wr(32'h1001c8, 0);                                    // free-running again
+      ext_on = 0;
+      repeat (100) @(posedge sclk);
+      rd(32'h60, fa0);  repeat (200) @(posedge sclk);  rd(32'h60, fa1);
+      $display("FRAMING off: %0d frames in 200 bus clocks (free-running: 2 us / 102.4 ns = ~19.5)", fa1 - fa0);
+      if (fa1 - fa0 < 18) $display("ERR FRAMING off");
     end
     // the raw capture (the clock meters need a 1 ms gate, 210k bus clocks of
     // simulation: they are checked on the board, rf_loopback.py)

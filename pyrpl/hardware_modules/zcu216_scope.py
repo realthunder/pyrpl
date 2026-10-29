@@ -19,16 +19,20 @@ registers and acquisition flow, with the trace in DDR instead of block RAM.
 
 The registers sit in the upper half of FPGA slot 1 (client 0x4030_0000); the
 lower half is the FFT block (fpga/rtl/zcu216_fft_test.sv), which this module
-also drives for the lidar's FPGA FFT mode: a 2**18-point real FFT of an
-RF-ADC channel at the full 2.5 GS/s (not the scope's decimated rate), framed
-free-running (not on the chirp yet), one magnitude frame per trace fetched
-through a frame snapshot into DDR (fft_frame).
+also drives for the lidar's FPGA FFT mode: a real FFT of an RF-ADC channel at
+the full 2.5 GS/s (not the scope's decimated rate), one magnitude frame per
+trace and channel fetched through a frame snapshot into DDR (fft_frame).
+Bitstreams with chirp framing (lidar/docs/Zcu216ChirpFft.md) start the frames
+on the laser's chirp sync: channel 0 transforms the up window, channel 1 the
+down window, set with the Red Pitaya scope's fft window registers
+(fft_wait1_cnt .. fft_acq2_cnt, fft_trig_delay: here in ADC samples) and
+fft_framing; older ones frame free-running.
 """
 import numpy as np
 
 from .scope import Scope, DecimationRegister
 from ..attributes import SelectProperty, SelectRegister, IntRegister, \
-    BoolProperty, IntProperty
+    BoolProperty, IntProperty, BoolRegister
 from ..pyrpl_utils import sorted_dict, time
 
 # monitor_server's memory window: client address <-> physical address
@@ -216,6 +220,36 @@ class Zcu216Scope(Scope):
         lg = self._fft_id()[0]
         return 1 << lg if lg else 0
 
+    # chirp framing (zcu216_fft_frame); fft_wait1_cnt .. fft_acq2_cnt (0x58 ..
+    # 0x64) and fft_trig_delay (0x1A0) are the inherited Scope registers, in
+    # ADC samples here
+    fft_framing = BoolRegister(0x1C8, 0, doc="FFT frames start on the laser's "
+                               "chirp sync (external input): channel 0 the up "
+                               "window, channel 1 the down window")
+    fft_sync_falling = BoolRegister(0x1C8, 1, doc="chirp sync on the external "
+                                    "input's falling edge (else rising)")
+    fft_syncs = IntRegister(0x1CC, doc="chirp syncs seen")
+    fft_sync_period = IntRegister(0x1D0, doc="ADC samples between the last two "
+                                  "chirp syncs")
+    _fft_skipped = IntRegister(0x1D4, doc="frames skipped (engine busy): [15:0] "
+                               "up, [31:16] down")
+    _fft_len_reg = IntRegister(0x8C, doc="FFT length; 0 on bitstreams without "
+                               "chirp framing")
+
+    @property
+    def fft_framing_available(self):
+        """the bitstream frames on the chirp sync (read once)"""
+        v = getattr(self, '_fft_framing_cache', None)
+        if v is None:
+            v = self._fft_framing_cache = int(self._fft_len_reg) != 0
+        return v
+
+    @property
+    def fft_skipped(self):
+        """(up, down) frames skipped since reset: the engine was busy"""
+        v = int(self._fft_skipped)
+        return v & 0xFFFF, v >> 16
+
     @property
     def fft_sample_time(self):
         """the FFT's sample period [s]: the RF-ADC rate, not decimated"""
@@ -261,14 +295,20 @@ class Zcu216Scope(Scope):
 
     @property
     def _fftdata(self):
-        """the lidar's FPGA-mode rows (down, up): a free-running frame is
-        not split into the chirp's halves yet, so the whole spectrum is the
-        up row and the down row is empty"""
+        """the lidar's FPGA-mode rows (down, up): with chirp framing channel
+        1's and channel 0's frames; free-running frames are not split into
+        the chirp's halves, so the whole spectrum is the up row and the down
+        row is empty"""
+        n = self.fft_length // 2
         up = self.fft_frame(0)
         if up is None:
-            n = self.fft_length // 2
             up = np.zeros(n)
-        return [np.zeros_like(up), up]
+        down = None
+        if self.fft_framing_available and self.fft_framing:
+            down = self.fft_frame(1)
+        if down is None:
+            down = np.zeros_like(up)
+        return [down, up]
 
     def _start_trace_acquisition(self):
         """Scope._start_trace_acquisition without the FFT point stream"""

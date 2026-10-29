@@ -4,6 +4,7 @@
 #   tb_points  zcu216_points: the point stream into a DDR ring, against a model
 #   tb_scope   zcu216_scope through its own writer: triggered traces, free run
 #   tb_axi_slave  axi_slave (the PS register bus) under back-to-back writes
+#   tb_fft_frame  zcu216_fft_frame: chirp framing against a model of the dit8 input
 # Usage: sim/zcu216/run_unit.sh tb_snap   (from fpga/)
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
@@ -14,6 +15,7 @@ case $tb in
   tb_points) rtl="zcu216_points.sv" ;;
   tb_scope) rtl="zcu216_scope.sv zcu216_snap.sv" ;;   # the writer is zcu216_snap_wr
   tb_axi_slave) rtl="axi_slave.v" ;;
+  tb_fft_frame) rtl="zcu216_fft_frame.sv" ;;
   *) echo "unknown testbench $tb"; exit 1 ;;
 esac
 work="$here/work/$tb"
@@ -24,4 +26,4 @@ xvlog -sv $(for f in $rtl; do echo "$fpga/rtl/$f"; done) "$here/$tb.sv" > xvlog.
     || { grep -E "ERROR|WARNING" xvlog.log; exit 1; }
 xelab -debug off --timescale 1ns/1ps $tb -s $tb > xelab.log 2>&1 || { grep -E "ERROR" xelab.log; exit 1; }
 xsim $tb -R > xsim.log 2>&1 || { tail -20 xsim.log; exit 1; }
-grep -E "^(SNAP|POINTS|SCOPE|AXI|ERR)|^  |Error|Fatal" xsim.log || true
+grep -E "^(SNAP|POINTS|SCOPE|AXI|FRAME|ERR)|^  |Error|Fatal" xsim.log || true
