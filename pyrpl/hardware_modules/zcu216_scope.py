@@ -18,7 +18,11 @@ registers and acquisition flow, with the trace in DDR instead of block RAM.
   triggers on this board).
 
 The registers sit in the upper half of FPGA slot 1 (client 0x4030_0000); the
-lower half is the FFT block.
+lower half is the FFT block (fpga/rtl/zcu216_fft_test.sv), which this module
+also drives for the lidar's FPGA FFT mode: a 2**18-point real FFT of an
+RF-ADC channel at the full 2.5 GS/s (not the scope's decimated rate), framed
+free-running (not on the chirp yet), one magnitude frame per trace fetched
+through a frame snapshot into DDR (fft_frame).
 """
 import numpy as np
 
@@ -30,6 +34,12 @@ from ..pyrpl_utils import sorted_dict, time
 # monitor_server's memory window: client address <-> physical address
 MEM_WIN_CLIENT = 0x48000000
 MEM_WIN_PHYS = 0x1E000000
+
+# the FFT block (lower half of slot 1) and its frame snapshot registers
+FFT_BASE = 0x40200000
+FFT_SNAP = FFT_BASE + 0x140
+FFT_CORDIC_K = 1.64676                    # zcu216_fft_mag: mag = K |X| / 2
+FFT_IN_W, FFT_DW = 14, 27                 # input bits, the cores' output cut
 
 
 class Zcu216Scope(Scope):
@@ -187,6 +197,78 @@ class Zcu216Scope(Scope):
         if self.ch2_active:
             datas[1] = ch2 / 2 ** 13
         return times, datas
+
+    # ---- the FFT block (FPGA FFT mode) -----------------------------------
+
+    def _fft_id(self):
+        """(log2 N, channels) of the FFT block, read once; (0, 0) without one"""
+        v = getattr(self, '_fft_id_cache', None)
+        if v is None:
+            w = int(self._client.reads(FFT_BASE, 1)[0])
+            v = ((w >> 8) & 0xFF, w & 0xFF) if w >> 16 == 0xF0F6 else (0, 0)
+            self._fft_id_cache = v
+        return v
+
+    @property
+    def fft_length(self):
+        """the FFT block's transform length (real input; fft_length / 2
+        bins), 0 without one"""
+        lg = self._fft_id()[0]
+        return 1 << lg if lg else 0
+
+    @property
+    def fft_sample_time(self):
+        """the FFT's sample period [s]: the RF-ADC rate, not decimated"""
+        return self._base_sampling_time
+
+    def fft_setup(self, ch, source):
+        """FFT channel ch transforms `source`, a scope input name ('adc0' ..
+        'adc3'; anything else: its tone generator), and the block runs"""
+        src = {'adc0': 1, 'adc1': 2, 'adc2': 3, 'adc3': 4}.get(source, 0)
+        self._client.writes(FFT_BASE + 0x54 + 0x40 * ch, [src])
+        self._client.writes(FFT_BASE + 0x04, [1])
+
+    def fft_frame(self, ch=0, timeout=0.5):
+        """One whole frame of FFT channel ch's magnitudes (fft_length / 2
+        bins, natural order), as the amplitude of each bin: a tone of
+        amplitude A (full scale 1) reads A / 2, as the lidar's normalized
+        host FFT. A frame snapshot into the reserved DDR (taken at the next
+        frame start), fetched in one bulk read. None if it did not finish."""
+        c = self._client
+        st = int(c.reads(FFT_SNAP + 0x0C, 1)[0])
+        if st & 1:                                  # a capture still pending
+            c.writes(FFT_SNAP + 0x00, [0x80000000])     # drop it
+        c.writes(FFT_SNAP + 0x04, [ch & 3])         # |X| of channel ch
+        c.writes(FFT_SNAP + 0x08, [1])              # one frame
+        c.writes(FFT_SNAP + 0x00, [1])              # arm
+        t0 = time()
+        while int(c.reads(FFT_SNAP + 0x0C, 1)[0]) & 1:
+            if time() - t0 > timeout:
+                self._logger.warning("FFT frame snapshot not done after %g s", timeout)
+                return None
+        base = int(c.reads(FFT_SNAP + 0x14, 1)[0])
+        nbytes = int(c.reads(FFT_SNAP + 0x18, 1)[0])
+        d = c.bulk(MEM_WIN_CLIENT + base - MEM_WIN_PHYS, nbytes)
+        if d is None:
+            return None
+        mag = np.frombuffer(bytes(d), dtype='<u4').astype(float)
+        # mag = K |X'| / 2, X' = X / 2**cut (the sub-FFT outputs cut to FFT_DW
+        # bits); |X| of a tone of amplitude A (2**13 = full scale) is
+        # A 2**13 N / 2
+        lg = self._fft_id()[0]
+        cut = max(0, FFT_IN_W + (lg - 3) - FFT_DW)
+        return mag * (2.0 * 2 ** cut / FFT_CORDIC_K / 2 ** 13 / (1 << lg))
+
+    @property
+    def _fftdata(self):
+        """the lidar's FPGA-mode rows (down, up): a free-running frame is
+        not split into the chirp's halves yet, so the whole spectrum is the
+        up row and the down row is empty"""
+        up = self.fft_frame(0)
+        if up is None:
+            n = self.fft_length // 2
+            up = np.zeros(n)
+        return [np.zeros_like(up), up]
 
     def _start_trace_acquisition(self):
         """Scope._start_trace_acquisition without the FFT point stream"""
