@@ -91,7 +91,7 @@ class FloatingTitleBar(QtWidgets.QWidget):
     """
     Title bar shown while the dock widget is floating. Provides an explicit
     "Dock" button because drag-docking is impossible on some platforms
-    (e.g. Wayland under WSL).
+    (e.g. Wayland under WSL); on the others dragging it docks as usual.
     """
     def __init__(self, dock_widget):
         super(FloatingTitleBar, self).__init__(dock_widget)
@@ -120,9 +120,13 @@ class FloatingTitleBar(QtWidgets.QWidget):
         layout.addWidget(self.close_button)
 
     def mousePressEvent(self, event):
-        # allow moving the floating window by dragging the title bar
-        # (startSystemMove is the only way that works on Wayland)
-        if event.button() == QtCore.Qt.LeftButton:
+        # Wayland: the compositor moves the window (startSystemMove is the only
+        # way that works there, and drag-docking cannot). Elsewhere the press
+        # is ignored, so it reaches the QDockWidget, whose own drag moves the
+        # window and docks it over the main window; a system move would take
+        # the drag away from Qt (and WSLg's X11 window manager ignores it).
+        if event.button() == QtCore.Qt.LeftButton and \
+                QtWidgets.QApplication.platformName() == 'wayland':
             window = self.dock_widget.windowHandle()
             if window is not None and hasattr(window, 'startSystemMove'):
                 window.startSystemMove()
