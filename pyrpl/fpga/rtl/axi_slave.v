@@ -130,6 +130,8 @@ reg   [ AXI_IW-1: 0] wr_wid      ;
 reg   [ AXI_DW-1: 0] wr_wdata    ;
 reg                  wr_error    ;
 wire                 wr_errorw   ;
+reg                  wr_wtaken   ;  // this write's data beat is in
+wire                 wr_wtake    ;  // ... and comes in now
 
 assign wr_errorw = (axi_awlen_i != 4'h0) || (axi_awsize_i != 3'b010); // error if write burst and more/less than 4B transfer
 assign rd_errorw = (axi_arlen_i != 4'h0) || (axi_arsize_i != 3'b010); // error if read burst and more/less than 4B transfer
@@ -155,6 +157,7 @@ always @(posedge axi_clk_i)
 if (axi_rstn_i == 1'b0) begin
    wr_do    <= 1'b0 ;
    wr_error <= 1'b0 ;
+   wr_wtaken <= 1'b0 ;
 end else begin
    if (axi_awvalid_i && !wr_do && !rd_do) // accept just one write request - if idle
       wr_do  <= 1'b1 ;
@@ -165,14 +168,24 @@ end else begin
       wr_awaddr <= axi_awaddr_i ;
       wr_error  <= wr_errorw    ;
    end
-   if (axi_wvalid_i && wr_do) begin // latch ID and write data
+   // exactly ONE data beat per write: a core with several device writes in
+   // flight (the ZynqMP's) offers the next write's beat while this one still
+   // waits for its ack; taking it too overwrote wr_wdata, wrote it to this
+   // address a second time, and left the next write without data, so no ack:
+   // a timeout SLVERR, which the PS turns into an SError (the kernel stops)
+   if (axi_awvalid_i && axi_awready_o)
+      wr_wtaken <= 1'b0 ;
+   else if (wr_wtake)
+      wr_wtaken <= 1'b1 ;
+   if (wr_wtake) begin // latch ID and write data
       wr_wid    <= axi_wid_i    ;
       wr_wdata  <= axi_wdata_i  ;
    end
 end
 
+assign wr_wtake      = wr_do && !wr_wtaken && axi_wvalid_i  ;
 assign axi_awready_o = !wr_do && !rd_do                      ;
-assign axi_wready_o  = (wr_do && axi_wvalid_i) || (wr_errorw && axi_wvalid_i)    ;
+assign axi_wready_o  = wr_wtake || (wr_errorw && axi_wvalid_i)    ;
 assign axi_bid_o     = wr_awid                               ;
 
 assign axi_arready_o = !rd_do && !wr_do && !axi_awvalid_i     ;
@@ -239,7 +252,7 @@ if (axi_rstn_i == 1'b0) begin
    sys_ren_o  <= 1'b0 ;
    sys_sel_o  <= {AXI_SW{1'b0}} ;
 end else begin
-   sys_wen_d  <= wr_do && axi_wvalid_i && !wr_errorw ;  // 1st cycle: wr_wdata settling
+   sys_wen_d  <= wr_wtake && !wr_errorw ;               // 1st cycle: wr_wdata settling
    sys_wen_o  <= sys_wen_d ;                            // 2nd cycle: peripheral captures
    sys_ren_o  <= axi_arvalid_i && axi_arready_o && !rd_errorw ;
    sys_sel_o  <= {AXI_SW{1'b1}} ;
