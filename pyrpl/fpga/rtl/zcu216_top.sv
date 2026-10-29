@@ -13,7 +13,10 @@
  *                        S_AXI_HP3, the point stream through S_AXI_HPC0 (a
  *                        few hundred KB/s), all on fclk)
  *   slot 2  0x8040_0000  RF Data Converter registers (AXI4-Lite, 256 KB)  [RF]
- *   slot 3-7             not built yet: reads return 0, writes are ignored
+ *   slot 4  0x8080_0000  ASG (red_pitaya_asg, the Red Pitaya's slot-2 registers):
+ *                        four channels on the bus clock (100 MS/s), no DAC; the
+ *                        scope sees them as inputs 8-11 [RF]
+ *   slot 3, 5-7          not built yet: reads return 0, writes are ignored
  *
  * [RF] (define ZCU216_RF, set by zcu216_vivado.tcl unless FFT_IMPL=0): the RF
  * Data Converter (ip/rfdc_zcu216.tcl: ADC tile 224 and DAC tile 228 at 2.5 GS/s)
@@ -353,9 +356,11 @@ assign ps_sys_ack   = |(sys_cs & sys_ack);
 
 generate
 for (genvar i = 3; i < 8; i++) begin : g_empty_slot
-  assign sys_rdata[i*32+:32] = 32'h0;
-  assign sys_err  [i       ] = 1'b0;
-  assign sys_ack  [i       ] = 1'b1;
+  if (i != 4) begin : g_slot
+    assign sys_rdata[i*32+:32] = 32'h0;
+    assign sys_err  [i       ] = 1'b0;
+    assign sys_ack  [i       ] = 1'b1;
+  end
 end
 endgenerate
 
@@ -381,11 +386,12 @@ end
 
 // hk capabilities (red_pitaya_hk.v 0x48..0x5C): RF-ADC/DAC 2.5 GS/s, 14 bits,
 // four channels each (ADC tile 224, DAC tile 228); the bus runs on pl_clk0.
-// Modules: the scope (DDR ring) and the RF FFT block, or none in a shell image.
+// Modules: asg0-3 always; the scope (DDR ring) and the RF FFT block with RF.
+localparam logic [31:0] HK_ASG = 32'hF << 3;
 `ifdef ZCU216_RF
-localparam logic [31:0] HK_MODULES = (32'h1 << 1) | (32'h1 << 26) | (32'h1 << 27);
+localparam logic [31:0] HK_MODULES = HK_ASG | (32'h1 << 1) | (32'h1 << 26) | (32'h1 << 27);
 `else
-localparam logic [31:0] HK_MODULES = 32'h0;
+localparam logic [31:0] HK_MODULES = HK_ASG;
 `endif
 
 red_pitaya_hk #(
@@ -420,6 +426,49 @@ red_pitaya_hk #(
   .sys_rdata     (sys_rdata[0*32+:32]),
   .sys_err       (sys_err[0]        ),
   .sys_ack       (sys_ack[0]        )
+);
+
+////////////////////////////////////////////////////////////////////////////////
+// arbitrary signal generator (slot 4)
+////////////////////////////////////////////////////////////////////////////////
+
+// red_pitaya_asg as on the Red Pitaya: four channels, 16k-sample tables, the
+// same registers (Red Pitaya slot 2, here slot 4: slot 2 is the RF Data
+// Converter). It runs on the bus clock, so 100 MS/s against the Red Pitaya's
+// 125 (hk 0x54 tells pyrpl). No DAC: its outputs only reach the scope, as
+// inputs 8-11. The external trigger is PMOD0_0, as DIO0_P is on the Red Pitaya.
+logic [13:0] asg_out [4];
+
+red_pitaya_asg i_asg (
+  .dac_a_o       (asg_out[0]          ),
+  .dac_b_o       (asg_out[1]          ),
+  .dac_c_o       (asg_out[2]          ),
+  .dac_d_o       (asg_out[3]          ),
+  .dac_clk_i     (sys_clk             ),
+  .dac_rstn_i    (sys_rstn            ),
+  .trig_a_i      (exp_p_s[0]          ),
+  .trig_b_i      (exp_p_s[0]          ),
+  .trig_c_i      (exp_p_s[0]          ),
+  .trig_d_i      (exp_p_s[0]          ),
+  .trig_enc_i    (1'b0                ),
+  .trig_out_o    (                    ),
+  .play_active_o (                    ),
+  .trig_scope_i  (1'b0                ),
+  .scope_trig_i  (1'b0                ),
+  .sync_rst_o    (                    ),
+  .asg1phase_o   (                    ),
+  .step_a_o      (                    ),
+  .step_b_o      (                    ),
+  .step_c_o      (                    ),
+  .step_d_o      (                    ),
+  .sys_addr      (ps_sys_addr         ),
+  .sys_wdata     (ps_sys_wdata        ),
+  .sys_sel       (ps_sys_sel          ),
+  .sys_wen       (sys_wen[4]          ),
+  .sys_ren       (sys_ren[4]          ),
+  .sys_rdata     (sys_rdata[4*32+:32] ),
+  .sys_err       (sys_err[4]          ),
+  .sys_ack       (sys_ack[4]          )
 );
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -479,6 +528,10 @@ always_ff @(posedge fclk or negedge locked)
   if (!locked) frst_s <= '0;
   else         frst_s <= {frst_s[1:0], sys_rstn};
 always_ff @(posedge fclk) frstn <= frst_s[2];
+
+// ASG samples into fclk for the scope (inputs 8-11)
+logic [13:0] asg_f [4];
+zcu216_asg_cdc i_asg_cdc (.sys_clk (sys_clk), .din (asg_out), .fclk (fclk), .dout (asg_f));
 
 // RF Data Converter: AXI4-Lite from slot 2, streams on fclk
 logic [17:0]  rf_awaddr, rf_araddr;
@@ -586,6 +639,7 @@ zcu216_fft_test #(
   .spi_sdo_sel (spi_sdo_sel        ),
   .meas_clk    (meas_clk           ),
   .ext_trig    (exp_p_in[0]        ),  // PMOD0_0 (J46 pin 1), the scope trigger 6/7
+  .asg_data    (asg_f              ),  // ASG channels 0-3, scope inputs 8-11
   .hp_awaddr, .hp_awlen, .hp_awsize, .hp_awburst, .hp_awcache, .hp_awprot,
   .hp_awvalid, .hp_awready, .hp_wdata, .hp_wstrb, .hp_wlast, .hp_wvalid,
   .hp_wready, .hp_bresp, .hp_bvalid, .hp_bready,

@@ -82,9 +82,13 @@ proc read_bd_wrapper {name} {
 
 read_bd_wrapper system_zcu216
 
-# Shared with the Red Pitaya build: the AXI-to-system-bus bridge and hk.
+# Shared with the Red Pitaya build: the AXI-to-system-bus bridge, hk and the ASG.
 read_verilog                      $path_rtl/axi_slave.v
 read_verilog                      $path_rtl/red_pitaya_hk.v
+read_verilog                      $path_rtl/red_pitaya_asg.v
+read_verilog                      $path_rtl/red_pitaya_asg_ch.v
+read_verilog                      $path_rtl/red_pitaya_adv_trigger.v
+read_verilog                      $path_rtl/red_pitaya_prng.v
 read_verilog -sv                  $path_rtl/zcu216_top.sv
 
 if {$fft_en} {
@@ -133,6 +137,7 @@ if {$fft_en} {
     read_verilog -sv              $path_rtl/zcu216_snap.sv
     read_verilog -sv              $path_rtl/zcu216_points.sv
     read_verilog -sv              $path_rtl/zcu216_scope.sv
+    read_verilog -sv              $path_rtl/zcu216_asg_cdc.sv
     read_verilog -sv              $path_rtl/zcu216_fft_test.sv
 }
 

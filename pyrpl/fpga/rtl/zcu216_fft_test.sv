@@ -78,8 +78,9 @@
  *             +0x1e8 RO ring length (samples)   +0x1ec RO {bits, channels, samples per
  *                   channel per 16-byte word} = [23:16], [15:8], [7:0]
  *             +0x1f0 / +0x1f4 input of channel 1 / 2: 0-3 RF-ADC tile 224 channel 0-3,
- *                   4 + c the input of FFT channel c   +0x1f8 RO recommended minimum
- *                   decimation
+ *                   4 + c the input of FFT channel c, 8-11 ASG channel 0-3 (the
+ *                   Red Pitaya ASG in slot 4, 100 MS/s, each sample held over
+ *                   the 2.5 GS/s beats)   +0x1f8 RO recommended minimum decimation
  *             +0x1fc RO sample period (ps) before decimation
  *             The trace goes to DDR through two ports of its own (S_AXI_HP3, S_AXI_HP2).
  *   0x80000 + 4*i: RO raw ADC capture, beat i/4, 32-bit part i%4 (samples 2(i%4), +1)
@@ -126,6 +127,7 @@ module zcu216_fft_test #(
   // clocks to measure (debug)
   input  logic [3:0]   meas_clk,
   input  logic         ext_trig,             // scope external trigger (async, PMOD0_0)
+  input  logic [13:0]  asg_data [4],         // ASG channels 0-3 (fclk, latest sample)
   // snapshot DMA: two AXI4 write masters on fclk (S_AXI_HP0/HP1)
   output logic [48:0]  hp_awaddr  [2],
   output logic [7:0]   hp_awlen   [2],
@@ -232,7 +234,7 @@ logic [3:0]    sc_src;
 logic [13:0]   sc_thr, sc_hyst;
 logic [31:0]   sc_dly;
 logic [16:0]   sc_dec;
-logic [2:0]    sc_in [2];
+logic [3:0]    sc_in [2];
 logic [63:0]   s_sc_st;                         // status from fclk (see below)
 // point stream
 logic          pt_en;
@@ -457,7 +459,7 @@ always_ff @(posedge sys_clk)
     sc_thr   <= '0;    sc_hyst  <= 14'd20;
     sc_dly   <= 32'(SC_L / 2);
     sc_dec   <= 17'(SC_MIN_DEC);
-    sc_in    <= '{3'd0, 3'd1};
+    sc_in    <= '{4'd0, 4'd1};
   end else if (sys_wen && sys_addr[20])
     case (a)
       20'h00000: begin
@@ -471,8 +473,8 @@ always_ff @(posedge sys_clk)
       20'h00014: sc_dec  <= (sys_wdata < 2) ? 17'd2 : sys_wdata[16:0];
       20'h00020: sc_hyst <= sys_wdata[13:0];
       20'h00028: sc_avg  <= sys_wdata[0];
-      20'h001f0: sc_in[0] <= sys_wdata[2:0];
-      20'h001f4: sc_in[1] <= sys_wdata[2:0];
+      20'h001f0: sc_in[0] <= sys_wdata[3:0];
+      20'h001f4: sc_in[1] <= sys_wdata[3:0];
       default: ;
     endcase
 
@@ -825,9 +827,10 @@ logic [3:0]    f_sc_src;
 logic [13:0]   f_sc_thr, f_sc_hyst;
 logic [31:0]   f_sc_dly;
 logic [16:0]   f_sc_dec;
-logic [2:0]    f_sc_in [2];
+logic [3:0]    f_sc_in [2];
 logic [127:0]  sc_x [2], sc_xr [2];
-logic [127:0]  sc_in_q [0:3+NCH];              // every input, registered (RF-ADC, FFT inputs)
+logic [127:0]  sc_in_q [0:11];                 // every input, registered: RF-ADC 0-3,
+                                               // FFT inputs 4.., ASG 8-11
 logic          f_sc_writing, f_sc_dly_do, f_sc_pre, f_sc_arm_ack, f_sc_rst_ack;
 logic          f_sc_ovf, f_sc_err;
 logic [3:0]    f_sc_trig;
@@ -839,7 +842,7 @@ logic [3:0]    m_sc_src;
 logic [13:0]   m_sc_thr, m_sc_hyst;
 logic [31:0]   m_sc_dly;
 logic [16:0]   m_sc_dec;
-logic [2:0]    m_sc_in [2];
+logic [3:0]    m_sc_in [2];
 always_ff @(posedge fclk) begin
   {f_sc_arm, sc_arm_m}     <= {sc_arm_m, sc_arm_t};
   {f_sc_rst, sc_rst_m}     <= {sc_rst_m, sc_rst_t};
@@ -865,8 +868,13 @@ always_ff @(posedge fclk) begin
       sc_in_q[i][16*j +: 16] <= 16'($signed(adc_data[i][16*j +: 16]) >>> 2);
   for (int c = 0; c < NCH; c++)
     sc_in_q[4 + c] <= sn_data[NCH + c];
+  for (int c = NCH; c < 4; c++)
+    sc_in_q[4 + c] <= '0;
+  // the ASG's 14-bit sample, sign-extended, on all eight lanes of the beat
+  for (int c = 0; c < 4; c++)
+    sc_in_q[8 + c] <= {8{16'($signed(asg_data[c]))}};
   for (int c = 0; c < 2; c++) begin
-    sc_x[c]  <= (32'(f_sc_in[c]) < 4 + NCH) ? sc_in_q[f_sc_in[c]] : '0;
+    sc_x[c]  <= (f_sc_in[c] < 4'd12) ? sc_in_q[f_sc_in[c]] : '0;
     sc_xr[c] <= sc_x[c];
   end
 end

@@ -13,6 +13,8 @@ module tb_test;
   logic         dac_valid;
   logic [1:0]   sdo_sel;
   always_ff @(posedge fclk) for (int i = 0; i < 4; i++) adc_data[i] <= dac_data;
+  // the ASG (red_pitaya_asg + zcu216_asg_cdc in zcu216_top): constants here
+  logic [13:0]  asg_data [4] = '{14'(1234), 14'(-2000), 14'(77), 14'(-1)};
 
   // DDR behind the two snapshot ports: always ready, OKAY responses
   logic [48:0]  hp_awaddr [2];
@@ -48,7 +50,7 @@ module tb_test;
     .sys_clk(sclk), .sys_rstn(srstn), .sys_addr, .sys_wdata, .sys_wen, .sys_ren,
     .sys_rdata, .sys_err, .sys_ack, .fclk, .frstn, .flocked(1'b1),
     .adc_data, .adc_valid(4'hf), .dac_data, .dac_valid, .spi_sdo_sel(sdo_sel),
-    .meas_clk({fclk, sclk, fclk, sclk}), .ext_trig(1'b0),
+    .meas_clk({fclk, sclk, fclk, sclk}), .ext_trig(1'b0), .asg_data,
     .hp_awaddr, .hp_awlen, .hp_awsize, .hp_awburst, .hp_awcache, .hp_awprot,
     .hp_awvalid, .hp_awready, .hp_wdata, .hp_wstrb, .hp_wlast, .hp_wvalid,
     .hp_wready, .hp_bresp, .hp_bvalid, .hp_bready,
@@ -253,6 +255,29 @@ module tb_test;
                ln, rl, base, fmt, wt, v, y[ln - dl], y[ln - dl - 1], zc, y2max, bad);
       if (bad || v != 0 || !(y[ln - dl] >= 0 && y[ln - dl - 1] < 0) || zc < 570 || zc > 610 || y2max < 1000)
         $display("ERR SCOPE");
+    end
+    // scope inputs 8/9 = ASG channels 0/1: every sample of the trace is theirs
+    begin
+      logic [31:0] st, wt, dl, base, rl, ln;
+      int bad1 = 0, bad2 = 0;
+      rd(32'h1001e0, ln); rd(32'h1001e4, base); rd(32'h1001e8, rl);
+      wr(32'h1001f0, 8);  wr(32'h1001f4, 9);
+      rd(32'h1001f0, v);
+      wr(32'h100000, 2);                                    // reset
+      wr(32'h100010, ln);
+      wr(32'h100000, 1);                                    // arm
+      wr(32'h100004, 1);                                    // now
+      do rd(32'h100000, st); while (st[0] || st[2]);
+      rd(32'h10001c, wt);  rd(32'h100010, dl);
+      for (int i = 0; i < ln; i++) begin
+        int k = (int'(wt + dl) - int'(ln) + 1 + i + int'(rl)) % int'(rl);
+        logic [127:0] w = ddr[40'(base) + 40'(16 * (k / 4))];
+        if ($signed(w[16 * (k % 4) +: 16]) != 1234) bad1++;
+        if ($signed(w[64 + 16 * (k % 4) +: 16]) != -2000) bad2++;
+      end
+      $display("SCOPE ASG input1 reads back %0d: %0d samples, ch1 != 1234: %0d, ch2 != -2000: %0d",
+               v, ln, bad1, bad2);
+      if (v != 8 || bad1 || bad2) $display("ERR SCOPE ASG");
     end
     // the raw capture (the clock meters need a 1 ms gate, 210k bus clocks of
     // simulation: they are checked on the board, rf_loopback.py)
