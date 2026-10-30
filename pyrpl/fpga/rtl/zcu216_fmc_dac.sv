@@ -35,7 +35,9 @@ module zcu216_fmc_dac (
   output logic [3:0]  fmc_dac_wrt
 );
 
-(* IOB = "TRUE" *) logic [55:0] db_q = '0;
+// mid-scale (0 V) from configuration on, so the first WRT edges latch 0 V and
+// not the most negative code
+(* IOB = "TRUE" *) logic [55:0] db_q = {4{14'h2000}};
 
 always_ff @(posedge clk)
   for (int c = 0; c < 4; c++)
