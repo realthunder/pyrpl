@@ -284,6 +284,25 @@ def test_bulk_timeout_drops_the_link():
     srv.close()
 
 
+def test_bulk_timeout_reconnects_without_restartserver():
+    """The ZCU216's client has no restartserver: the dropped socket must still
+    be replaced (socket-only reconnect), not left closed for good."""
+    srv, port, stop = _accepting_server(bulk_pause=1.0)
+    healed = {'n': 0}
+    c = MonitorClient('127.0.0.1', port, restartserver=None,
+                      reconnect_retries=5, connect_timeout=0.3,
+                      on_reconnected=lambda: healed.update(n=healed['n'] + 1))
+    c.BULK_IDLE_TIMEOUT = 0.3
+    assert c.bulk(0x48000000, 64 << 10) is None
+    deadline = time.time() + 10
+    while healed['n'] == 0 and time.time() < deadline:
+        time.sleep(0.02)
+    assert healed['n'] == 1, "no reconnect without a restartserver"
+    assert list(c.reads(0x40000000, 2)) == [0, 0]
+    stop.set()
+    srv.close()
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:

@@ -394,7 +394,11 @@ class MonitorClient(object):
                                      self.client_number,
                                      str(e) or e.__class__.__name__))
                 self._drop_socket()
-                if self._async_reconnect_mode() and self._restartserver is not None:
+                # (the reconnect needs only the host and port: also without a
+                # restartserver, as on the ZCU216, whose closed socket was
+                # otherwise never replaced - 2026-10-30, every read after one
+                # bulk timeout failed with EBADF until the app was closed)
+                if self._async_reconnect_mode():
                     # GUI/observed mode: do NOT reconnect inline — that would
                     # block this (often GUI) thread on socket/SSH timeouts and
                     # freeze the app until the retry budget drains. Hand off to a
@@ -409,7 +413,7 @@ class MonitorClient(object):
                 if self._restartserver is not None:
                     if not self.restart():
                         return None
-                else:
+                elif not self._try_socket_reconnect():
                     return None
             else:
                 if value is not None:
@@ -420,11 +424,9 @@ class MonitorClient(object):
         """Start (once) a background daemon thread that reconnects the register
         link, so the calling thread never blocks. Idempotent: concurrent failing
         I/O calls from the GUI and the acquisition worker collapse into a single
-        reconnect. Returns True if a reconnect is in progress/started, False if
-        no reconnect is possible (no restartserver) or the link is already
+        reconnect. Socket-only: needs no restartserver. Returns True if a
+        reconnect is in progress/started, False if the link is already
         declared lost."""
-        if self._restartserver is None:
-            return False  # standalone/dummy client: nothing to reconnect to
         with self._reconnect_lock:
             if self._connection_lost:
                 return False
@@ -541,7 +543,9 @@ class MonitorClient(object):
             if attempt > 1:
                 self.close()
             try:
-                newport = port if port is not None else self._restartserver()
+                newport = port if port is not None else (
+                    self._restartserver() if self._restartserver is not None
+                    else self._port)
                 # A runtime reconnect runs on the GUI thread (the reconnect
                 # dialog's Retry): the link gets a couple of attempts, not
                 # the 20 of the initial bring-up, so a board that is off
