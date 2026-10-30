@@ -21,7 +21,7 @@ import numpy as np
 import socket
 import threading
 import logging
-from time import sleep
+from time import sleep, monotonic
 try:
     raise  # disable sound output for now
     from pysine import sine  # for debugging read/write calls
@@ -36,7 +36,19 @@ from .pyrpl_utils import time
 CLIENT_NUMBER = 0
 
 
+class LinkDesync(socket.error):
+    """A reply did not start with its command's header: the stream is out of
+    step (bytes of an earlier, abandoned reply), and the link must be dropped."""
+
+
 class MonitorClient(object):
+    # A reply that stops for IO_TIMEOUT s fails its command, and the link is
+    # dropped (try_n_times) so the rest of that reply is never read as the
+    # next one's. A reply read with a name (_recv_exact's what) that paused for
+    # STALL_LOG_S s is logged with its pause.
+    IO_TIMEOUT = 1.0
+    STALL_LOG_S = 0.3
+
     def __init__(self, hostname="192.168.1.0", port=2222, restartserver=None,
                  reconnect_retries=-1, on_connection_lost=None,
                  on_reconnected=None, connect_timeout=2.0,
@@ -153,7 +165,7 @@ class MonitorClient(object):
                 sleep(min(0.5 * (i + 1), 3.0))
                 continue
             # TCP is up; confirm the server round-trips before trusting the link.
-            self.socket.settimeout(1.0)
+            self.socket.settimeout(self.IO_TIMEOUT)
             if self._probe_link():
                 self._connected = True
                 break
@@ -174,7 +186,7 @@ class MonitorClient(object):
                               "%s:%s after %s attempt(s): %s",
                               self._hostname, self._port,
                               self._connect_attempts, last_reason)
-        self.socket.settimeout(1.0)  # 1 second timeout for socket operations
+        self.socket.settimeout(self.IO_TIMEOUT)
 
     def close(self):
         try:
@@ -210,6 +222,36 @@ class MonitorClient(object):
         with self._io_lock:
             return self.try_n_times(self._writes, addr, values)
     
+    def _recv_exact(self, n, what=None):
+        """The next n bytes of a reply. Raises socket.timeout when none arrive
+        for the socket's timeout, socket.error when the server closes; either
+        way the reply is incomplete and try_n_times drops the link. what:
+        a name for the reply, to log its longest pause and a timeout."""
+        buf = bytearray(n)
+        view, got = memoryview(buf), 0
+        t_last = monotonic()
+        gap, gap_at = 0.0, 0
+        while got < n:
+            try:
+                k = self.socket.recv_into(view[got:])
+            except socket.timeout:
+                if what:
+                    self.logger.error("%s: no data for %.1f s after %d of %d "
+                                      "bytes", what, monotonic() - t_last,
+                                      got, n)
+                raise
+            now = monotonic()
+            if now - t_last > gap:
+                gap, gap_at = now - t_last, got
+            t_last = now
+            if not k:
+                raise socket.error("monitor_server closed the connection")
+            got += k
+        if what and gap > self.STALL_LOG_S:
+            self.logger.warning("%s: paused %.2f s at byte %d of %d (a TCP "
+                                "retransmission wait?)", what, gap, gap_at, n)
+        return buf
+
     # the actual code
     def _reads(self, addr, length):
         if length > 65535:
@@ -222,15 +264,10 @@ class MonitorClient(object):
         # report the count, which we would otherwise discard — leaving the
         # server with a truncated frame and the link out of sync.
         self.socket.sendall(header)
-        data = self.socket.recv(length * 4 + 8)
-        while (len(data) < length * 4 + 8):
-            data += self.socket.recv(length * 4 - len(data) + 8)
-        if data[:8] == header:  # check for in-sync transmission
-            return np.frombuffer(data[8:], dtype=np.uint32)
-        else:  # error handling
-            self.logger.error("Wrong control sequence from server: %s", data[:8])
-            self.emptybuffer()
-            return None
+        data = bytes(self._recv_exact(length * 4 + 8))
+        if data[:8] != header:  # out of step: bytes of an abandoned reply
+            raise LinkDesync("wrong control sequence from server: %s" % data[:8])
+        return np.frombuffer(data[8:], dtype=np.uint32)
 
     def _writes(self, addr, values):
         values = values[:65535 - 2]
@@ -249,19 +286,25 @@ class MonitorClient(object):
         # sequence from server" on the next exchange).
         self.socket.sendall(header +
                             np.array(values, dtype=np.uint32).tobytes())
-        if self.socket.recv(8) == header:  # check for in-sync transmission
-            return True  # indicate successful write
-        else:  # error handling
-            self.logger.error("Error: wrong control sequence from server")
-            self.emptybuffer()
-            return None
+        reply = bytes(self._recv_exact(8))
+        if reply != header:  # out of step: bytes of an abandoned reply
+            raise LinkDesync("wrong control sequence from server: %s" % reply)
+        return True  # indicate successful write
 
-    def emptybuffer(self):
-        for i in range(100):
-            n = len(self.socket.recv(16384))
-            if (n <= 0):
-                return
-            self.logger.debug("Read %d bytes from socket...", n)
+    def _drop_socket(self):
+        """A reply was cut short or came out of step: the rest of it may still
+        arrive, and the next command would take those bytes for its own reply
+        (2026-10-30, ZCU216: a bulk read timed out, the next register reads
+        got FFT magnitudes as their header). Close the socket now, under the
+        I/O lock, so nothing reads it again; the reconnect opens a new one,
+        and the server ends this client's thread when its send fails."""
+        for f in (lambda: self.socket.shutdown(socket.SHUT_RDWR),
+                  self.socket.close):
+            try:
+                f()
+            except (socket.error, OSError):
+                pass
+        self._connected = False
 
     # A side-effect-free 1-word probe read used to confirm a reconnected socket
     # is actually being serviced. 0x40000000 is the FPGA housekeeping base (ID
@@ -291,13 +334,20 @@ class MonitorClient(object):
 
     def try_n_times(self, function, addr, value, n=5):
         for i in range(n):
+            # again under the I/O lock: a thread that passed reads()' check
+            # while another thread's command was failing must not use the
+            # socket that command left behind
+            if self._connection_lost or self._reconnecting.is_set():
+                return None
             try:
                 value = function(addr, value)
-            except (socket.timeout, socket.error):
+            except (socket.timeout, socket.error) as e:
                 self.logger.error("I/O error in %s attempt %s at addr %s "
-                                  "(client %s)."
+                                  "(client %s): %s"
                                   % (function.__name__, i, hex(addr),
-                                     self.client_number))
+                                     self.client_number,
+                                     str(e) or e.__class__.__name__))
+                self._drop_socket()
                 if self._async_reconnect_mode() and self._restartserver is not None:
                     # GUI/observed mode: do NOT reconnect inline — that would
                     # block this (often GUI) thread on socket/SSH timeouts and
@@ -318,8 +368,6 @@ class MonitorClient(object):
             else:
                 if value is not None:
                     return value
-                # value is None without an exception = a desync/empty read that
-                # emptybuffer() already handled; retry in-loop, no reconnect.
         return None
 
     def _schedule_reconnect(self):
@@ -354,7 +402,7 @@ class MonitorClient(object):
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(self._connect_timeout)
             s.connect((self._hostname, self._port))
-            s.settimeout(1.0)
+            s.settimeout(self.IO_TIMEOUT)
             self.socket = s
             # TCP connect can succeed against a server that hasn't re-accepted us
             # yet; require a real round-trip before declaring the link up.

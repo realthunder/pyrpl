@@ -36,12 +36,13 @@ def _recv_exact(conn, n):
     return buf
 
 
-def _accepting_server():
+def _accepting_server(stall_len=0, stall=0.0):
     """A fake monitor_server that speaks just enough of the register protocol to
     satisfy the client's probe read: for an 'r' header it echoes the 8-byte
     header followed by length*4 zero bytes. Stands in for a detached server that
-    survives a client drop (accepts successive connections). Returns
-    (srv_socket, port, stop_event)."""
+    survives a client drop (accepts successive connections). A read of exactly
+    stall_len words stops for stall s after half its data (a TCP retransmission
+    wait), then sends the rest. Returns (srv_socket, port, stop_event)."""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(('127.0.0.1', 0))
@@ -63,7 +64,13 @@ def _accepting_server():
             length = hdr[2] | (hdr[3] << 8)
             if hdr[0:1] == b'r':
                 try:
-                    conn.sendall(hdr + b'\x00' * (length * 4))
+                    if stall_len and length == stall_len:
+                        half = length * 2
+                        conn.sendall(hdr + b'\x00' * half)
+                        time.sleep(stall)
+                        conn.sendall(b'\x00' * (length * 4 - half))
+                    else:
+                        conn.sendall(hdr + b'\x00' * (length * 4))
                 except OSError:
                     break
             elif hdr[0:1] == b'c':
@@ -222,6 +229,28 @@ def test_reconnect_is_idempotent():
                if t.name == 'rp-reconnect') == 1, "more than one worker started"
     c._connection_lost = True  # let the infinite worker exit on next iteration
     holder.close()
+
+
+def test_read_cut_short_drops_the_link():
+    """A register reply that stops for longer than IO_TIMEOUT fails, and its
+    socket is closed at once: the rest of that reply must never be taken for
+    the next command's reply (the 'wrong control sequence' cascade). The
+    background reconnect then gives a link in step."""
+    srv, port, stop = _accepting_server(stall_len=4, stall=1.5)
+    healed = {'n': 0}
+    c = MonitorClient('127.0.0.1', port, restartserver=lambda: port,
+                      reconnect_retries=5, connect_timeout=0.3,
+                      on_reconnected=lambda: healed.update(n=healed['n'] + 1))
+    old = c.socket
+    assert c.reads(0x40000000, 4) is None
+    assert old.fileno() == -1, "the out-of-step socket was not closed"
+    deadline = time.time() + 10
+    while healed['n'] == 0 and time.time() < deadline:
+        time.sleep(0.02)
+    assert healed['n'] == 1 and c.socket is not old
+    assert list(c.reads(0x40000000, 3)) == [0, 0, 0]
+    stop.set()
+    srv.close()
 
 
 if __name__ == '__main__':
