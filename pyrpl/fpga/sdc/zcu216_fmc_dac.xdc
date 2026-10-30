@@ -84,12 +84,21 @@ set_property SLEW       MEDIUM   [get_ports {fmc_dac_db[*] fmc_dac_clk[*] fmc_da
 # ODDRE1) latches its 14 data bits. AD9767 setup 2.0 ns / hold 1.5 ns at WRT,
 # plus 1 ns for the shifters' channel-to-channel skew. The data leave from IOB
 # flops half a period before the WRT edge, so either side has ~2 ns to spare.
-for {set c 0} {$c < 4} {incr c} {
-    create_generated_clock -name fmc_dac_wrt$c -divide_by 1 -invert \
-        -source [get_pins "i_fmc_dac/g_ch\[$c\].i_wrt/C"] [get_ports "fmc_dac_wrt\[$c\]"]
-    set db [get_ports [lmap b {0 1 2 3 4 5 6 7 8 9 10 11 12 13} {format "fmc_dac_db\[%d\]" [expr {$c * 14 + $b}]}]]
-    set_output_delay -clock fmc_dac_wrt$c -max  3.0 $db
-    set_output_delay -clock fmc_dac_wrt$c -min -2.5 $db
-}
+create_generated_clock -name fmc_dac_wrt0 -divide_by 1 -invert \
+    -source [get_pins {i_fmc_dac/g_ch[0].i_wrt/C}] [get_ports {fmc_dac_wrt[0]}]
+set_output_delay -clock fmc_dac_wrt0 -max  3.0 [get_ports {fmc_dac_db[0] fmc_dac_db[1] fmc_dac_db[2] fmc_dac_db[3] fmc_dac_db[4] fmc_dac_db[5] fmc_dac_db[6] fmc_dac_db[7] fmc_dac_db[8] fmc_dac_db[9] fmc_dac_db[10] fmc_dac_db[11] fmc_dac_db[12] fmc_dac_db[13]}]
+set_output_delay -clock fmc_dac_wrt0 -min -2.5 [get_ports {fmc_dac_db[0] fmc_dac_db[1] fmc_dac_db[2] fmc_dac_db[3] fmc_dac_db[4] fmc_dac_db[5] fmc_dac_db[6] fmc_dac_db[7] fmc_dac_db[8] fmc_dac_db[9] fmc_dac_db[10] fmc_dac_db[11] fmc_dac_db[12] fmc_dac_db[13]}]
+create_generated_clock -name fmc_dac_wrt1 -divide_by 1 -invert \
+    -source [get_pins {i_fmc_dac/g_ch[1].i_wrt/C}] [get_ports {fmc_dac_wrt[1]}]
+set_output_delay -clock fmc_dac_wrt1 -max  3.0 [get_ports {fmc_dac_db[14] fmc_dac_db[15] fmc_dac_db[16] fmc_dac_db[17] fmc_dac_db[18] fmc_dac_db[19] fmc_dac_db[20] fmc_dac_db[21] fmc_dac_db[22] fmc_dac_db[23] fmc_dac_db[24] fmc_dac_db[25] fmc_dac_db[26] fmc_dac_db[27]}]
+set_output_delay -clock fmc_dac_wrt1 -min -2.5 [get_ports {fmc_dac_db[14] fmc_dac_db[15] fmc_dac_db[16] fmc_dac_db[17] fmc_dac_db[18] fmc_dac_db[19] fmc_dac_db[20] fmc_dac_db[21] fmc_dac_db[22] fmc_dac_db[23] fmc_dac_db[24] fmc_dac_db[25] fmc_dac_db[26] fmc_dac_db[27]}]
+create_generated_clock -name fmc_dac_wrt2 -divide_by 1 -invert \
+    -source [get_pins {i_fmc_dac/g_ch[2].i_wrt/C}] [get_ports {fmc_dac_wrt[2]}]
+set_output_delay -clock fmc_dac_wrt2 -max  3.0 [get_ports {fmc_dac_db[28] fmc_dac_db[29] fmc_dac_db[30] fmc_dac_db[31] fmc_dac_db[32] fmc_dac_db[33] fmc_dac_db[34] fmc_dac_db[35] fmc_dac_db[36] fmc_dac_db[37] fmc_dac_db[38] fmc_dac_db[39] fmc_dac_db[40] fmc_dac_db[41]}]
+set_output_delay -clock fmc_dac_wrt2 -min -2.5 [get_ports {fmc_dac_db[28] fmc_dac_db[29] fmc_dac_db[30] fmc_dac_db[31] fmc_dac_db[32] fmc_dac_db[33] fmc_dac_db[34] fmc_dac_db[35] fmc_dac_db[36] fmc_dac_db[37] fmc_dac_db[38] fmc_dac_db[39] fmc_dac_db[40] fmc_dac_db[41]}]
+create_generated_clock -name fmc_dac_wrt3 -divide_by 1 -invert \
+    -source [get_pins {i_fmc_dac/g_ch[3].i_wrt/C}] [get_ports {fmc_dac_wrt[3]}]
+set_output_delay -clock fmc_dac_wrt3 -max  3.0 [get_ports {fmc_dac_db[42] fmc_dac_db[43] fmc_dac_db[44] fmc_dac_db[45] fmc_dac_db[46] fmc_dac_db[47] fmc_dac_db[48] fmc_dac_db[49] fmc_dac_db[50] fmc_dac_db[51] fmc_dac_db[52] fmc_dac_db[53] fmc_dac_db[54] fmc_dac_db[55]}]
+set_output_delay -clock fmc_dac_wrt3 -min -2.5 [get_ports {fmc_dac_db[42] fmc_dac_db[43] fmc_dac_db[44] fmc_dac_db[45] fmc_dac_db[46] fmc_dac_db[47] fmc_dac_db[48] fmc_dac_db[49] fmc_dac_db[50] fmc_dac_db[51] fmc_dac_db[52] fmc_dac_db[53] fmc_dac_db[54] fmc_dac_db[55]}]
 # CLK (the DAC latch) runs on the same edge as WRT; nothing else is timed to it.
 set_false_path -to [get_ports {fmc_dac_clk[*]}]
