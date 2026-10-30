@@ -5,8 +5,11 @@ ZIG_CC := $(HOME)/.venvs/zig/bin/python -m ziglang cc -target aarch64-linux-musl
 clk104: clk104.c clk104_tables.h
 	$(ZIG_CC) -o $@ clk104.c
 
+vadj: vadj.c
+	$(ZIG_CC) -o $@ vadj.c
+
 clk104_tables.h: gen_clk104_tables.py
 	python3 -I gen_clk104_tables.py
 
 clean:
-	rm -f clk104
+	rm -f clk104 vadj
