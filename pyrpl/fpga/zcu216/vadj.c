@@ -15,8 +15,8 @@
  *
  * The PMIC is on I2C0 switch port 2, /dev/i2c-4 in Linux. The kernel's irps5401
  * driver is bound to it (it exposes nothing), so the address is taken with
- * I2C_SLAVE_FORCE. PMBus pages 0-3 are switchers A-D, 4 the LDO; PAGE is left
- * at 0 afterwards.
+ * I2C_SLAVE_FORCE. PMBus pages 0-3 are switchers A-D, 4 the LDO (D is unused
+ * on the ZCU216, its page refused); PAGE is left at 0 afterwards.
  */
 
 #include <errno.h>
@@ -94,6 +94,8 @@ static void status(void)
 {
     printf("page  operation  on_off_cfg  vout_mode  vout_cmd     read_vout    status_word\n");
     for (int p = 0; p <= 4; p++) {
+        if (p == 3) continue;          /* output D is not used: the PMIC refuses
+                                        * the page and flags a CML fault */
         union i2c_smbus_data d = { .byte = p };
         if (smbus(I2C_SMBUS_WRITE, PM_PAGE, I2C_SMBUS_BYTE_DATA, &d) < 0) {
             printf("%d            page not accepted (%s)\n", p, strerror(errno));
