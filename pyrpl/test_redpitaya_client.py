@@ -21,6 +21,7 @@ import sys
 import socket
 import threading
 import time
+import logging
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pyrpl.redpitaya_client import MonitorClient
@@ -36,12 +37,13 @@ def _recv_exact(conn, n):
     return buf
 
 
-def _accepting_server():
+def _accepting_server(bulk_pause=0.0):
     """A fake monitor_server that speaks just enough of the register protocol to
     satisfy the client's probe read: for an 'r' header it echoes the 8-byte
     header followed by length*4 zero bytes. Stands in for a detached server that
-    survives a client drop (accepts successive connections). Returns
-    (srv_socket, port, stop_event)."""
+    survives a client drop (accepts successive connections). A 'b' (bulk) header
+    is echoed and followed by its KB of 0xAB, pausing bulk_pause s halfway (a
+    TCP retransmission wait). Returns (srv_socket, port, stop_event)."""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(('127.0.0.1', 0))
@@ -64,6 +66,14 @@ def _accepting_server():
             if hdr[0:1] == b'r':
                 try:
                     conn.sendall(hdr + b'\x00' * (length * 4))
+                except OSError:
+                    break
+            elif hdr[0:1] == b'b':
+                half = length * 512
+                try:
+                    conn.sendall(hdr + b'\xab' * half)
+                    time.sleep(bulk_pause)
+                    conn.sendall(b'\xab' * half)
                 except OSError:
                     break
             elif hdr[0:1] == b'c':
@@ -222,6 +232,56 @@ def test_reconnect_is_idempotent():
                if t.name == 'rp-reconnect') == 1, "more than one worker started"
     c._connection_lost = True  # let the infinite worker exit on next iteration
     holder.close()
+
+
+class _Records(logging.Handler):
+    def __init__(self):
+        logging.Handler.__init__(self)
+        self.msgs = []
+
+    def emit(self, record):
+        self.msgs.append(record.getMessage())
+
+
+def test_bulk_pause_is_tolerated_and_logged():
+    """A bulk reply that pauses longer than the register timeout (1 s) but less
+    than the bulk idle limit completes, and its pause is logged."""
+    srv, port, stop = _accepting_server(bulk_pause=1.3)
+    rec = _Records()
+    c = MonitorClient('127.0.0.1', port, restartserver=lambda: port,
+                      reconnect_retries=3, connect_timeout=0.3)
+    c.logger.addHandler(rec)
+    d = c.bulk(0x48000000, 64 << 10)
+    assert d is not None and len(d) == 64 << 10 and set(d) == {0xab}
+    assert any('paused 1.' in m for m in rec.msgs), rec.msgs
+    # the link is still in step: a register read gets its own reply
+    assert list(c.reads(0x40000000, 2)) == [0, 0]
+    c.logger.removeHandler(rec)
+    stop.set()
+    srv.close()
+
+
+def test_bulk_timeout_drops_the_link():
+    """A bulk reply that stops for longer than the idle limit fails, and its
+    socket is closed at once: the rest of that reply must never be taken for
+    the next command's reply (the ZCU216 'wrong control sequence' cascade).
+    The background reconnect then gives a link in step."""
+    srv, port, stop = _accepting_server(bulk_pause=1.0)
+    healed = {'n': 0}
+    c = MonitorClient('127.0.0.1', port, restartserver=lambda: port,
+                      reconnect_retries=5, connect_timeout=0.3,
+                      on_reconnected=lambda: healed.update(n=healed['n'] + 1))
+    c.BULK_IDLE_TIMEOUT = 0.3
+    old = c.socket
+    assert c.bulk(0x48000000, 64 << 10) is None
+    assert old.fileno() == -1, "the out-of-step socket was not closed"
+    deadline = time.time() + 10
+    while healed['n'] == 0 and time.time() < deadline:
+        time.sleep(0.02)
+    assert healed['n'] == 1 and c.socket is not old
+    assert list(c.reads(0x40000000, 3)) == [0, 0, 0]
+    stop.set()
+    srv.close()
 
 
 if __name__ == '__main__':
