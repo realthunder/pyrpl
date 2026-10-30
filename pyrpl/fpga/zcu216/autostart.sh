@@ -10,6 +10,9 @@
 #   - the CLK104 is programmed (clk104 program: 2.5 GHz ADC/DAC sample clocks,
 #     125 MHz PL_CLK) before the bitstream, so the RF tiles find their clocks
 #     when they come out of reset;
+#   - VADJ_FMC is set to 1.8 V (vadj set 1.8): the system controller leaves it
+#     at 0 V for an FMC card without an IPMI EEPROM, as the PZ-FL9767D DAC card
+#     (banks 66 / 67 and the card's level shifters);
 #   - zcu216.bit.bin is loaded through the FPGA manager;
 #   - monitor_server_zcu216 is started on port 2222, but only once the load
 #     has succeeded: an access to 0x8000_0000 with no design loaded hangs the
@@ -76,6 +79,12 @@ if [ -f $SD/clk104 ]; then
 	cp $SD/clk104 /tmp/clk104
 	chmod +x /tmp/clk104
 	/tmp/clk104 program || echo "clk104 program failed"
+fi
+
+if [ -f $SD/vadj ]; then
+	cp $SD/vadj /tmp/vadj
+	chmod +x /tmp/vadj
+	/tmp/vadj set 1.8 || echo "vadj set failed"
 fi
 
 fs=$(devmem 0xFF419000 32)

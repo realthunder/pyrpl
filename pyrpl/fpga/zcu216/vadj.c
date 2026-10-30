@@ -37,6 +37,7 @@
 #define PM_PAGE        0x00
 #define PM_OPERATION   0x01
 #define PM_ON_OFF_CFG  0x02
+#define PM_CLEAR_FAULTS 0x03
 #define PM_VOUT_MODE   0x20
 #define PM_VOUT_CMD    0x21
 #define PM_STATUS_WORD 0x79
@@ -127,6 +128,12 @@ static void set(double v)
     wr_word(PM_VOUT_CMD, (uint16_t)lround(v / ldexp(1.0, vout_exp(mode))));
     wr_byte(PM_OPERATION, 0x80);       /* on, nominal margins */
     usleep(20000);
+    /* the turn-on inrush (the FMC card, the banks' decoupling) latches an
+     * over-current warning (limit 6 A) that the steady 10-20 mA never would */
+    union i2c_smbus_data d;
+    struct i2c_smbus_ioctl_data a = { .read_write = I2C_SMBUS_WRITE, .command = PM_CLEAR_FAULTS,
+                                      .size = I2C_SMBUS_BYTE, .data = &d };
+    ioctl(fd, I2C_SMBUS, &a);
     int vo = rd_word(PM_READ_VOUT);
     wr_byte(PM_PAGE, 0);
     double got = vo >= 0 ? vo * ldexp(1.0, vout_exp(mode)) : -1.0;
