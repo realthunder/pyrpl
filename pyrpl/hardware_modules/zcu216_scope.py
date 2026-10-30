@@ -20,8 +20,8 @@ registers and acquisition flow, with the trace in DDR instead of block RAM.
 The registers sit in the upper half of FPGA slot 1 (client 0x4030_0000); the
 lower half is the FFT block (fpga/rtl/zcu216_fft_test.sv), which this module
 also drives for the lidar's FPGA FFT mode: a real FFT of an RF-ADC channel at
-the full 2.5 GS/s (not the scope's decimated rate), one magnitude frame per
-trace and channel fetched through a frame snapshot into DDR (fft_frame).
+the full 2.5 GS/s (not the scope's decimated rate), magnitude frames fetched
+through a frame snapshot into DDR without waiting (_fftdata).
 Bitstreams with chirp framing (lidar/docs/Zcu216ChirpFft.md) start the frames
 on the laser's chirp sync: channel 0 transforms the up window, channel 1 the
 down window, set with the Red Pitaya scope's fft window registers
@@ -272,24 +272,22 @@ class Zcu216Scope(Scope):
         self._client.writes(FFT_BASE + 0x54 + 0x40 * ch, [src])
         self._client.writes(FFT_BASE + 0x04, [1])
 
-    def fft_frame(self, ch=0, timeout=0.5):
-        """One whole frame of FFT channel ch's magnitudes (fft_length / 2
-        bins, natural order), as the amplitude of each bin: a tone of
-        amplitude A (full scale 1) reads A / 2, as the lidar's normalized
-        host FFT. A frame snapshot into the reserved DDR (taken at the next
-        frame start), fetched in one bulk read. None if it did not finish."""
+    def _fft_arm(self, ch):
+        """arm a one-frame snapshot of channel ch's magnitudes (taken at the
+        next frame start)"""
         c = self._client
-        st = int(c.reads(FFT_SNAP + 0x0C, 1)[0])
-        if st & 1:                                  # a capture still pending
+        if int(c.reads(FFT_SNAP + 0x0C, 1)[0]) & 1:     # a capture still pending
             c.writes(FFT_SNAP + 0x00, [0x80000000])     # drop it
         c.writes(FFT_SNAP + 0x04, [ch & 3])         # |X| of channel ch
         c.writes(FFT_SNAP + 0x08, [1])              # one frame
         c.writes(FFT_SNAP + 0x00, [1])              # arm
-        t0 = time()
-        while int(c.reads(FFT_SNAP + 0x0C, 1)[0]) & 1:
-            if time() - t0 > timeout:
-                self._logger.warning("FFT frame snapshot not done after %g s", timeout)
-                return None
+
+    def _fft_fetch(self):
+        """the finished snapshot, fetched in one bulk read, as the amplitude
+        of each bin (fft_length / 2 bins, natural order): a tone of amplitude
+        A (full scale 1) reads A / 2, as the lidar's normalized host FFT. None
+        if the read failed."""
+        c = self._client
         base = int(c.reads(FFT_SNAP + 0x14, 1)[0])
         nbytes = int(c.reads(FFT_SNAP + 0x18, 1)[0])
         d = c.bulk(MEM_WIN_CLIENT + base - MEM_WIN_PHYS, nbytes)
@@ -303,22 +301,68 @@ class Zcu216Scope(Scope):
         cut = max(0, FFT_IN_W + (lg - 3) - FFT_DW)
         return mag * (2.0 * 2 ** cut / FFT_CORDIC_K / 2 ** 13 / (1 << lg))
 
+    def fft_frame(self, ch=0, timeout=0.5):
+        """One whole frame of FFT channel ch, waiting for it: arm, poll, fetch
+        (see _fft_fetch). None if it did not finish. For scripts: the lidar
+        reads _fftdata, which never waits."""
+        self._fft_armed = None                      # takes over the snapshot
+        self._fft_arm(ch)
+        t0 = time()
+        while int(self._client.reads(FFT_SNAP + 0x0C, 1)[0]) & 1:
+            if time() - t0 > timeout:
+                self._logger.warning("FFT frame snapshot not done after %g s", timeout)
+                return None
+        return self._fft_fetch()
+
+    _fft_armed = None           # channel of the snapshot in progress
+    _fft_rows = None            # the latest frame of each channel
+    _fft_syncs_seen = None      # fft_syncs at the last _fftdata
+    _fft_no_sync = False        # warned that the syncs stopped
+
+    def _fft_watch_syncs(self):
+        """warn once when framing runs without chirp syncs: no frame starts,
+        the rows stay as they are"""
+        syncs = int(self.fft_syncs)
+        moving = syncs != self._fft_syncs_seen
+        self._fft_syncs_seen = syncs
+        if moving == (not self._fft_no_sync):
+            return
+        self._fft_no_sync = not moving
+        if moving:
+            self._logger.info("FFT: chirp syncs are back")
+        else:
+            self._logger.warning("FFT: no chirp syncs, so no frames: the "
+                                 "spectrum holds its last frame")
+
     @property
     def _fftdata(self):
-        """the lidar's FPGA-mode rows (down, up): with chirp framing channel
-        1's and channel 0's frames; free-running frames are not split into
-        the chirp's halves, so the whole spectrum is the up row and the down
-        row is empty"""
+        """the lidar's FPGA-mode rows (down, up), the latest frame of each,
+        without waiting: the FFT runs on its own triggers, not the scope's.
+        With chirp framing channel 1's and channel 0's frames; free-running
+        frames are not split into the chirp's halves, so the whole spectrum
+        is the up row and the down row is empty. One snapshot is in progress
+        at a time, so this collects it if it finished and arms the next
+        channel's; a row keeps its frame until a newer one is in, and the two
+        rows may be a frame or more apart."""
         n = self.fft_length // 2
-        up = self.fft_frame(0)
-        if up is None:
-            up = np.zeros(n)
-        down = None
-        if self.fft_framing_available and self.fft_framing:
-            down = self.fft_frame(1)
-        if down is None:
-            down = np.zeros_like(up)
-        return [down, up]
+        if self._fft_rows is None or len(self._fft_rows[0]) != n:
+            self._fft_rows = [np.zeros(n), np.zeros(n)]
+            self._fft_armed = None
+        framed = self.fft_framing_available and self.fft_framing
+        if framed:
+            self._fft_watch_syncs()
+        else:
+            self._fft_rows[1] = np.zeros(n)
+        ch = self._fft_armed
+        if ch is not None:
+            if int(self._client.reads(FFT_SNAP + 0x0C, 1)[0]) & 1:
+                return [self._fft_rows[1], self._fft_rows[0]]
+            mag = self._fft_fetch()
+            if mag is not None and len(mag) == n:
+                self._fft_rows[ch] = mag
+        self._fft_armed = (1 - ch if ch is not None else 0) if framed else 0
+        self._fft_arm(self._fft_armed)
+        return [self._fft_rows[1], self._fft_rows[0]]
 
     def _start_trace_acquisition(self):
         """Scope._start_trace_acquisition without the FFT point stream"""
