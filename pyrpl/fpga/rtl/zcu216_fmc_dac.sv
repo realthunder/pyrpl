@@ -1,14 +1,15 @@
 /**
  * The Puzhi PZ-FL9767D FMC DAC card (two AD9767, four 14-bit channels up to
- * 125 MS/s) on the ZCU216's FMC+ connector J28, driven from the output
- * routing's out1-4 (zcu216_dsp_out) at sys_clk, 125 MS/s.
+ * 125 MS/s) on the ZCU216's FMC+ connector J28, driven from the four ASG
+ * channels at the bus clock (100 MS/s).
  *
  * Card (schematic 3312272550PZ-FL9767D-SCH): every AD9767 port has its own 14
  * data pins, CLK and WRT on the FMC LA pins, through SN74AVC16T245 shifters
  * (A side = VADJ, B side = 3.3 V, fixed A -> B); MODE is pulled high (dual-port
  * mode) and SLEEP low. Per port, IOUTA / IOUTB into 24.9 ohm, an AD8066
- * difference stage and an inverting stage to the SMB (R57 / R59 on DAC1,
- * R61 / R64 on DAC2); R58 / R60 / R62 / R63 (not fitted) bypass the second.
+ * difference stage (gain 2) and an inverting stage (gain 5.1) to the SMB:
+ * about +-5 V at full scale (+-1 V with the second stage bypassed: R58 / R60
+ * fitted, R57 / R59 removed on DAC1, likewise on DAC2).
  *
  *   ch 0  DAC1 port 1  SMB J2        ch 2  DAC2 port 1  SMB J4
  *   ch 1  DAC1 port 2  SMB J3        ch 3  DAC2 port 2  SMB J5
@@ -19,15 +20,10 @@
  * 1), so their rising edges, which latch the input and update the DAC, fall
  * in the middle of the data eye, as on the Red Pitaya.
  *
- * Measured 2026-10-30 (multimeter, DC): as fitted, full scale (ASG +-1) is
- * +-5.0 V and not inverted (J3); with the second stage bypassed (R57 -> R58,
- * J2) +-0.745 V and inverted. The polarity is set per output in
- * zcu216_dsp_out.
- *
  * VADJ: the card has no IPMI EEPROM, so the ZCU216 system controller leaves
- * VADJ_FMC (banks 66 / 67, the shifters' A side) off; autostart turns it on at
- * 1.8 V (zcu216/vadj) before the bitstream. Without it the shifters hold their
- * outputs off.
+ * VADJ_FMC (banks 66 / 67, the shifters' A side) at 0 V until it is set to
+ * 1.8 V by hand (board user interface: FMC -> Set VADJ); without it the
+ * shifters hold their outputs off.
  */
 module zcu216_fmc_dac (
   input  logic        clk,                        // sample clock
@@ -37,9 +33,7 @@ module zcu216_fmc_dac (
   output logic [3:0]  fmc_dac_wrt
 );
 
-// mid-scale (0 V) from configuration on, so the first WRT edges latch 0 V and
-// not the most negative code
-(* IOB = "TRUE" *) logic [55:0] db_q = {4{14'h2000}};
+(* IOB = "TRUE" *) logic [55:0] db_q = '0;
 
 always_ff @(posedge clk)
   for (int c = 0; c < 4; c++)
