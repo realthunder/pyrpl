@@ -13,9 +13,9 @@
  *                        S_AXI_HP3, the point stream through S_AXI_HPC0 (a
  *                        few hundred KB/s), all on fclk)
  *   slot 2  0x8040_0000  RF Data Converter registers (AXI4-Lite, 256 KB)  [RF]
- *   slot 3  0x8060_0000  output routing (zcu216_dsp_out): asgN.output_direct at
- *                        the Red Pitaya DSP's addresses, out1-4 = the FMC DAC
- *                        card's channels
+ *   slot 3  0x8060_0000  signal hub (zcu216_dsp), at the Red Pitaya DSP's
+ *                        addresses: the signals' numbers, the sinks' selects,
+ *                        asgN.output_direct; out1-4 = the FMC DAC's channels
  *   slot 4  0x8080_0000  ASG (red_pitaya_asg, the Red Pitaya's slot-2 registers):
  *                        four channels on sys_clk (125 MS/s); the scope sees
  *                        them as inputs 8-11 [RF]
@@ -512,11 +512,11 @@ end
 // hk capabilities (red_pitaya_hk.v 0x48..0x5C): RF-ADC/DAC 2.5 GS/s, 14 bits,
 // four channels each (ADC tile 224, DAC tile 228); the bus modules on sys_clk.
 // Modules: asg0-3 always; the scope (DDR ring) and the RF FFT block with RF;
-// bit 28 = the ASG drives the FMC DAC card.
+// bit 28 = the ASG drives the FMC DAC card, 29 = the signal hub.
 `ifdef ZCU216_FMC_DAC
-localparam logic [31:0] HK_ASG = (32'hF << 3) | (32'h1 << 28);
+localparam logic [31:0] HK_ASG = (32'hF << 3) | (32'h1 << 28) | (32'h1 << 29);
 `else
-localparam logic [31:0] HK_ASG = 32'hF << 3;
+localparam logic [31:0] HK_ASG = (32'hF << 3) | (32'h1 << 29);
 `endif
 `ifdef ZCU216_RF
 localparam logic [31:0] HK_MODULES = HK_ASG | (32'h1 << 1) | (32'h1 << 26) | (32'h1 << 27);
@@ -575,6 +575,11 @@ red_pitaya_hk #(
 // through the output routing (slot 3), the FMC DAC card. The external trigger
 // is PMOD0_0, as DIO0_P is on the Red Pitaya.
 logic [13:0] asg_out [4];
+logic [3:0]  asg_trig;                            // chirp starts, one sys_clk each
+logic [3:0]  asg_tog = '0;                        // ... as toggles, for fclk
+logic        sc_trig_p;                           // the scope's trigger, one sys_clk
+
+always_ff @(posedge sys_clk) asg_tog <= asg_tog ^ asg_trig;
 
 red_pitaya_asg i_asg (
   .dac_a_o       (asg_out[0]          ),
@@ -588,10 +593,10 @@ red_pitaya_asg i_asg (
   .trig_c_i      (exp_p_s[0]          ),
   .trig_d_i      (exp_p_s[0]          ),
   .trig_enc_i    (1'b0                ),
-  .trig_out_o    (                    ),
+  .trig_out_o    (asg_trig            ),
   .play_active_o (                    ),
-  .trig_scope_i  (1'b0                ),
-  .scope_trig_i  (1'b0                ),
+  .trig_scope_i  (sc_trig_p           ),
+  .scope_trig_i  (sc_trig_p           ),
   .sync_rst_o    (                    ),
   .asg1phase_o   (                    ),
   .step_a_o      (                    ),
@@ -612,15 +617,19 @@ red_pitaya_asg i_asg (
 // output routing (slot 3) and the FMC DAC card
 ////////////////////////////////////////////////////////////////////////////////
 
-// asgN.output_direct at the Red Pitaya DSP's addresses: each ASG channel adds
-// into any of out1-4 (saturated); all off after reset
+// the signal hub: the Red Pitaya DSP's addresses; each ASG channel adds into
+// any of out1-4 (saturated, all off after reset), and the scope's and the
+// FFT's inputs take any signal
 logic [13:0] dac_out [4];
+logic [3:0]  sc_sel [2], fft_sel [2];
 
-zcu216_dsp_out i_dsp_out (
+zcu216_dsp i_dsp (
   .clk       (sys_clk            ),
   .rstn      (sys_rstn           ),
   .asg       (asg_out            ),
   .out       (dac_out            ),
+  .sc_sel,
+  .fft_sel,
   .sys_addr  (bk_addr            ),
   .sys_wdata (bk_wdata           ),
   .sys_wen   (sys_wen[3]         ),
@@ -642,9 +651,22 @@ zcu216_fmc_dac i_fmc_dac (.clk (sys_clk), .din (dac_out), .fmc_dac_db, .fmc_dac_
 ////////////////////////////////////////////////////////////////////////////////
 
 `ifdef ZCU216_RF
-// ASG samples into fclk for the scope (inputs 8-11)
-logic [13:0] asg_f [4];
-zcu216_asg_cdc i_asg_cdc (.sys_clk (sys_clk), .din (asg_out), .fclk (fclk), .dout (asg_f));
+// the sys_clk signals into fclk for their sinks: asg0-3, out1-4
+logic [13:0] sig_s [8], sig_f [8];
+always_comb
+  for (int i = 0; i < 4; i++) begin
+    sig_s[i]     = asg_out[i];
+    sig_s[4 + i] = dac_out[i];
+  end
+zcu216_sig_cdc #(.N (8)) i_sig_cdc (.sys_clk (sys_clk), .din (sig_s), .fclk (fclk), .dout (sig_f));
+
+// the scope's trigger into sys_clk, for the ASG
+logic sc_trig_tog;
+(* ASYNC_REG = "TRUE" *) logic [2:0] sc_trig_s;
+always_ff @(posedge sys_clk) begin
+  sc_trig_s <= {sc_trig_s[1:0], sc_trig_tog};
+  sc_trig_p <= sc_trig_s[2] != sc_trig_s[1];
+end
 
 // RF Data Converter: AXI4-Lite from slot 2, streams on fclk
 logic [17:0]  rf_awaddr, rf_araddr;
@@ -753,7 +775,11 @@ zcu216_fft_test #(
   .spi_sdo_sel (spi_sdo_sel        ),
   .meas_clk    (meas_clk           ),
   .ext_trig    (exp_p_in[0]        ),  // PMOD0_0 (J46 pin 1), the scope trigger 6/7
-  .asg_data    (asg_f              ),  // ASG channels 0-3, scope inputs 8-11
+  .sig_data    (sig_f              ),  // asg0-3, out1-4
+  .asg_tog,
+  .sc_trig_tog,
+  .sc_sel,
+  .fft_sel,
   .hp_awaddr, .hp_awlen, .hp_awsize, .hp_awburst, .hp_awcache, .hp_awprot,
   .hp_awvalid, .hp_awready, .hp_wdata, .hp_wstrb, .hp_wlast, .hp_wvalid,
   .hp_wready, .hp_bresp, .hp_bvalid, .hp_bready,
@@ -765,6 +791,7 @@ zcu216_fft_test #(
   .sc_wready, .sc_bresp, .sc_bvalid, .sc_bready
 );
 `else
+assign sc_trig_p = 1'b0;
 assign sys_rdata[1*32+:32] = 32'h0;
 assign sys_err  [1       ] = 1'b0;
 assign sys_ack  [1       ] = 1'b1;

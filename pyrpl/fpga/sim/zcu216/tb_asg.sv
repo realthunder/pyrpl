@@ -1,4 +1,4 @@
-// red_pitaya_asg on the bus clock -> zcu216_asg_cdc -> fclk, as in zcu216_top.
+// red_pitaya_asg on the bus clock -> zcu216_sig_cdc -> fclk, as in zcu216_top.
 // Channel A plays a ramp table; every fclk sample must be one of the last few
 // bus-clock samples (no torn words, no stale ones), with B-D at zero.
 // Usage: sim/zcu216/run_asg.sh   (from fpga/)
@@ -19,7 +19,7 @@ module tb_asg;
     .sync_rst_o (), .asg1phase_o (), .step_a_o (), .step_b_o (), .step_c_o (), .step_d_o (),
     .sys_addr, .sys_wdata, .sys_sel (4'hf), .sys_wen, .sys_ren, .sys_rdata, .sys_err, .sys_ack);
 
-  zcu216_asg_cdc cdc (.sys_clk (sclk), .din (asg_out), .fclk (fclk), .dout (asg_f));
+  zcu216_sig_cdc #(.N (4)) cdc (.sys_clk (sclk), .din (asg_out), .fclk (fclk), .dout (asg_f));
 
   task automatic wr(input logic [31:0] a, input logic [31:0] d);
     @(posedge sclk); sys_addr <= a; sys_wdata <= d; sys_wen <= 1;

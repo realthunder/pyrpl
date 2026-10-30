@@ -20,6 +20,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fft_check import Link                     # noqa: E402
 
 FFT = 0x40200000                               # slot 1
+FFT0_SEL = 0x407C0000                          # the signal hub: FFT channel 0's input
+ADC_NUM = (12, 13, 22, 23)                     # ... RF-ADC 0-3's signal numbers
 RFDC = 0x40400000                              # slot 2
 ADC_TILE = lambda t: RFDC + 0x14000 + 0x4000 * t
 DAC_TILE = lambda t: RFDC + 0x04000 + 0x4000 * t
@@ -98,7 +100,7 @@ def main():
     best = None
     print('ADC tile 224 channel -> FFT ch0 peak:')
     for c in range(4):
-        L.write(FFT + 0x54, 1 + c)                         # ch0 source = ADC channel c
+        L.write(FFT0_SEL, ADC_NUM[c])                      # ch0 source = ADC channel c
         L.write(FFT + 0x1c, 1)                             # clear sticky events
         time.sleep(0.1)
         pb, pm, ev = L.read(FFT + 0x64)[0], L.read(FFT + 0x68)[0], L.read(FFT + 0x70)[0]
@@ -112,7 +114,7 @@ def main():
         return 1
 
     c = best[0]
-    L.write(FFT + 0x54, 1 + c)
+    L.write(FFT0_SEL, ADC_NUM[c])
     start = (a.bin - 8) & ~3
     L.write(FFT + 0x10, start)
     L.write(FFT + 0x18, 1)                                 # arm

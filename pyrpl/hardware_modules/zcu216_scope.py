@@ -35,6 +35,7 @@ from .scope import Scope, DecimationRegister
 from ..attributes import SelectProperty, SelectRegister, IntRegister, \
     BoolProperty, IntProperty, BoolRegister
 from ..pyrpl_utils import sorted_dict, time
+from .dsp import dsp_addr_base
 
 # monitor_server's memory window: client address <-> physical address
 MEM_WIN_CLIENT = 0x48000000
@@ -43,6 +44,8 @@ MEM_WIN_PHYS = 0x1E000000
 # the FFT block (lower half of slot 1) and its frame snapshot registers
 FFT_BASE = 0x40200000
 FFT_SNAP = FFT_BASE + 0x140
+DSP_FFT_SEL = 0x40600000 + 28 * 0x10000            # the FFT sinks: DSP numbers 28, 29
+DSP_TONE = 30                                      # ... their tone generator
 FFT_CORDIC_K = 1.64676                    # zcu216_fft_mag: mag = K |X| / 2
 FFT_IN_W, FFT_DW = 14, 27                 # input bits, the cores' output cut
 
@@ -60,17 +63,23 @@ class Zcu216Scope(Scope):
     fft_parallel = BoolProperty(default=False, doc="no FFT in this scope")
     nfft = IntProperty(default=0, doc="no FFT in this scope")
 
-    _inputs = sorted_dict({"adc0": 0, "adc1": 1, "adc2": 2, "adc3": 3,
-                           "fft0": 4, "fft1": 5,
-                           "asg0": 8, "asg1": 9, "asg2": 10, "asg3": 11},
+    # the signal hub (slot 3, rtl/zcu216_dsp.sv): the Red Pitaya DSP's numbers
+    # and addresses; the signals with no Red Pitaya equivalent have numbers it
+    # leaves free
+    _inputs = sorted_dict({"asg0": 8, "asg1": 9, "asg2": 10, "asg3": 11,
+                           "adc0": 12, "adc1": 13, "adc2": 22, "adc3": 23,
+                           "out1": 14, "out2": 15, "out3": 24, "out4": 25,
+                           "fft0": 26, "fft1": 27, "off": 21},
                           sort_by_values=True)
     inputs = _inputs.keys()
-    input1 = SelectRegister(0x1F0, options=_inputs, default="adc0",
-                            doc="channel 1: RF-ADC tile 224 channel 0-3, the "
-                                "input of FFT channel 0/1, or ASG channel 0-3")
-    input2 = SelectRegister(0x1F4, options=_inputs, default="adc1",
-                            doc="channel 2: RF-ADC tile 224 channel 0-3, the "
-                                "input of FFT channel 0/1, or ASG channel 0-3")
+    input1 = SelectRegister(dsp_addr_base('asg0') - addr_base, options=_inputs,
+                            default="adc0",
+                            doc="channel 1: an RF-ADC channel, an ASG channel, "
+                                "a DAC output, or the input of FFT channel 0/1")
+    input2 = SelectRegister(dsp_addr_base('asg1') - addr_base, options=_inputs,
+                            default="adc1",
+                            doc="channel 2: an RF-ADC channel, an ASG channel, "
+                                "a DAC output, or the input of FFT channel 0/1")
 
     _trigger_sources = sorted_dict({"off": 0,
                                     "immediately": 1,
@@ -79,7 +88,11 @@ class Zcu216Scope(Scope):
                                     "ch2_positive_edge": 4,
                                     "ch2_negative_edge": 5,
                                     "ext_positive_edge": 6,   # PMOD0_0
-                                    "ext_negative_edge": 7},
+                                    "ext_negative_edge": 7,
+                                    "asg0": 8,    # each channel's chirp start
+                                    "asg1": 9,
+                                    "asg2": 11,
+                                    "asg3": 12},
                                    sort_by_values=True)
     trigger_sources = _trigger_sources.keys()
     _trigger_source_register = SelectRegister(0x4, doc="Trigger source",
@@ -224,11 +237,22 @@ class Zcu216Scope(Scope):
     # chirp framing (zcu216_fft_frame); fft_wait1_cnt .. fft_acq2_cnt (0x58 ..
     # 0x64) and fft_trig_delay (0x1A0) are the inherited Scope registers, in
     # ADC samples here
-    fft_framing = BoolRegister(0x1C8, 0, doc="FFT frames start on the laser's "
-                               "chirp sync (external input): channel 0 the up "
-                               "window, channel 1 the down window")
+    fft_framing = BoolRegister(0x1C8, 0, doc="FFT frames start on their "
+                               "trigger: channel 0 the up window, channel 1 "
+                               "the down window; off: free-running frames")
     fft_sync_falling = BoolRegister(0x1C8, 1, doc="chirp sync on the external "
                                     "input's falling edge (else rising)")
+    fft_trigger_sync = BoolRegister(0x1C8, 2, doc="FFT frames start on the "
+                                    "scope's trigger (else on "
+                                    "fft_trigger_source), as on the Red Pitaya")
+    fft_trigger_source = SelectRegister(0x1C8, bitmask=0xF0,
+                                        options={"ext": 0x60, "asg0": 0x80,
+                                                 "asg1": 0x90, "asg2": 0xB0,
+                                                 "asg3": 0xC0},
+                                        doc="what starts the FFT frames, in "
+                                            "the scope's trigger codes: the "
+                                            "external input or an ASG "
+                                            "channel's chirp start")
     fft_syncs = IntRegister(0x1CC, doc="chirp syncs seen")
     fft_sync_period = IntRegister(0x1D0, doc="ADC samples between the last two "
                                   "chirp syncs")
@@ -266,10 +290,10 @@ class Zcu216Scope(Scope):
         return self._base_sampling_time
 
     def fft_setup(self, ch, source):
-        """FFT channel ch transforms `source`, a scope input name ('adc0' ..
-        'adc3'; anything else: its tone generator), and the block runs"""
-        src = {'adc0': 1, 'adc1': 2, 'adc2': 3, 'adc3': 4}.get(source, 0)
-        self._client.writes(FFT_BASE + 0x54 + 0x40 * ch, [src])
+        """FFT channel ch transforms `source`, a scope input name (anything
+        else: its tone generator), and the block runs"""
+        self._client.writes(DSP_FFT_SEL + 0x10000 * ch,
+                            [self._inputs.get(source, DSP_TONE)])
         self._client.writes(FFT_BASE + 0x04, [1])
 
     def _fft_arm(self, ch):

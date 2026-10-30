@@ -277,7 +277,7 @@ end else begin
     // 2 sampler, 3-6 asg0-3, 7-10 pwm0-3, 11-13 iq0-2, 14-16 pid0-2, 17 trig,
     // 18 iir, 24 FFT/peak/CFAR inside the scope, 25 DMA point stream of the
     // scope, 26 RF FFT block (ZCU216 slot 1), 27 the scope is the DDR-ring scope,
-    // 28 the ASG drives the FMC DAC card (ZCU216)
+    // 28 the ASG drives the FMC DAC card, 29 the signal hub (zcu216_dsp, ZCU216)
     20'h00048: begin sys_ack <= sys_en;  sys_rdata <= 32'hCA95_0001                       ; end
     20'h0004C: begin sys_ack <= sys_en;  sys_rdata <= ADC_HZ                              ; end
     20'h00050: begin sys_ack <= sys_en;  sys_rdata <= DAC_HZ                              ; end

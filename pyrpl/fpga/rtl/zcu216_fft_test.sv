@@ -6,7 +6,8 @@
  * on fclk (8 samples per clock), zcu216_snap, which writes whole frames of
  * |X| or of an FFT's input samples into DDR on request, and zcu216_points,
  * which streams every frame's CFAR results into the DDR ring. Each channel's source is its tone generator or
- * one of the four RF-ADC channels of tile 224 (src register). A third tone
+ * one of the four RF-ADC channels of tile 224, or an ASG or DAC output signal
+ * (the select is the signal hub's, zcu216_dsp). A third tone
  * generator drives the four RF-DAC channels of tile 228, for the XM655 loopback.
  * Magnitudes are mag = K|X|/2, K = 1.64676 (CORDIC gain). RF samples are 16 bit
  * with the 14 converter bits at the top.
@@ -54,7 +55,8 @@
  *             +0x14 RO words dropped   +0x18 RO [0] AXI error   +0x1c RO ring words
  *   0x40 + 0x40*c, channel c:
  *     +0x00 inc_a   +0x04 amp_a   +0x08 inc_b   +0x0c amp_b   +0x10 noise bits (0-18)
- *     +0x14 source: 0 = tone generator, 1-4 = RF-ADC tile 224 channel 0-3
+ *     +0x14 RO source, set in the signal hub (zcu216_dsp): 0 = tone generator,
+ *           1-4 = RF-ADC tile 224 channel 0-3, 5-12 = asg0-3, out1-4
  *     +0x18 RO CFAR result [31:0] = raw magnitude (reading it latches +0x1c)
  *     +0x1c RO CFAR result [63:32]: [0] detected, [IW:1] k_interp = bin * 256 + offset
  *     +0x20 RO frames      +0x24 RO peak bin      +0x28 RO peak mag
@@ -77,17 +79,18 @@
  *             +0x1e0 RO trace length L (samples)   +0x1e4 RO ring base (physical)
  *             +0x1e8 RO ring length (samples)   +0x1ec RO {bits, channels, samples per
  *                   channel per 16-byte word} = [23:16], [15:8], [7:0]
- *             +0x1f0 / +0x1f4 input of channel 1 / 2: 0-3 RF-ADC tile 224 channel 0-3,
- *                   4 + c the input of FFT channel c, 8-11 ASG channel 0-3 (the
- *                   Red Pitaya ASG in slot 4, 100 MS/s, each sample held over
- *                   the 2.5 GS/s beats)   +0x1f8 RO recommended minimum decimation
+ *             +0x1f0 / +0x1f4 RO input of channel 1 / 2, set in the signal hub
+ *                   (zcu216_dsp): 0-3 RF-ADC tile 224, 4-5 FFT inputs, 8-11 asg0-3,
+ *                   12-15 out1-4 (each sample held over the 2.5 GS/s beats)
+ *             +0x1f8 RO recommended minimum decimation
  *             +0x1fc RO sample period (ps) before decimation
              chirp-synced FFT (lidar/docs/Zcu216ChirpFft.md), ADC samples:
              +0x058 wait1  +0x05c wait2  +0x060 acq1  +0x064 acq2 (<= N), the Red
                    Pitaya's fft window offsets (zcu216_fft_frame: even FFT
                    channels take the up window, odd ones the down window)
              +0x1a0 delay from the laser sync to wait1   +0x08c RO N
-             +0x1c8 [0] framing on (off: free-running frames), [1] falling edge
+             +0x1c8 [0] framing on (off: free-running frames), [1] falling edge (PMOD0_0),
+             [2] frames on the scope's trigger, [7:4] else: 8, 9, 11, 12 asg0-3, other PMOD0_0,
              +0x1cc RO syncs   +0x1d0 RO period between syncs   +0x1d4 RO frames
                    skipped (engine busy) [15:0] up, [31:16] down
              +0x1d8 [3:0] m: every channel's frames are the RMS of 2^m frames'
@@ -138,7 +141,11 @@ module zcu216_fft_test #(
   // clocks to measure (debug)
   input  logic [3:0]   meas_clk,
   input  logic         ext_trig,             // scope external trigger (async, PMOD0_0)
-  input  logic [13:0]  asg_data [4],         // ASG channels 0-3 (fclk, latest sample)
+  input  logic [13:0]  sig_data [8],         // asg0-3, out1-4 (fclk, latest sample)
+  input  logic [3:0]   asg_tog,              // ASG chirp starts, toggles (sys_clk)
+  output logic         sc_trig_tog = 1'b0,   // the scope's trigger, a toggle (fclk)
+  input  logic [3:0]   sc_sel [2],           // scope inputs (zcu216_dsp, quasi-static)
+  input  logic [3:0]   fft_sel [2],          // FFT inputs (zcu216_dsp, quasi-static)
   // snapshot DMA: two AXI4 write masters on fclk (S_AXI_HP0/HP1)
   output logic [48:0]  hp_awaddr  [2],
   output logic [7:0]   hp_awlen   [2],
@@ -216,7 +223,6 @@ logic          arm, clr;
 logic [31:0]   inc_a [NCH], inc_b [NCH];
 logic [15:0]   amp_a [NCH], amp_b [NCH];
 logic [4:0]    nbits [NCH];
-logic [2:0]    src [NCH];
 logic [31:0]   d_inc_a, d_inc_b;
 logic [15:0]   d_amp_a, d_amp_b;
 logic [4:0]    d_nbits;
@@ -245,12 +251,12 @@ logic [3:0]    sc_src;
 logic [13:0]   sc_thr, sc_hyst;
 logic [31:0]   sc_dly;
 logic [16:0]   sc_dec;
-logic [3:0]    sc_in [2];
 logic [159:0]  s_sc_st;                         // status from fclk (see below)
 // chirp framing (zcu216_fft_frame), in the scope's space at the Red Pitaya's
 // fft window offsets: samples at the ADC rate
 logic [23:0]   fr_w1, fr_w2, fr_a1, fr_a2, fr_dly;
-logic [1:0]    fr_ctl;                          // [0] framing on, [1] falling edge
+logic [7:0]    fr_ctl;                          // [0] framing on, [1] falling edge, [2]
+                                                // on the scope's trigger, [7:4] source
 logic [3:0]    av_m;                            // power average over 2^m frames
 logic          av_rs;                           // toggle: restart the average
 // point stream
@@ -302,7 +308,7 @@ always_ff @(posedge sys_clk)
     for (int c = 0; c < NCH; c++) begin
       inc_a[c] <= '0;  amp_a[c] <= '0;
       inc_b[c] <= '0;  amp_b[c] <= '0;
-      nbits[c] <= '0;  src[c]   <= '0;
+      nbits[c] <= '0;
     end
   end else begin
     // a capture finished (the arm a write below may make in the same cycle is
@@ -350,7 +356,6 @@ always_ff @(posedge sys_clk)
         20'h00048 + 20'h40*c: inc_b[c] <= sys_wdata;
         20'h0004c + 20'h40*c: amp_b[c] <= sys_wdata[15:0];
         20'h00050 + 20'h40*c: nbits[c] <= (sys_wdata[4:0] > 5'd18) ? 5'd18 : sys_wdata[4:0];
-        20'h00054 + 20'h40*c: src[c]   <= (sys_wdata[2:0] > 3'd4) ? 3'd0 : sys_wdata[2:0];
         default: ;
       endcase
     end
@@ -453,7 +458,7 @@ function automatic logic [31:0] reg_read(input logic [19:0] ad);
       20'h00048 + 20'h40*c: v = inc_b[c];
       20'h0004c + 20'h40*c: v = 32'(amp_b[c]);
       20'h00050 + 20'h40*c: v = 32'(nbits[c]);
-      20'h00054 + 20'h40*c: v = 32'(src[c]);
+      20'h00054 + 20'h40*c: v = 32'(fft_sel[c]);
       20'h00060 + 20'h40*c: v = s_frames[c];
       20'h00064 + 20'h40*c: v = 32'(s_peak_bin[c]);
       20'h00068 + 20'h40*c: v = s_peak_mag[c];
@@ -476,7 +481,6 @@ always_ff @(posedge sys_clk)
     sc_thr   <= '0;    sc_hyst  <= 14'd20;
     sc_dly   <= 32'(SC_L / 2);
     sc_dec   <= 17'(SC_MIN_DEC);
-    sc_in    <= '{4'd0, 4'd1};
     fr_w1 <= '0;  fr_w2 <= '0;  fr_a1 <= '0;  fr_a2 <= '0;  fr_dly <= '0;  fr_ctl <= '0;
     av_m  <= '0;  av_rs <= 1'b0;
   end else if (sys_wen && sys_addr[20])
@@ -497,10 +501,8 @@ always_ff @(posedge sys_clk)
       20'h00060: fr_a1  <= sys_wdata[23:0];
       20'h00064: fr_a2  <= sys_wdata[23:0];
       20'h001a0: fr_dly <= sys_wdata[23:0];
-      20'h001c8: fr_ctl <= sys_wdata[1:0];
+      20'h001c8: fr_ctl <= sys_wdata[7:0];
       20'h001d8: begin av_m <= sys_wdata[3:0]; av_rs <= !av_rs; end
-      20'h001f0: sc_in[0] <= sys_wdata[3:0];
-      20'h001f4: sc_in[1] <= sys_wdata[3:0];
       default: ;
     endcase
 
@@ -538,8 +540,8 @@ function automatic logic [31:0] sc_read(input logic [19:0] ad);
     20'h001e4: v = SC_BASE[31:0];
     20'h001e8: v = 32'(2 * SC_L);
     20'h001ec: v = {8'h0, 8'd16, 8'd2, 8'd4};
-    20'h001f0: v = 32'(sc_in[0]);
-    20'h001f4: v = 32'(sc_in[1]);
+    20'h001f0: v = 32'(sc_sel[0]);
+    20'h001f4: v = 32'(sc_sel[1]);
     20'h001f8: v = 32'(SC_MIN_DEC);
     20'h001fc: v = 32'd400;
     default: ;
@@ -599,10 +601,12 @@ end
 localparam int FCW = 21;                        // beats (2^21 x 3.2 ns = 6.7 ms)
 logic [23:0]    f_fr_w1, f_fr_w1_m, f_fr_w2, f_fr_w2_m, f_fr_a1, f_fr_a1_m;
 logic [23:0]    f_fr_a2, f_fr_a2_m, f_fr_dly, f_fr_dly_m;
-logic [1:0]     f_fr_ctl, f_fr_ctl_m;
+logic [7:0]     f_fr_ctl, f_fr_ctl_m;
 logic [FCW-1:0] f_off [2], f_acq [2];           // [0] up, [1] down
 (* ASYNC_REG = "TRUE" *) logic [1:0] f_fx_m;
-logic           f_fx_d, f_sync;
+logic           f_fx_d, f_sync, f_ext_edge, f_sc_trig;
+logic [3:0]     f_asg_t, f_asg_d;
+(* ASYNC_REG = "TRUE" *) logic [3:0] f_asg_m, f_asg_s;
 logic [31:0]    f_syncs, f_per, f_per_cnt;
 logic [15:0]    f_skip [NCH];
 logic [3:0]     f_av_m, f_av_m_m;
@@ -625,11 +629,27 @@ always_ff @(posedge fclk) begin
   f_acq[1] <= FCW'(f_fr_a2 >> 3);
 end
 
-// the laser sync (PMOD0_0, asynchronous): two flops, then the selected edge
+// The FFT's own trigger: the scope's trigger (ctl[2], the Red Pitaya's
+// fft_trigger_sync) or, in the scope's codes (ctl[7:4]), asg0-3 (8, 9, 11, 12:
+// each channel's chirp start, a toggle from sys_clk) or else PMOD0_0
+// (asynchronous: two flops, then the edge ctl[1] selects)
+assign f_ext_edge = f_fr_ctl[1] ? (f_fx_d && !f_fx_m[1]) : (!f_fx_d && f_fx_m[1]);
 always_ff @(posedge fclk) begin
-  f_fx_m <= {f_fx_m[0], ext_trig};
-  f_fx_d <= f_fx_m[1];
-  f_sync <= f_fr_ctl[1] ? (f_fx_d && !f_fx_m[1]) : (!f_fx_d && f_fx_m[1]);
+  f_fx_m  <= {f_fx_m[0], ext_trig};
+  f_fx_d  <= f_fx_m[1];
+  f_asg_m <= asg_tog;
+  f_asg_s <= f_asg_m;
+  f_asg_d <= f_asg_s;
+  f_asg_t <= f_asg_s ^ f_asg_d;
+  if (f_fr_ctl[2]) f_sync <= f_sc_trig;
+  else
+    case (f_fr_ctl[7:4])
+      4'd8:    f_sync <= f_asg_t[0];
+      4'd9:    f_sync <= f_asg_t[1];
+      4'd11:   f_sync <= f_asg_t[2];
+      4'd12:   f_sync <= f_asg_t[3];
+      default: f_sync <= f_ext_edge;
+    endcase
   if (!frstn) begin
     f_syncs   <= '0;
     f_per     <= '0;
@@ -648,6 +668,11 @@ end
 
 logic [NCH-1:0] f_cfg_done;
 logic           f_cfg_all;
+
+// every signal, on fclk, registered near its source (filled by the scope's
+// input section below): RF-ADC 0-3, FFT inputs 4.., off 6-7, asg0-3 8-11,
+// out1-4 12-15
+logic [127:0]   sc_in_q [0:15];
 
 // snapshot sources: |X| of each channel (natural order), then each FFT's input
 logic [127:0]     sn_data  [2*NCH];
@@ -760,9 +785,13 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
 
   logic [8*16-1:0]      g_data, s_data;
   logic                 g_valid, s_valid;
-  logic [2:0]           f_src, f_src_m;
+  logic [3:0]           f_src, f_src_m;
+  logic [8*16-1:0]      f_sig;                 // the selected asg / out signal
 
-  always_ff @(posedge fclk) {f_src, f_src_m} <= {f_src_m, src[c]};
+  always_ff @(posedge fclk) begin
+    {f_src, f_src_m} <= {f_src_m, fft_sel[c]};
+    f_sig <= sc_in_q[8 + 3'(f_src - 4'd5)];
+  end
 
   // chirp framing: even channels take the up window, odd ones the down one
   logic fr_valid_d, fr_zero_d, fr_framed, fr_skip;
@@ -777,18 +806,21 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
     if (!frstn) f_skip[c] <= '0;
     else if (fr_skip && f_skip[c] != '1) f_skip[c] <= f_skip[c] + 1'b1;
 
-  // source: the tone generator, or an RF-ADC channel (14 bits at the top of 16),
-  // as the framer presents it: zeros as padding and between frames, so the
+  // source: the tone generator, an RF-ADC channel (14 bits at the top of 16), or
+  // an ASG or DAC output signal (zcu216_dsp), as the framer presents it: zeros as padding and between frames, so the
   // scope's "FFT input" (4 + c) shows exactly what the engine transforms
   always_ff @(posedge fclk)
     if (f_src == 0) begin
       s_data  <= (fr_zero_d || !fr_valid_d) ? '0 : g_data;
       s_valid <= fr_valid_d && g_valid;
+    end else if (f_src > 4'd4) begin
+      s_data  <= (fr_zero_d || !fr_valid_d) ? '0 : f_sig;
+      s_valid <= fr_valid_d;
     end else begin
       for (int j = 0; j < 8; j++)
         s_data[16*j +: 16] <= (fr_zero_d || !fr_valid_d) ? 16'h0
-                              : 16'($signed(adc_data[f_src - 1][16*j +: 16]) >>> 2);
-      s_valid <= fr_valid_d && adc_valid[f_src - 1];
+                              : 16'($signed(adc_data[2'(f_src - 4'd1)][16*j +: 16]) >>> 2);
+      s_valid <= fr_valid_d && adc_valid[2'(f_src - 4'd1)];
     end
   logic signed [XW-1:0] x_re [4], x_im [4];
   logic [SUB-1:0]       x_k;
@@ -939,12 +971,10 @@ logic [13:0]   f_sc_thr, f_sc_hyst;
 logic [31:0]   f_sc_dly;
 logic [16:0]   f_sc_dec;
 logic [3:0]    f_sc_in [2];
-logic [127:0]  sc_x [2], sc_xr [2];
-logic [127:0]  sc_in_q [0:11];                 // every input, registered: RF-ADC 0-3,
-                                               // FFT inputs 4.., ASG 8-11
+logic [127:0]  sc_g [2][4], sc_xr [2];
 logic          f_sc_writing, f_sc_dly_do, f_sc_pre, f_sc_arm_ack, f_sc_rst_ack;
 logic          f_sc_ovf, f_sc_err;
-logic [3:0]    f_sc_trig;
+logic [3:0]    f_sc_trig_src;
 logic [SC_RW-1:0] f_sc_wp_cur, f_sc_wp_trig;
 
 (* ASYNC_REG = "TRUE" *) logic [1:0] sc_arm_m, sc_rst_m, sc_src_tm;
@@ -954,6 +984,7 @@ logic [13:0]   m_sc_thr, m_sc_hyst;
 logic [31:0]   m_sc_dly;
 logic [16:0]   m_sc_dec;
 logic [3:0]    m_sc_in [2];
+logic          f_sc_trig_o;
 always_ff @(posedge fclk) begin
   {f_sc_arm, sc_arm_m}     <= {sc_arm_m, sc_arm_t};
   {f_sc_rst, sc_rst_m}     <= {sc_rst_m, sc_rst_t};
@@ -966,13 +997,13 @@ always_ff @(posedge fclk) begin
   {f_sc_hyst, m_sc_hyst} <= {m_sc_hyst, sc_hyst};
   {f_sc_dly,  m_sc_dly}  <= {m_sc_dly,  sc_dly};
   {f_sc_dec,  m_sc_dec}  <= {m_sc_dec,  sc_dec};
-  m_sc_in <= sc_in;
+  m_sc_in <= sc_sel;
   f_sc_in <= m_sc_in;
 end
 
 // inputs: 14-bit samples in 16 bits, as the FFTs see them. Every candidate is
-// registered first (near its source), then selected: the RF-ADC words and the
-// FFT inputs are far apart and already have other loads.
+// registered first (near its source), then selected in two steps, 4 of 16:
+// the RF-ADC words and the FFT inputs are far apart and already have other loads.
 always_ff @(posedge fclk) begin
   for (int i = 0; i < 4; i++)
     for (int j = 0; j < 8; j++)
@@ -981,21 +1012,25 @@ always_ff @(posedge fclk) begin
     sc_in_q[4 + c] <= sn_data[NCH + c];
   for (int c = NCH; c < 4; c++)
     sc_in_q[4 + c] <= '0;
-  // the ASG's 14-bit sample, sign-extended, on all eight lanes of the beat
-  for (int c = 0; c < 4; c++)
-    sc_in_q[8 + c] <= {8{16'($signed(asg_data[c]))}};
+  // asg0-3 and out1-4: the 14-bit sample, sign-extended, on all eight lanes
+  for (int c = 0; c < 8; c++)
+    sc_in_q[8 + c] <= {8{16'($signed(sig_data[c]))}};
   for (int c = 0; c < 2; c++) begin
-    sc_x[c]  <= (f_sc_in[c] < 4'd12) ? sc_in_q[f_sc_in[c]] : '0;
-    sc_xr[c] <= sc_x[c];
+    for (int g = 0; g < 4; g++)
+      sc_g[c][g] <= sc_in_q[4 * g + 4'(f_sc_in[c][1:0])];
+    sc_xr[c] <= sc_g[c][f_sc_in[c][3:2]];
   end
+  f_sc_trig <= f_sc_trig_o;
+  if (f_sc_trig_o) sc_trig_tog <= !sc_trig_tog;
 end
 
 zcu216_scope #(.L(SC_L), .BASE(SC_BASE)) i_scope (
   .clk (fclk), .rstn (frstn), .x1 (sc_xr[0]), .x2 (sc_xr[1]),
   .dec (f_sc_dec), .avg (f_sc_avg), .thr (16'($signed(f_sc_thr))), .hyst (16'(f_sc_hyst)),
   .dly (f_sc_dly), .keep (f_sc_keep), .src_val (f_sc_src), .src_set (f_sc_src_t),
-  .arm (f_sc_arm), .rst (f_sc_rst), .ext (ext_trig),
-  .writing (f_sc_writing), .dly_do (f_sc_dly_do), .trig_src (f_sc_trig),
+  .arm (f_sc_arm), .rst (f_sc_rst), .ext (ext_trig), .asg_t (f_asg_t),
+  .writing (f_sc_writing), .dly_do (f_sc_dly_do), .trig_src (f_sc_trig_src),
+  .trig_o (f_sc_trig_o),
   .pretrig_ok (f_sc_pre), .wp_cur (f_sc_wp_cur), .wp_trig (f_sc_wp_trig),
   .arm_ack (f_sc_arm_ack), .rst_ack (f_sc_rst_ack), .ovf (f_sc_ovf), .err (f_sc_err),
   .m_awaddr (sc_awaddr), .m_awlen (sc_awlen), .m_awsize (sc_awsize),
@@ -1013,7 +1048,7 @@ always_ff @(posedge fclk) begin
   f_sc_tick <= f_sc_tick + 1'b1;
   if (f_sc_tick == 0) begin
     f_sc_st <= '0;
-    f_sc_st[10:0] <= {f_sc_err, f_sc_ovf, f_sc_rst_ack, f_sc_arm_ack, f_sc_pre, f_sc_trig,
+    f_sc_st[10:0] <= {f_sc_err, f_sc_ovf, f_sc_rst_ack, f_sc_arm_ack, f_sc_pre, f_sc_trig_src,
                       f_sc_dly_do, f_sc_writing};
     f_sc_st[31 -: SC_RW] <= f_sc_wp_cur;
     f_sc_st[63 -: SC_RW] <= f_sc_wp_trig;

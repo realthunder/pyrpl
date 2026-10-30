@@ -95,7 +95,7 @@ read_verilog                      $path_rtl/red_pitaya_adv_trigger.v
 read_verilog                      $path_rtl/red_pitaya_prng.v
 read_verilog -sv                  $path_rtl/zcu216_top.sv
 read_verilog -sv                  $path_rtl/zcu216_bus_cdc.sv
-read_verilog -sv                  $path_rtl/zcu216_dsp_out.sv
+read_verilog -sv                  $path_rtl/zcu216_dsp.sv
 
 if {$fft_en} {
     # sub-FFT: 1 sample/clock, unscaled, bit-reversed output with xk_index (with
@@ -143,7 +143,7 @@ if {$fft_en} {
     read_verilog -sv              $path_rtl/zcu216_snap.sv
     read_verilog -sv              $path_rtl/zcu216_points.sv
     read_verilog -sv              $path_rtl/zcu216_scope.sv
-    read_verilog -sv              $path_rtl/zcu216_asg_cdc.sv
+    read_verilog -sv              $path_rtl/zcu216_sig_cdc.sv
     read_verilog -sv              $path_rtl/zcu216_fft_frame.sv
     read_verilog -sv              $path_rtl/zcu216_fft_avg.sv
     read_verilog -sv              $path_rtl/zcu216_fft_test.sv

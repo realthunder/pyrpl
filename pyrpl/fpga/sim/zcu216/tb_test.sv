@@ -13,8 +13,14 @@ module tb_test;
   logic         dac_valid;
   logic [1:0]   sdo_sel;
   always_ff @(posedge fclk) for (int i = 0; i < 4; i++) adc_data[i] <= dac_data;
-  // the ASG (red_pitaya_asg + zcu216_asg_cdc in zcu216_top): constants here
-  logic [13:0]  asg_data [4] = '{14'(1234), 14'(-2000), 14'(77), 14'(-1)};
+  // the ASG (red_pitaya_asg + zcu216_sig_cdc in zcu216_top): constants here
+  logic [13:0]  sig_data [8] = '{14'(1234), 14'(-2000), 14'(77), 14'(-1),
+                                14'(500), 14'(-600), 14'(700), 14'(-800)};
+  // the signal hub's settings (zcu216_dsp), and the ASG's chirp starts
+  logic [3:0]   sc_sel [2]  = '{4'd0, 4'd1};
+  logic [3:0]   fft_sel [2] = '{4'd0, 4'd0};
+  logic [3:0]   asg_tog = '0;
+  logic         sc_trig_tog;
   // the laser's chirp sync on the external input: with ext_on, a pulse every
   // EXT_P fclk cycles (EXT_P x 8 samples)
   localparam int EXT_P = 100;
@@ -60,7 +66,8 @@ module tb_test;
     .sys_clk(sclk), .sys_rstn(srstn), .sys_addr, .sys_wdata, .sys_wen, .sys_ren,
     .sys_rdata, .sys_err, .sys_ack, .fclk, .frstn, .flocked(1'b1),
     .adc_data, .adc_valid(4'hf), .dac_data, .dac_valid, .spi_sdo_sel(sdo_sel),
-    .meas_clk({fclk, sclk, fclk, sclk}), .ext_trig(ext), .asg_data,
+    .meas_clk({fclk, sclk, fclk, sclk}), .ext_trig(ext), .sig_data, .asg_tog, .sc_trig_tog,
+    .sc_sel, .fft_sel,
     .hp_awaddr, .hp_awlen, .hp_awsize, .hp_awburst, .hp_awcache, .hp_awprot,
     .hp_awvalid, .hp_awready, .hp_wdata, .hp_wstrb, .hp_wlast, .hp_wvalid,
     .hp_wready, .hp_bresp, .hp_bvalid, .hp_bready,
@@ -152,7 +159,7 @@ module tb_test;
     // loopback: DAC tone on bin 50 (+ bin 51 at a quarter), ch1 now takes ADC channel 2
     wr(32'h200, 32'd50 << (32 - NB));  wr(32'h204, 12000);
     wr(32'h208, 32'd51 << (32 - NB));  wr(32'h20c, 3000);   wr(32'h214, 1);
-    wr(32'h94, 3);                                         // ch1 source = ADC ch 2
+    fft_sel[1] = 4'd3;  repeat (20) @(posedge sclk);       // ch1 source = ADC ch 2
     wr(32'h24, 2);  rd(32'h24, v);
     repeat (400) @(posedge sclk);
     begin
@@ -164,7 +171,7 @@ module tb_test;
     end
     // CFAR on the tone generators again (ch1 back to its generator): ch0's
     // tone sits on bin 37, ch1's pair on 100 (+ 101 at half amplitude)
-    wr(32'h94, 0);
+    fft_sel[1] = 4'd0;
     wr(32'h100, 16); wr(32'h104, 2); wr(32'h108, 127); wr(32'h10c, 0);
     wr(32'h110, 2);  wr(32'h114, 8); wr(32'h118, 0);
     repeat (2000) @(posedge sclk);
@@ -244,7 +251,7 @@ module tb_test;
       logic signed [15:0] y [$], y2max;
       int zc = 0, bad = 0;
       rd(32'h1001e0, ln); rd(32'h1001e4, base); rd(32'h1001e8, rl); rd(32'h1001ec, fmt);
-      wr(32'h1001f0, 4);  wr(32'h1001f4, 5);
+      sc_sel = '{4'd4, 4'd5};  repeat (20) @(posedge sclk);
       wr(32'h100014, 2);  wr(32'h100028, 0);  wr(32'h100008, 0);  wr(32'h100020, 20);
       wr(32'h100000, 2);                                    // reset
       wr(32'h100010, ln / 2);
@@ -271,7 +278,7 @@ module tb_test;
       logic [31:0] st, wt, dl, base, rl, ln;
       int bad1 = 0, bad2 = 0;
       rd(32'h1001e0, ln); rd(32'h1001e4, base); rd(32'h1001e8, rl);
-      wr(32'h1001f0, 8);  wr(32'h1001f4, 9);
+      sc_sel = '{4'd8, 4'd9};  repeat (20) @(posedge sclk);
       rd(32'h1001f0, v);
       wr(32'h100000, 2);                                    // reset
       wr(32'h100010, ln);
@@ -289,13 +296,67 @@ module tb_test;
                v, ln, bad1, bad2);
       if (v != 8 || bad1 || bad2) $display("ERR SCOPE ASG");
     end
+    // the DAC outputs as scope inputs (out1, out4); the scope triggered by asg3;
+    // the FFT's sync from asg3 and from the scope's trigger
+    begin
+      logic [31:0] st, wt, dl, base, rl, ln, s0, s1, s2, ctl;
+      int bad1 = 0, bad2 = 0;
+      logic tg0;
+      rd(32'h1001e0, ln); rd(32'h1001e4, base); rd(32'h1001e8, rl);
+      sc_sel = '{4'd12, 4'd15};  repeat (20) @(posedge sclk);
+      wr(32'h100000, 2);                                    // reset
+      wr(32'h100010, ln / 2);
+      wr(32'h100000, 1);                                    // arm
+      repeat (ln) @(posedge fclk);
+      tg0 = sc_trig_tog;
+      wr(32'h100004, 12);                                   // asg3
+      repeat (40) @(posedge fclk);
+      rd(32'h100000, st);
+      if (!st[0] && !st[2]) $display("ERR SCOPE ASG3: the trigger did not wait");
+      asg_tog[3] = !asg_tog[3];
+      do rd(32'h100000, st); while (st[0] || st[2]);
+      rd(32'h10001c, wt);  rd(32'h100010, dl);
+      for (int i = 0; i < ln; i++) begin
+        int k = (int'(wt + dl) - int'(ln) + 1 + i + int'(rl)) % int'(rl);
+        logic [127:0] w = ddr[40'(base) + 40'(16 * (k / 4))];
+        if ($signed(w[16 * (k % 4) +: 16]) != 500) bad1++;
+        if ($signed(w[64 + 16 * (k % 4) +: 16]) != -800) bad2++;
+      end
+      $display("SCOPE out1/out4, triggered by asg3: %0d samples, ch1 != 500: %0d, ch2 != -800: %0d, trigger toggle %b -> %b",
+               ln, bad1, bad2, tg0, sc_trig_tog);
+      if (bad1 || bad2 || tg0 == sc_trig_tog) $display("ERR SCOPE OUT / ASG3");
+      sc_sel = '{4'd0, 4'd1};  repeat (20) @(posedge sclk);
+
+      wr(32'h1001c8, 12 << 4);                              // FFT sync from asg3
+      repeat (10) @(posedge fclk);
+      rd(32'h1001cc, s0);
+      for (int i = 0; i < 5; i++) begin
+        asg_tog[3] = !asg_tog[3];  repeat (30) @(posedge fclk);
+        asg_tog[0] = !asg_tog[0];  repeat (30) @(posedge fclk);  // not this one
+      end
+      repeat (300) @(posedge fclk);
+      rd(32'h1001cc, s1);
+      wr(32'h1001c8, 4);                                    // the scope's trigger
+      repeat (10) @(posedge fclk);
+      wr(32'h100000, 2);  wr(32'h100010, 0);
+      wr(32'h100000, 1);
+      repeat (ln) @(posedge fclk);
+      wr(32'h100004, 1);                                    // now
+      do rd(32'h100000, st); while (st[0] || st[2]);
+      repeat (300) @(posedge fclk);
+      rd(32'h1001cc, s2);
+      rd(32'h1001c8, ctl);
+      $display("FFT sync: asg3 %0d of 5, scope trigger %0d of 1, ctl %h", s1 - s0, s2 - s1, ctl);
+      if (s1 - s0 != 5 || s2 - s1 != 1 || ctl != 4) $display("ERR FFT SYNC SOURCES");
+      wr(32'h1001c8, 0);
+    end
     // chirp framing: a sync every EXT_P beats (800 samples); up window at
     // beat 5 for 20 beats, down at beat 35 for 20 (frames of 32 beats, zero
     // padded): one frame per sync on each channel, none skipped, the tones on
     // their bins (37 and 100) in the shortened, padded frames
     begin
       logic [31:0] fa0, fb0, fa1, fb1, pa, pb, sy0, sy1, per, sk, n, w1, a2, ctl;
-      wr(32'h54, 0);  wr(32'h94, 0);                        // both on their tone generators
+      fft_sel = '{4'd0, 4'd0};                              // both on their tone generators
       wr(32'h100058, 40);  wr(32'h10005c, 80);              // wait1, wait2 (samples)
       wr(32'h100060, 160); wr(32'h100064, 160);             // acq1, acq2
       wr(32'h1001a0, 0);                                    // delay

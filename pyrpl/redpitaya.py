@@ -303,6 +303,10 @@ class RedPitaya(object):
         if self.caps.board != 1:
             self.logger.warning("board='zcu216', but the FPGA reports %s",
                                 self.caps.board_name)
+        elif not self.caps.has('dsp_hub'):
+            self.logger.warning("This ZCU216 image predates the signal hub: "
+                                "scope and FFT input selects will not work; "
+                                "deploy a current image")
         self.logger.info('Connected to the ZCU216 at %s:%s.',
                          self.parameters['hostname'], self.parameters['port'])
         self.parent = self

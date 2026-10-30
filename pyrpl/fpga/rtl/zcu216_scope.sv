@@ -13,8 +13,9 @@
  *
  * As on the Red Pitaya: arm starts writing; once L - dly samples are in (or
  * dly >= L), a trigger (software, channel 1/2 crossing thr upwards or
- * downwards with hysteresis, or an edge of the external input ext: sources
- * 6 rising / 7 falling, as on the Red Pitaya) is taken; dly more samples are written, then
+ * downwards with hysteresis, an edge of the external input ext, sources 6
+ * rising / 7 falling, or an ASG's chirp start, sources 8, 9, 11, 12 for asg0-3,
+ * as on the Red Pitaya) is taken; dly more samples are written, then
  * writing stops (keep: continues). wp_trig is the sample before the trigger,
  * so the trace is the L samples ending at wp_trig + dly. trig_src returns to 0
  * when the trigger and the delay are done, and writing stays up until the last
@@ -46,10 +47,12 @@ module zcu216_scope #(
   input  logic          arm,
   input  logic          rst,
   input  logic          ext,                   // external trigger (asynchronous)
+  input  logic [3:0]    asg_t,                 // ASG chirp starts: one clk per pulse
   // status
   output logic          writing,
   output logic          dly_do,
   output logic [3:0]    trig_src,
+  output logic          trig_o,                // one clk per trigger, for other units
   output logic          pretrig_ok,
   output logic [RW-1:0] wp_cur,
   output logic [RW-1:0] wp_trig,
@@ -267,18 +270,22 @@ always_ff @(posedge clk)
 // samples and lands on its first one (beat resolution, 8 input samples)
 (* ASYNC_REG = "TRUE" *) logic [1:0] ext_m;
 logic       ext_d, xr_p, xf_p;                 // rising / falling edge pending
+logic [3:0] xa_p;                              // ASG pulse pending
 always_ff @(posedge clk) begin
   ext_m <= {ext_m[0], ext};
   ext_d <= ext_m[1];
   if (!rstn) begin
     xr_p <= 1'b0;
     xf_p <= 1'b0;
+    xa_p <= '0;
   end else if (n5 != 0) begin
     xr_p <= ext_m[1] && !ext_d;
     xf_p <= !ext_m[1] && ext_d;
+    xa_p <= asg_t;
   end else begin
     xr_p <= xr_p || (ext_m[1] && !ext_d);
     xf_p <= xf_p || (!ext_m[1] && ext_d);
+    xa_p <= xa_p | asg_t;
   end
 end
 
@@ -293,6 +300,10 @@ always_comb
     4'd5:    ev = en[1];
     4'd6:    ev = (n5 != 0 && xr_p) ? 4'b0001 : 4'b0000;
     4'd7:    ev = (n5 != 0 && xf_p) ? 4'b0001 : 4'b0000;
+    4'd8:    ev = (n5 != 0 && xa_p[0]) ? 4'b0001 : 4'b0000;  // asg0-3, the Red
+    4'd9:    ev = (n5 != 0 && xa_p[1]) ? 4'b0001 : 4'b0000;  // Pitaya's codes
+    4'd11:   ev = (n5 != 0 && xa_p[2]) ? 4'b0001 : 4'b0000;
+    4'd12:   ev = (n5 != 0 && xa_p[3]) ? 4'b0001 : 4'b0000;
     default: ev = '0;
   endcase
 
@@ -332,6 +343,7 @@ end
 assign writing    = (st != S_IDLE) || arm_pend;
 
 always_ff @(posedge clk) begin
+  trig_o   <= 1'b0;
   sc_start <= 1'b0;
   sc_push  <= 1'b0;
   restart  <= 1'b0;
@@ -379,6 +391,7 @@ always_ff @(posedge clk) begin
       S_RUN: if (!c_arm && !c_rst) begin
         // trigger
         if (!triggered && |ev && pretrig_ok) begin
+          trig_o    <= 1'b1;
           triggered <= 1'b1;
           dly_do    <= 1'b1;
           wp_trig   <= RW'(scnt + 32'(epos) - 1);
