@@ -30,7 +30,8 @@ MODULE_BITS = {'ams': 0, 'scope': 1, 'sampler': 2,
 FEATURE_BITS = {'scope_fft': 24,   # FFT / peak / CFAR inside the scope (Red Pitaya)
                 'scope_dma': 25,   # the scope's DMA point stream (Red Pitaya)
                 'rf_fft': 26,      # the RF FFT block (ZCU216 slot 1)
-                'ddr_scope': 27}   # the scope keeps its trace in DDR (ZCU216)
+                'ddr_scope': 27,   # the scope keeps its trace in DDR (ZCU216)
+                'fmc_dac': 28}     # asg0-3 drive the FMC DAC card (ZCU216)
 
 BOARD_NAMES = {0: 'Red Pitaya', 1: 'ZCU216'}
 

@@ -122,6 +122,9 @@ fi
 #                          FFT_NFFT=18 log2 of the real FFT length (sub-FFTs are
 #                                      2^(FFT_NFFT-3) points; xfft allows 8..64k)
 #                          FFT_CH=2    channels
+#                        FMC_DAC=1 (default) drives the PZ-FL9767D DAC card on FMC+
+#                        J28 from the ASG (rtl/zcu216_fmc_dac.sv); 0 leaves the
+#                        FMC pins unused.
 #                        MAX_THREADS (default 8) sets its P&R thread count.
 # BOARD picks the default FPGA_PART, the Vivado script and the bitstream name;
 # FPGA_PART on the command line still wins. e.g.  BOARD=zcu216 ./make.sh
@@ -867,7 +870,7 @@ fi
 if [[ $_ssr -ge 8 ]]; then _single_def=1; else _single_def=0; fi
 echo "==> Board: ${BOARD} (part ${FPGA_PART:-xc7z020clg400-1}, ${BOARD_TCL})"
 if [[ "$BOARD" == "zcu216" ]]; then
-    echo "==> Build config: IMPL=${FFT_IMPL} NFFT=${FFT_NFFT} CH=${FFT_CH} | DET=${DETERMINISTIC} PHYS_OPT=${PHYS_OPT:-AggressiveExplore} MAX_THREADS=${MAX_THREADS:-8}"
+    echo "==> Build config: IMPL=${FFT_IMPL} NFFT=${FFT_NFFT} CH=${FFT_CH} FMC_DAC=${FMC_DAC:-1} | DET=${DETERMINISTIC} PHYS_OPT=${PHYS_OPT:-AggressiveExplore} MAX_THREADS=${MAX_THREADS:-8}"
 else
 echo "==> Build config: IMPL=${FFT_IMPL} SSR=${_ssr} NFFT=${FFT_NFFT:-12} SCALED=${FFT_SCALED:-2} WIDTH=${FFT_WIDTH:-auto} SINGLE=${FFT_SINGLE:-$_single_def} HSZ=${HSZ:-24}"
 echo "                  FFT_CLK=${_fftclk} | DET=${DETERMINISTIC} PHYS_OPT=${PHYS_OPT:-AggressiveExplore} DSP_FB_PIPELINE=${DSP_FB_PIPELINE:-0} SCOPE_FB_PIPELINE=${SCOPE_FB_PIPELINE:-0} MODULE_FB_PIPELINE=${MODULE_FB_PIPELINE:-0} DSP_LEAN=${DSP_LEAN:-0}"
@@ -1042,7 +1045,7 @@ manifest="$WORKROOT/out/BUILD_INFO.txt"
     for v in FPGA_PART ADC_SZ CLK_MULT CLK_ADC_DIV FFT_IMPL FFT_SSR FFT_NFFT \
              FFT_WIDTH PEAK_FRAC PEAK_ALGO CFAR_GUARD_MAX CFAR_TRAIN_MAX PEAK_RAMP CFAR_ZNORM FFT_SCALED FFT_INTERNAL_W FFT_CLK_PERIOD FFT_CLK_SEL FFT_CLK_200 FFT_CLK_178 \
              FFT_MULT_LUT FFT_USE_APPROX FFT_UNSCALED FFT_CORDIC_ITER HIST_BLOCK_SIZE HSZ PHYS_OPT OPT_DIRECTIVE FFT_SINGLE DSP_FB_PIPELINE SCOPE_FB_PIPELINE MODULE_FB_PIPELINE \
-             DSP_LEAN ASG_ADVTRIG ASG0 PID_FILTERSTAGES DMA_PER_CHAN_TAG DMA_INTENSITY MAX_THREADS FFT_CH; do
+             DSP_LEAN ASG_ADVTRIG ASG0 PID_FILTERSTAGES DMA_PER_CHAN_TAG DMA_INTENSITY MAX_THREADS FFT_CH FMC_DAC; do
         printf '%-14s= %s\n' "$v" "${!v:-}"
     done
 } > "$manifest"

@@ -14,8 +14,9 @@
  *                        few hundred KB/s), all on fclk)
  *   slot 2  0x8040_0000  RF Data Converter registers (AXI4-Lite, 256 KB)  [RF]
  *   slot 4  0x8080_0000  ASG (red_pitaya_asg, the Red Pitaya's slot-2 registers):
- *                        four channels on the bus clock (100 MS/s), no DAC; the
- *                        scope sees them as inputs 8-11 [RF]
+ *                        four channels on the bus clock (100 MS/s) to the FMC
+ *                        DAC card (zcu216_fmc_dac, [FMC_DAC]); the scope sees
+ *                        them as inputs 8-11 [RF]
  *   slot 3, 5-7          not built yet: reads return 0, writes are ignored
  *
  * [RF] (define ZCU216_RF, set by zcu216_vivado.tcl unless FFT_IMPL=0): the RF
@@ -27,6 +28,9 @@
  * overflow and underflow, with word slips in the data.) Nothing runs there
  * until zcu216/clk104 has programmed the CLK104 and the tiles are up; the MMCM
  * retries its lock until then.
+ *
+ * [FMC_DAC] (define ZCU216_FMC_DAC, set by zcu216_vivado.tcl unless FMC_DAC=0):
+ * the PZ-FL9767D DAC card on FMC+ J28, fed by the ASG on the bus clock.
  *
  * The bus runs on pl_clk0 (100 MHz). LEDs 0-6 are hk's LED register (0x30);
  * LED 7 is a heartbeat that toggles every 0.67 s, so a running PL clock is
@@ -60,6 +64,12 @@ module zcu216_top #(
   input  logic       vin03_p, vin03_n, vin10_p, vin10_n, vin20_p, vin20_n,
   output logic       vout00_p, vout00_n, vout01_p, vout01_n, vout02_p, vout02_n,
   output logic       vout03_p, vout03_n, vout10_p, vout10_n, vout20_p, vout20_n,
+`endif
+`ifdef ZCU216_FMC_DAC
+  // the PZ-FL9767D DAC card on FMC+ J28 (zcu216_fmc_dac)
+  output logic [55:0] fmc_dac_db,
+  output logic [3:0]  fmc_dac_clk,
+  output logic [3:0]  fmc_dac_wrt,
 `endif
   output logic [7:0] led_g,
   inout  wire  [7:0] pmod0,                    // hk exp_p (J46)
@@ -386,8 +396,13 @@ end
 
 // hk capabilities (red_pitaya_hk.v 0x48..0x5C): RF-ADC/DAC 2.5 GS/s, 14 bits,
 // four channels each (ADC tile 224, DAC tile 228); the bus runs on pl_clk0.
-// Modules: asg0-3 always; the scope (DDR ring) and the RF FFT block with RF.
+// Modules: asg0-3 always; the scope (DDR ring) and the RF FFT block with RF;
+// bit 28 = the ASG drives the FMC DAC card.
+`ifdef ZCU216_FMC_DAC
+localparam logic [31:0] HK_ASG = (32'hF << 3) | (32'h1 << 28);
+`else
 localparam logic [31:0] HK_ASG = 32'hF << 3;
+`endif
 `ifdef ZCU216_RF
 localparam logic [31:0] HK_MODULES = HK_ASG | (32'h1 << 1) | (32'h1 << 26) | (32'h1 << 27);
 `else
@@ -435,8 +450,9 @@ red_pitaya_hk #(
 // red_pitaya_asg as on the Red Pitaya: four channels, 16k-sample tables, the
 // same registers (Red Pitaya slot 2, here slot 4: slot 2 is the RF Data
 // Converter). It runs on the bus clock, so 100 MS/s against the Red Pitaya's
-// 125 (hk 0x54 tells pyrpl). No DAC: its outputs only reach the scope, as
-// inputs 8-11. The external trigger is PMOD0_0, as DIO0_P is on the Red Pitaya.
+// 125 (hk 0x54 tells pyrpl). Its outputs reach the scope as inputs 8-11 and,
+// with ZCU216_FMC_DAC, the FMC DAC card (channel n = asg n). The external
+// trigger is PMOD0_0, as DIO0_P is on the Red Pitaya.
 logic [13:0] asg_out [4];
 
 red_pitaya_asg i_asg (
@@ -470,6 +486,12 @@ red_pitaya_asg i_asg (
   .sys_err       (sys_err[4]          ),
   .sys_ack       (sys_ack[4]          )
 );
+
+`ifdef ZCU216_FMC_DAC
+// the FMC DAC card: ASG channel n -> DAC channel n (SMB J2-J5), 100 MS/s
+zcu216_fmc_dac i_fmc_dac (.clk (sys_clk), .din (asg_out), .fmc_dac_db, .fmc_dac_clk,
+  .fmc_dac_wrt);
+`endif
 
 ////////////////////////////////////////////////////////////////////////////////
 // RF Data Converter (slot 2) and FFT / RF bring-up (slot 1)

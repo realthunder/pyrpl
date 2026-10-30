@@ -66,6 +66,10 @@ if {$fft_en && ($fft_nfft < 6 || $fft_nfft > 19)} {
     error "zcu216: FFT_NFFT=$fft_nfft out of range (sub-FFT 2^(NFFT-3) must be 8..64k)"
 }
 puts "INFO: FFT_IMPL=$fft_impl FFT_NFFT=$fft_nfft FFT_CH=$fft_ch"
+# FMC_DAC: the Puzhi PZ-FL9767D DAC card on FMC+ J28 (four channels from the
+# ASG, rtl/zcu216_fmc_dac.sv). 1 (default) or 0 = leave the FMC pins unused.
+set fmc_dac [expr {[info exists env(FMC_DAC)] ? $env(FMC_DAC) : 1}]
+puts "INFO: FMC_DAC=$fmc_dac"
 
 set zcu216_hp $fft_en               ;# snapshot DMA ports (S_AXI_HP0/HP1) in RF builds
 source                            $path_ip/system_bd_zcu216.tcl
@@ -143,15 +147,19 @@ if {$fft_en} {
     read_verilog -sv              $path_rtl/zcu216_fft_test.sv
 }
 
+if {$fmc_dac} { read_verilog -sv  $path_rtl/zcu216_fmc_dac.sv }
+
 read_xdc                          $path_sdc/zcu216.xdc
 if {$fft_en} { read_xdc           $path_sdc/zcu216_rf.xdc }
+if {$fmc_dac} { read_xdc          $path_sdc/zcu216_fmc_dac.xdc }
 
 ################################################################################
 # synthesis
 ################################################################################
 
-set rf_define [expr {$fft_en ? {-verilog_define ZCU216_RF} : {}}]
-synth_design -top zcu216_top -flatten_hierarchy none {*}$rf_define \
+set synth_defines [expr {$fft_en ? {-verilog_define ZCU216_RF} : {}}]
+if {$fmc_dac} { lappend synth_defines -verilog_define ZCU216_FMC_DAC }
+synth_design -top zcu216_top -flatten_hierarchy none {*}$synth_defines \
     -generic FFT_NFFT=$fft_nfft -generic FFT_NCH=$fft_ch
 
 # pl_clk0 (register bus) and the CLK104 clocks (fclk for the FFT and the RF
