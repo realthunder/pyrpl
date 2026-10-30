@@ -370,12 +370,15 @@ class Pyrpl(object):
         soft_mod_names = ['Asgs', 'Iqs', 'Pids', 'Scopes', 'Iirs', 'Trigs','Pwms',
                           'Hks'] + self.c.pyrpl.modules
         caps = getattr(self.rp, 'caps', None)
-        if caps is not None and not (caps.has('asg0') or caps.has('iq0')):
-            # no ASG or IQ in the bitstream (e.g. the ZCU216): only what
-            # needs no DSP
-            soft_mod_names = ['Scopes', 'Hks'] + [
-                m for m in self.c.pyrpl.modules
-                if m not in ('NetworkAnalyzer', 'SpectrumAnalyzer', 'Lockbox')]
+        if caps is not None and not caps.has('iq0'):
+            # no IQ in the bitstream (the ZCU216): no analyzers or lockbox,
+            # and with no ASG either only what needs no DSP
+            analyzers = ('NetworkAnalyzer', 'SpectrumAnalyzer', 'Lockbox')
+            soft_mod_names = [m for m in soft_mod_names if m not in analyzers]
+            if not caps.has('asg0'):
+                soft_mod_names = ['Scopes', 'Hks'] + list(self.c.pyrpl.modules)
+                soft_mod_names = [m for m in soft_mod_names
+                                  if m not in analyzers]
         module_classes = [get_module(cls_name)
                           for cls_name in soft_mod_names]
         module_names = pyrpl_utils.\
