@@ -45,7 +45,7 @@
  */
 
 module zcu216_top #(
-  parameter int    FFT_NFFT = 18,     // log2 of the real FFT length
+  parameter int    FFT_NFFT = 16,     // log2 of the real FFT length
   parameter int    FFT_NCH  = 2,
   parameter int    FFT_WIN  = 4096,
   parameter string TWC_FILE = "out/zcu216_twc.mem",

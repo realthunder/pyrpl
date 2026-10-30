@@ -119,8 +119,10 @@ fi
 #                                      cores (rtl/zcu216_fft_dit8.sv), 8 samples per
 #                                      clock at 312.5 MHz; FFT_IMPL=0 builds the
 #                                      shell without the FFT block
-#                          FFT_NFFT=18 log2 of the real FFT length (sub-FFTs are
-#                                      2^(FFT_NFFT-3) points; xfft allows 8..64k)
+#                          FFT_NFFT=16 log2 of the real FFT length (sub-FFTs are
+#                                      2^(FFT_NFFT-3) points; xfft allows 8..64k).
+#                                      With the per-bin power average, 18 needs
+#                                      128 URAM of the 80 and fails synthesis.
 #                          FFT_CH=2    channels
 #                        FMC_DAC=1 (default) drives the PZ-FL9767D DAC card on FMC+
 #                        J28 from the ASG (rtl/zcu216_fmc_dac.sv); 0 leaves the
@@ -137,7 +139,7 @@ case "$BOARD" in
     zcu216)
         export FPGA_PART=${FPGA_PART:-xczu49dr-ffvf1760-2-e}
         export FFT_IMPL=${FFT_IMPL:-6}
-        export FFT_NFFT=${FFT_NFFT:-18}
+        export FFT_NFFT=${FFT_NFFT:-16}
         export FFT_CH=${FFT_CH:-2}
         if [[ "$FFT_IMPL" != 0 && "$FFT_IMPL" != 6 ]]; then
             echo "ERROR: BOARD=zcu216 builds FFT_IMPL=6 (or 0 = no FFT), not $FFT_IMPL" >&2; exit 1

@@ -58,7 +58,7 @@ create_project -in_memory -part $part
 set_property board_part $board_part [current_project]
 
 set fft_impl [expr {[info exists env(FFT_IMPL)] ? $env(FFT_IMPL) : 6}]
-set fft_nfft [expr {[info exists env(FFT_NFFT)] ? $env(FFT_NFFT) : 18}]
+set fft_nfft [expr {[info exists env(FFT_NFFT)] ? $env(FFT_NFFT) : 16}]
 set fft_ch   [expr {[info exists env(FFT_CH)]   ? $env(FFT_CH)   : 2}]
 set fft_en   [expr {$fft_impl == 6}]
 if {$fft_impl != 0 && $fft_impl != 6} { error "zcu216: FFT_IMPL must be 6 or 0, got $fft_impl" }
