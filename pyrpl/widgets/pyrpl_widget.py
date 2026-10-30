@@ -289,6 +289,8 @@ class PyrplWidget(QtWidgets.QMainWindow):
         self.timer_toolbar.timeout.connect(self.vanish_toolbar)
 
         self.status_bar = self.statusBar()
+        self._bar_msg = ''          # the log / exception message on the bar
+        self.status_bar.messageChanged.connect(self._bar_message_changed)
         EL.show_exception.connect(self.show_exception)
         self.handler.show_log.connect(self.show_log)
         self.foreign_handler.show_log.connect(self.show_log)
@@ -313,7 +315,8 @@ class PyrplWidget(QtWidgets.QMainWindow):
         """
         typ, val, tb = typ_val_tb
         self.timer_toolbar.stop()
-        self.status_bar.showMessage(''.join(format_exception_only(typ, val)))
+        self._bar_msg = ''.join(format_exception_only(typ, val))
+        self.status_bar.showMessage(self._bar_msg)
         self._bar_style('color: white;background-color: red;')
         self._next_toolbar_style = 'color: orange;'
         self.status_bar.setToolTip(''.join(format_exception(typ, val, tb)))
@@ -348,6 +351,7 @@ class PyrplWidget(QtWidgets.QMainWindow):
         if cls < self._held_level and time.monotonic() < self._held_until:
             return
         self.timer_toolbar.stop()
+        self._bar_msg = record
         self.status_bar.showMessage(record)
         self.status_bar.setToolTip(record if cls != logging.NOTSET else '')
         fresh, faded = self._LOG_STYLES[cls]
@@ -364,7 +368,18 @@ class PyrplWidget(QtWidgets.QMainWindow):
         """
         Toolbar becomes orange after (called 1s after exception occured)
         """
-        self._bar_style(self._next_toolbar_style)
+        if self.status_bar.currentMessage() == self._bar_msg:
+            self._bar_style(self._next_toolbar_style)
+
+    def _bar_message_changed(self, text):
+        """The bar's colour belongs to the log message it was set for: any
+        other text - a widget's status tip shown on hover, or the bar
+        cleared when the hover ends - gets the plain style. The faded
+        error / warning colour stayed on the bar indefinitely and every
+        hover help text after an error came out red."""
+        if text != self._bar_msg:
+            self._bar_msg = ''
+            self.status_bar.setStyleSheet('')
 
     def _bar_style(self, css):
         """Style the status bar alone. A rule without a selector also styles
