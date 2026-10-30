@@ -1085,6 +1085,10 @@ class RedPitaya(object):
         return self.installserver()
 
     def endserver(self):
+        if getattr(self, 'ssh', None) is None:
+            # ZCU216: the server runs from the SD card at boot, no ssh to it
+            self._serverrunning = False
+            return
         try:
             self.ssh.ask('\x03') #exit running server application
         except:
@@ -1113,7 +1117,8 @@ class RedPitaya(object):
         self.endclient()
 
     def end_ssh(self):
-        self.ssh.channel.close()
+        if getattr(self, 'ssh', None) is not None:
+            self.ssh.channel.close()
 
     def end_all(self):
         self.end()
