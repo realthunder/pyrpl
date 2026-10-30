@@ -45,10 +45,13 @@ class MonitorClient(object):
     # A reply that stops for IO_TIMEOUT s fails its command. Inside a bulk
     # reply the limit is BULK_IDLE_TIMEOUT: between the board and a WSL host
     # (Windows NAT) TCP loses packets, and a lost retransmission waits 0.2,
-    # then 0.4, then 0.8 s - a second-long pause in a healthy link. A bulk
-    # reply that paused for STALL_LOG_S s is logged with its pause.
+    # then 0.4, then 0.8 s - a second-long pause in a healthy link. Longer
+    # stalls do happen (2026-10-30, ZCU216 GUI: one of over 5 s in ~35 min,
+    # 376 bytes short of a 128 KB reply; none in 17k back-to-back bulk reads
+    # without the GUI), and the link then recovers faster by reconnecting
+    # than by waiting. A bulk reply that paused for STALL_LOG_S s is logged.
     IO_TIMEOUT = 1.0
-    BULK_IDLE_TIMEOUT = 5.0
+    BULK_IDLE_TIMEOUT = 2.0
     STALL_LOG_S = 0.3
 
     def __init__(self, hostname="192.168.1.0", port=2222, restartserver=None,
