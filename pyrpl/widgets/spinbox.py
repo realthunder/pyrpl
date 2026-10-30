@@ -212,9 +212,11 @@ class NumberSpinBox(QtWidgets.QWidget):
         """
         sets the min size for content to fit.
         """
-        font = QtGui.QFont("", 0)
-        font_metric = QtGui.QFontMetrics(font)
-        pixel_wide = font_metric.width("0"*self.max_num_letter)
+        # the line's own font, at least two digits, plus its frame and text
+        # margins (2 + 2 px a side, + 2): the bare digit width clipped every
+        # box by about half a digit, and a 0..8 box entirely
+        font_metric = self.line.fontMetrics()
+        pixel_wide = font_metric.width("0"*max(self.max_num_letter, 2)) + 10
         self.line.setFixedWidth(pixel_wide)
 
     @property
