@@ -69,17 +69,20 @@ class Zcu216Scope(Scope):
     _inputs = sorted_dict({"asg0": 8, "asg1": 9, "asg2": 10, "asg3": 11,
                            "adc0": 12, "adc1": 13, "adc2": 22, "adc3": 23,
                            "out1": 14, "out2": 15, "out3": 24, "out4": 25,
-                           "fft0": 26, "fft1": 27, "off": 21},
+                           "fft0": 26, "fft1": 27, "off": 21,
+                           "pid0": 0, "iir": 4, "iq0": 5},
                           sort_by_values=False)  # adc0 first: the default
     inputs = _inputs.keys()
     input1 = SelectRegister(dsp_addr_base('asg0') - addr_base, options=_inputs,
                             default="adc0",
                             doc="channel 1: an RF-ADC channel, an ASG channel, "
-                                "a DAC output, or the input of FFT channel 0/1")
+                                "a DAC output, a DSP module, or the input of "
+                                "FFT channel 0/1")
     input2 = SelectRegister(dsp_addr_base('asg1') - addr_base, options=_inputs,
                             default="adc1",
                             doc="channel 2: an RF-ADC channel, an ASG channel, "
-                                "a DAC output, or the input of FFT channel 0/1")
+                                "a DAC output, a DSP module, or the input of "
+                                "FFT channel 0/1")
 
     _trigger_sources = sorted_dict({"off": 0,
                                     "immediately": 1,

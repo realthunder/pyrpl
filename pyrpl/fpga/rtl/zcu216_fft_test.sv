@@ -56,7 +56,7 @@
  *   0x40 + 0x40*c, channel c:
  *     +0x00 inc_a   +0x04 amp_a   +0x08 inc_b   +0x0c amp_b   +0x10 noise bits (0-18)
  *     +0x14 RO source, set in the signal hub (zcu216_dsp): 0 = tone generator,
- *           1-4 = RF-ADC tile 224 channel 0-3, 5-12 = asg0-3, out1-4
+ *           1-4 = RF-ADC tile 224 channel 0-3, 5 = the hub's signal
  *     +0x18 RO CFAR result [31:0] = raw magnitude (reading it latches +0x1c)
  *     +0x1c RO CFAR result [63:32]: [0] detected, [IW:1] k_interp = bin * 256 + offset
  *     +0x20 RO frames      +0x24 RO peak bin      +0x28 RO peak mag
@@ -80,8 +80,8 @@
  *             +0x1e8 RO ring length (samples)   +0x1ec RO {bits, channels, samples per
  *                   channel per 16-byte word} = [23:16], [15:8], [7:0]
  *             +0x1f0 / +0x1f4 RO input of channel 1 / 2, set in the signal hub
- *                   (zcu216_dsp): 0-3 RF-ADC tile 224, 4-5 FFT inputs, 8-11 asg0-3,
- *                   12-15 out1-4 (each sample held over the 2.5 GS/s beats)
+ *                   (zcu216_dsp): 0-3 RF-ADC tile 224, 4-5 FFT inputs, 6 + channel
+ *                   the hub's signal (each sample held over the 2.5 GS/s beats)
  *             +0x1f8 RO recommended minimum decimation
  *             +0x1fc RO sample period (ps) before decimation
              chirp-synced FFT (lidar/docs/Zcu216ChirpFft.md), ADC samples:
@@ -141,11 +141,11 @@ module zcu216_fft_test #(
   // clocks to measure (debug)
   input  logic [3:0]   meas_clk,
   input  logic         ext_trig,             // scope external trigger (async, PMOD0_0)
-  input  logic [13:0]  sig_data [8],         // asg0-3, out1-4 (fclk, latest sample)
+  input  logic [13:0]  sig_data [4],         // the hub's: scope 1, 2, FFT 0, 1 (fclk, latest sample)
   input  logic [3:0]   asg_tog,              // ASG chirp starts, toggles (sys_clk)
   output logic         sc_trig_tog = 1'b0,   // the scope's trigger, a toggle (fclk)
-  input  logic [3:0]   sc_sel [2],           // scope inputs (zcu216_dsp, quasi-static)
-  input  logic [3:0]   fft_sel [2],          // FFT inputs (zcu216_dsp, quasi-static)
+  input  logic [2:0]   sc_sel [2],           // scope inputs (zcu216_dsp, quasi-static)
+  input  logic [2:0]   fft_sel [2],          // FFT inputs (zcu216_dsp, quasi-static)
   // snapshot DMA: two AXI4 write masters on fclk (S_AXI_HP0/HP1)
   output logic [48:0]  hp_awaddr  [2],
   output logic [7:0]   hp_awlen   [2],
@@ -670,9 +670,9 @@ logic [NCH-1:0] f_cfg_done;
 logic           f_cfg_all;
 
 // every signal, on fclk, registered near its source (filled by the scope's
-// input section below): RF-ADC 0-3, FFT inputs 4.., off 6-7, asg0-3 8-11,
-// out1-4 12-15
-logic [127:0]   sc_in_q [0:15];
+// input section below): RF-ADC 0-3, FFT inputs 4-5, the hub's signal for
+// scope channel 1, 2 at 6, 7 (all the other signals, zcu216_dsp)
+logic [127:0]   sc_in_q [0:7];
 
 // snapshot sources: |X| of each channel (natural order), then each FFT's input
 logic [127:0]     sn_data  [2*NCH];
@@ -785,12 +785,12 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
 
   logic [8*16-1:0]      g_data, s_data;
   logic                 g_valid, s_valid;
-  logic [3:0]           f_src, f_src_m;
-  logic [8*16-1:0]      f_sig;                 // the selected asg / out signal
+  logic [2:0]           f_src, f_src_m;
+  logic [8*16-1:0]      f_sig;                 // the hub's signal for this channel
 
   always_ff @(posedge fclk) begin
     {f_src, f_src_m} <= {f_src_m, fft_sel[c]};
-    f_sig <= sc_in_q[8 + 3'(f_src - 4'd5)];
+    f_sig <= {8{16'($signed(sig_data[2 + c]))}};
   end
 
   // chirp framing: even channels take the up window, odd ones the down one
@@ -807,20 +807,21 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
     else if (fr_skip && f_skip[c] != '1) f_skip[c] <= f_skip[c] + 1'b1;
 
   // source: the tone generator, an RF-ADC channel (14 bits at the top of 16), or
-  // an ASG or DAC output signal (zcu216_dsp), as the framer presents it: zeros as padding and between frames, so the
-  // scope's "FFT input" (4 + c) shows exactly what the engine transforms
+  // the hub's signal (zcu216_dsp), as the framer presents it: zeros as padding and
+  // between frames, so the scope's "FFT input" (4 + c) shows exactly what the
+  // engine transforms
   always_ff @(posedge fclk)
     if (f_src == 0) begin
       s_data  <= (fr_zero_d || !fr_valid_d) ? '0 : g_data;
       s_valid <= fr_valid_d && g_valid;
-    end else if (f_src > 4'd4) begin
+    end else if (f_src > 3'd4) begin
       s_data  <= (fr_zero_d || !fr_valid_d) ? '0 : f_sig;
       s_valid <= fr_valid_d;
     end else begin
       for (int j = 0; j < 8; j++)
         s_data[16*j +: 16] <= (fr_zero_d || !fr_valid_d) ? 16'h0
-                              : 16'($signed(adc_data[2'(f_src - 4'd1)][16*j +: 16]) >>> 2);
-      s_valid <= fr_valid_d && adc_valid[2'(f_src - 4'd1)];
+                              : 16'($signed(adc_data[2'(f_src - 3'd1)][16*j +: 16]) >>> 2);
+      s_valid <= fr_valid_d && adc_valid[2'(f_src - 3'd1)];
     end
   logic signed [XW-1:0] x_re [4], x_im [4];
   logic [SUB-1:0]       x_k;
@@ -970,8 +971,8 @@ logic [3:0]    f_sc_src;
 logic [13:0]   f_sc_thr, f_sc_hyst;
 logic [31:0]   f_sc_dly;
 logic [16:0]   f_sc_dec;
-logic [3:0]    f_sc_in [2];
-logic [127:0]  sc_g [2][4], sc_xr [2];
+logic [2:0]    f_sc_in [2];
+logic [127:0]  sc_g [2][2], sc_xr [2];
 logic          f_sc_writing, f_sc_dly_do, f_sc_pre, f_sc_arm_ack, f_sc_rst_ack;
 logic          f_sc_ovf, f_sc_err;
 logic [3:0]    f_sc_trig_src;
@@ -983,7 +984,7 @@ logic [3:0]    m_sc_src;
 logic [13:0]   m_sc_thr, m_sc_hyst;
 logic [31:0]   m_sc_dly;
 logic [16:0]   m_sc_dec;
-logic [3:0]    m_sc_in [2];
+logic [2:0]    m_sc_in [2];
 logic          f_sc_trig_o;
 always_ff @(posedge fclk) begin
   {f_sc_arm, sc_arm_m}     <= {sc_arm_m, sc_arm_t};
@@ -1002,7 +1003,7 @@ always_ff @(posedge fclk) begin
 end
 
 // inputs: 14-bit samples in 16 bits, as the FFTs see them. Every candidate is
-// registered first (near its source), then selected in two steps, 4 of 16:
+// registered first (near its source), then selected in two steps, 4 of 8:
 // the RF-ADC words and the FFT inputs are far apart and already have other loads.
 always_ff @(posedge fclk) begin
   for (int i = 0; i < 4; i++)
@@ -1010,15 +1011,15 @@ always_ff @(posedge fclk) begin
       sc_in_q[i][16*j +: 16] <= 16'($signed(adc_data[i][16*j +: 16]) >>> 2);
   for (int c = 0; c < NCH; c++)
     sc_in_q[4 + c] <= sn_data[NCH + c];
-  for (int c = NCH; c < 4; c++)
+  for (int c = NCH; c < 2; c++)
     sc_in_q[4 + c] <= '0;
-  // asg0-3 and out1-4: the 14-bit sample, sign-extended, on all eight lanes
-  for (int c = 0; c < 8; c++)
-    sc_in_q[8 + c] <= {8{16'($signed(sig_data[c]))}};
+  // the hub's: the 14-bit sample, sign-extended, on all eight lanes
+  for (int c = 0; c < 2; c++)
+    sc_in_q[6 + c] <= {8{16'($signed(sig_data[c]))}};
   for (int c = 0; c < 2; c++) begin
-    for (int g = 0; g < 4; g++)
-      sc_g[c][g] <= sc_in_q[4 * g + 4'(f_sc_in[c][1:0])];
-    sc_xr[c] <= sc_g[c][f_sc_in[c][3:2]];
+    for (int g = 0; g < 2; g++)
+      sc_g[c][g] <= sc_in_q[4 * g + 3'(f_sc_in[c][1:0])];
+    sc_xr[c] <= sc_g[c][f_sc_in[c][2]];
   end
   f_sc_trig <= f_sc_trig_o;
   if (f_sc_trig_o) sc_trig_tog <= !sc_trig_tog;

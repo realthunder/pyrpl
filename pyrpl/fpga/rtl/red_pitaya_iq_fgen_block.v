@@ -152,10 +152,10 @@ always @(posedge clk_i) begin
     invertsignal2_reg_reg <= invertsignal2_reg;
     invertsignal3_reg_reg <= invertsignal3_reg;
     invertsignal4_reg_reg <= invertsignal4_reg;
-    sin_reg <= lutrom[phase1];    //sin_reg ready in cycle n+2
-    cos_reg <= lutrom[phase2];
-    sin_shifted_reg <= lutrom[phase3];
-    cos_shifted_reg <= lutrom[phase4];
+    sin_reg <= lutrom[phase1[LUTSZ-1:0]];    //sin_reg ready in cycle n+2
+    cos_reg <= lutrom[phase2[LUTSZ-1:0]];
+    sin_shifted_reg <= lutrom[phase3[LUTSZ-1:0]];
+    cos_shifted_reg <= lutrom[phase4[LUTSZ-1:0]];
     if (on==1'b0) begin
         phase <= {PHASEBITS{1'b0}}; 
         sin <= {LUTBITS{1'b0}};

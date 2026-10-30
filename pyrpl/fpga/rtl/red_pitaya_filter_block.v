@@ -77,7 +77,7 @@ generate for (j = 0; j < STAGES; j = j+1)
   (
   .clk_i(clk_i),
   .rstn_i(rstn_i),
-  .shift(set_filter[j*8+SHIFTBITS-1:j*8]), 
+  .shift({1'b0, set_filter[j*8+SHIFTBITS-1:j*8]}), 
   .filter_on(set_filter[j*8+7]),
   .highpass(set_filter[j*8+6]),
   .signal_i(filter_in[j]),

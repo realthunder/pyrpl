@@ -1,7 +1,7 @@
 /**
  * The Puzhi PZ-FL9767D FMC DAC card (two AD9767, four 14-bit channels up to
  * 125 MS/s) on the ZCU216's FMC+ connector J28, driven from the output
- * routing's out1-4 (zcu216_dsp_out) at sys_clk, 125 MS/s.
+ * routing's out1-4 (zcu216_dsp) at sys_clk, 125 MS/s.
  *
  * Card (schematic 3312272550PZ-FL9767D-SCH): every AD9767 port has its own 14
  * data pins, CLK and WRT on the FMC LA pins, through SN74AVC16T245 shifters

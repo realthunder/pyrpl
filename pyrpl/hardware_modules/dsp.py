@@ -31,11 +31,44 @@ DSP_INPUTS = OrderedDict([
     # ('scope1', 9), #same as asg1 by design
     ('off', 21)])
 
+# the signal hub (ZCU216, rtl/zcu216_dsp.sv): the same numbers, these on top,
+# and the modules only as far as the bitstream has them
+HUB_INPUTS = OrderedDict([
+    ('in3', 22),
+    ('in4', 23),
+    ('out3', 24),
+    ('out4', 25)])
+HUB_SIGNALS = ('in1', 'in2', 'out1', 'out2', 'off')
+
+
+def board_caps(instance):
+    """ the capabilities of the FPGA (board_caps.py) that instance, a
+    hardware or software module, runs on; None if it cannot tell"""
+    rp = getattr(instance, '_rp', None)
+    if rp is None:
+        try:
+            rp = instance.pyrpl.rp
+        except (AttributeError, ExpectedPyrplError):
+            return None
+    return getattr(rp, 'caps', None)
+
+
+def dsp_inputs(instance):
+    """ name -> DSP number of the signals of the FPGA that instance runs on"""
+    caps = board_caps(instance)
+    if caps is None or not caps.has('dsp_hub'):
+        return DSP_INPUTS
+    signals = OrderedDict((k, v) for k, v in DSP_INPUTS.items()
+                          if k in HUB_SIGNALS or caps.has(k))
+    signals.update(HUB_INPUTS)
+    return signals
+
+
 def all_inputs_keys(instance):
     """ collects all available logical inputs, composed of all
     dsp inputs and all submodule inputs, such as lockbox signals etc."""
     # options is a mapping from option names to the setting of _input
-    signals = list(DSP_INPUTS.keys())
+    signals = list(dsp_inputs(instance).keys())
     if instance is not None:
         try:
             pyrpl = instance.pyrpl
@@ -65,9 +98,10 @@ def all_inputs(instance):
     dsp inputs and all submodule inputs, such as lockbox signals etc."""
     # options is a mapping from option names to the setting of _input
     signals = OrderedDict()
+    inputs = dsp_inputs(instance)
     for k in all_inputs_keys(instance):
-        if k in DSP_INPUTS:
-            signals[k] = DSP_INPUTS[k]
+        if k in inputs:
+            signals[k] = inputs[k]
         elif instance is not None:
             try:
                 signals[k] = recursive_getattr(instance.pyrpl, k+'.signal')()
@@ -132,7 +166,7 @@ class InputSelectRegister(InputSelectProperty, SelectRegister):
 
 
 def all_output_directs(instance):
-    caps = getattr(getattr(instance, '_rp', None), 'caps', None)
+    caps = board_caps(instance)
     if caps is not None and caps.has('fmc_dac'):
         # ZCU216: four outputs (the FMC DAC card's channels), output_direct is a
         # mask, bit k = out(k+1); 1-3 mean what they do on the Red Pitaya

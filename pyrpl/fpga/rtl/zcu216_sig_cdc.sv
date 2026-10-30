@@ -1,6 +1,6 @@
 /**
  * N 14-bit signals, one sample per system clock (sys_clk, 125 MHz), into fclk
- * (312.5 MHz) for their sinks (zcu216_dsp): a 16-entry ring in distributed RAM,
+ * (312.5 MHz) for the scope and the FFT (zcu216_dsp): a 16-entry ring in distributed RAM,
  * written every sys_clk, and a Gray-coded write pointer through two flops.
  * The reader takes the entry two behind the pointer it sees: written at least
  * one sys_clk (8 ns) before, and left alone for 13 more. No reset and no
@@ -9,7 +9,7 @@
  * (repeated two or three times per sys_clk).
  */
 module zcu216_sig_cdc #(
-  parameter int N = 8
+  parameter int N = 4
 ) (
   input  logic        sys_clk,
   input  logic [13:0] din  [N],

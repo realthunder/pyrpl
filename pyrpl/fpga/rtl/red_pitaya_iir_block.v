@@ -468,7 +468,6 @@ always @(posedge clk_i) begin
   //$display("p_ay1_over_2: %d", p_ay1_over_2);
   //$display("p_ay1_full: %d", p_ay1_full);
 
-  $fwrite(fdebug,"%d\n", x0);
   //$display("z0: %d", z0);
   //$display("x0: %b", x0);
 end

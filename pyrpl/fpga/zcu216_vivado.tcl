@@ -70,6 +70,10 @@ puts "INFO: FFT_IMPL=$fft_impl FFT_NFFT=$fft_nfft FFT_CH=$fft_ch"
 # ASG, rtl/zcu216_fmc_dac.sv). 1 (default) or 0 = leave the FMC pins unused.
 set fmc_dac [expr {[info exists env(FMC_DAC)] ? $env(FMC_DAC) : 1}]
 puts "INFO: FMC_DAC=$fmc_dac"
+# DSP_IIR: the hub's IIR filter (rtl/red_pitaya_iir_block.v). 0 (default, as on
+# the Red Pitaya, which leaves it out too) or 1.
+set dsp_iir [expr {[info exists env(DSP_IIR)] ? $env(DSP_IIR) : 0}]
+puts "INFO: DSP_IIR=$dsp_iir"
 
 set zcu216_hp $fft_en               ;# snapshot DMA ports (S_AXI_HP0/HP1) in RF builds
 source                            $path_ip/system_bd_zcu216.tcl
@@ -96,6 +100,12 @@ read_verilog                      $path_rtl/red_pitaya_prng.v
 read_verilog -sv                  $path_rtl/zcu216_top.sv
 read_verilog -sv                  $path_rtl/zcu216_bus_cdc.sv
 read_verilog -sv                  $path_rtl/zcu216_dsp.sv
+# the hub's modules, the Red Pitaya's as they are
+foreach f {pid_block iq_block iq_fgen_block iq_demodulator_block iq_modulator_block
+           pfd_block filter_block lpf_block iq_lpf_block iq_hpf_block iir_block
+           product_sat saturate} {
+    read_verilog                  $path_rtl/red_pitaya_$f.v
+}
 
 if {$fft_en} {
     # sub-FFT: 1 sample/clock, unscaled, bit-reversed output with xk_index (with
@@ -144,6 +154,7 @@ if {$fft_en} {
     read_verilog -sv              $path_rtl/zcu216_points.sv
     read_verilog -sv              $path_rtl/zcu216_scope.sv
     read_verilog -sv              $path_rtl/zcu216_sig_cdc.sv
+    read_verilog -sv              $path_rtl/zcu216_adc_dec.sv
     read_verilog -sv              $path_rtl/zcu216_fft_frame.sv
     read_verilog -sv              $path_rtl/zcu216_fft_avg.sv
     read_verilog -sv              $path_rtl/zcu216_fft_test.sv
@@ -161,6 +172,7 @@ if {$fmc_dac} { read_xdc          $path_sdc/zcu216_fmc_dac.xdc }
 
 set synth_defines [expr {$fft_en ? {-verilog_define ZCU216_RF} : {}}]
 if {$fmc_dac} { lappend synth_defines -verilog_define ZCU216_FMC_DAC }
+if {$dsp_iir} { lappend synth_defines -verilog_define ZCU216_IIR }
 synth_design -top zcu216_top -flatten_hierarchy none {*}$synth_defines \
     -generic FFT_NFFT=$fft_nfft -generic FFT_NCH=$fft_ch
 

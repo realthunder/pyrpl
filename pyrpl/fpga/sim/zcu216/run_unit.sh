@@ -7,7 +7,8 @@
 #   tb_fft_frame  zcu216_fft_frame: chirp framing against a model of the dit8 input
 #   tb_fft_avg    zcu216_fft_avg: per-bin power average, bit-exact against a model
 #   tb_bus_cdc    zcu216_bus_cdc: the system bus across two clocks, with a timeout
-#   tb_dsp        zcu216_dsp: the signal hub
+#   tb_dsp        zcu216_dsp: the signal hub and its modules
+#   tb_adc_dec    zcu216_adc_dec: the RF-ADC channels at 125 MS/s
 # Usage: sim/zcu216/run_unit.sh tb_snap   (from fpga/)
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
@@ -21,15 +22,23 @@ case $tb in
   tb_fft_frame) rtl="zcu216_fft_frame.sv" ;;
   tb_fft_avg) rtl="zcu216_fft_avg.sv" ;;
   tb_bus_cdc) rtl="zcu216_bus_cdc.sv" ;;
-  tb_dsp) rtl="zcu216_dsp.sv" ;;
+  tb_dsp) rtl="zcu216_dsp.sv red_pitaya_pid_block.v red_pitaya_iq_block.v red_pitaya_iq_fgen_block.v
+               red_pitaya_iq_demodulator_block.v red_pitaya_iq_modulator_block.v red_pitaya_pfd_block.v
+               red_pitaya_filter_block.v red_pitaya_lpf_block.v red_pitaya_iq_lpf_block.v
+               red_pitaya_iq_hpf_block.v red_pitaya_iir_block.v red_pitaya_product_sat.v
+               red_pitaya_saturate.v" ;;
+  tb_adc_dec) rtl="zcu216_adc_dec.sv" ;;
   *) echo "unknown testbench $tb"; exit 1 ;;
 esac
 work="$here/work/$tb"
 mkdir -p "$work"
 source /tools/Xilinx/2025.2/Vivado/settings64.sh
 cd "$work"
-xvlog -sv $(for f in $rtl; do echo "$fpga/rtl/$f"; done) "$here/$tb.sv" > xvlog.log 2>&1 \
+# the Red Pitaya's .v files are Verilog, and some use a name before declaring it
+xvlog -sv $(for f in $rtl; do case $f in *.sv) echo "$fpga/rtl/$f" ;; esac; done) "$here/$tb.sv" > xvlog.log 2>&1 \
     || { grep -E "ERROR|WARNING" xvlog.log; exit 1; }
+v=$(for f in $rtl; do case $f in *.v) echo "$fpga/rtl/$f" ;; esac; done)
+[ -z "$v" ] || xvlog --relax $v >> xvlog.log 2>&1 || { grep -E "ERROR" xvlog.log; exit 1; }
 xelab -debug off --timescale 1ns/1ps $tb -s $tb > xelab.log 2>&1 || { grep -E "ERROR" xelab.log; exit 1; }
 xsim $tb -R > xsim.log 2>&1 || { tail -20 xsim.log; exit 1; }
-grep -E "^(SNAP|POINTS|SCOPE|AXI|FRAME|AVG|ERR)|^  |Error|Fatal" xsim.log || true
+grep -E "^(SNAP|POINTS|SCOPE|AXI|FRAME|AVG|CDC|DSP|DEC|ERR)|^  |Error|Fatal" xsim.log || true
