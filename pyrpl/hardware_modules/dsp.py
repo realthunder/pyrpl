@@ -132,6 +132,16 @@ class InputSelectRegister(InputSelectProperty, SelectRegister):
 
 
 def all_output_directs(instance):
+    caps = getattr(getattr(instance, '_rp', None), 'caps', None)
+    if caps is not None and caps.has('fmc_dac'):
+        # ZCU216: four outputs (the FMC DAC card's channels), output_direct is a
+        # mask, bit k = out(k+1); 1-3 mean what they do on the Red Pitaya
+        names = {1: 'out1', 2: 'out2', 3: 'both', 4: 'out3', 8: 'out4', 15: 'all'}
+        options = {'off': 0}
+        for mask in range(1, 16):
+            options[names.get(mask) or '+'.join(
+                'out%d' % (k + 1) for k in range(4) if mask >> k & 1)] = mask
+        return sorted_dict(options, sort_by_values=True)
     return sorted_dict(off=0, out1=1, out2=2, both=3,
                        sort_by_values=True)
 

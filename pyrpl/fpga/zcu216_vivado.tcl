@@ -94,6 +94,8 @@ read_verilog                      $path_rtl/red_pitaya_asg_ch.v
 read_verilog                      $path_rtl/red_pitaya_adv_trigger.v
 read_verilog                      $path_rtl/red_pitaya_prng.v
 read_verilog -sv                  $path_rtl/zcu216_top.sv
+read_verilog -sv                  $path_rtl/zcu216_bus_cdc.sv
+read_verilog -sv                  $path_rtl/zcu216_dsp_out.sv
 
 if {$fft_en} {
     # sub-FFT: 1 sample/clock, unscaled, bit-reversed output with xk_index (with
@@ -162,9 +164,13 @@ if {$fmc_dac} { lappend synth_defines -verilog_define ZCU216_FMC_DAC }
 synth_design -top zcu216_top -flatten_hierarchy none {*}$synth_defines \
     -generic FFT_NFFT=$fft_nfft -generic FFT_NCH=$fft_ch
 
-# pl_clk0 (register bus) and the CLK104 clocks (fclk for the FFT and the RF
-# streams): every crossing is a quasi-static setting, a per-frame toggle
-# handshake, the dual-clock window RAM, or inside the RF Data Converter
+# pl_clk0 (the AXI front end, the RF Data Converter's registers), sys_clk
+# (125 MHz, the register bus modules and the FMC DAC, with its forwarded
+# clocks), fclk (the FFT and the RF streams; sys_clk and fclk come from one
+# MMCM, but every crossing between them was built for unrelated clocks) and the
+# CLK104 clocks: every crossing is zcu216_bus_cdc, a quasi-static setting, a
+# per-frame toggle handshake, the dual-clock window RAM, or inside the RF Data
+# Converter
 if {$fft_en} {
     # The RF Data Converter's output clocks: clk_adc0 (312.5 MHz) makes fclk;
     # clk_dac0/clk_dac2 (156.25 MHz) and PL_CLK only feed the debug clock meters.
@@ -176,7 +182,8 @@ if {$fft_en} {
     set_clock_groups -asynchronous \
         -group [get_clocks clk_pl_0] \
         -group [get_clocks -include_generated_clocks pl_clk] \
-        -group [get_clocks -include_generated_clocks -of_objects [get_pins i_rfdc/clk_adc0]] \
+        -group [get_clocks -include_generated_clocks -of_objects [get_pins i_mmcm/CLKOUT1]] \
+        -group [get_clocks -of_objects [get_pins {i_rfdc/clk_adc0 i_mmcm/CLKOUT0}]] \
         -group [get_clocks -of_objects [get_pins {i_rfdc/clk_dac0 i_rfdc/clk_dac2}]]
 }
 

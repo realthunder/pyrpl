@@ -80,7 +80,7 @@ set_property IOSTANDARD LVCMOS18 [get_ports {fmc_dac_db[*] fmc_dac_clk[*] fmc_da
 set_property DRIVE      8        [get_ports {fmc_dac_db[*] fmc_dac_clk[*] fmc_dac_wrt[*]}]
 set_property SLEW       MEDIUM   [get_ports {fmc_dac_db[*] fmc_dac_clk[*] fmc_dac_wrt[*]}]
 
-# Source-synchronous outputs: each port's WRT (the bus clock inverted by its
+# Source-synchronous outputs: each port's WRT (sys_clk inverted by its
 # ODDRE1) latches its 14 data bits. AD9767 setup 2.0 ns / hold 1.5 ns at WRT,
 # plus 1 ns for the shifters' channel-to-channel skew. The data leave from IOB
 # flops half a period before the WRT edge, so either side has ~2 ns to spare.

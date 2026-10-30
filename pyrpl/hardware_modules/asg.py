@@ -318,8 +318,9 @@ def make_asg(channel=0):
 
         @property
         def _register_clock_hz(self):
-            """the ASG runs on the bus clock: 125 MHz on the Red Pitaya,
-            100 MHz on the ZCU216 (the capability block's bus clock)"""
+            """the ASG runs on the bus clock: 125 MHz on the Red Pitaya and
+            the ZCU216 (100 MHz on ZCU216 images before the system clock moved
+            to the RF clock): the capability block's bus clock"""
             caps = getattr(self._rp, 'caps', None)
             return caps.sys_hz if caps is not None else 125e6
 
@@ -339,6 +340,17 @@ def make_asg(channel=0):
             - addr_base + dsp_addr_base(f'asg{_CHANNEL}') + 0x4,
                     options=all_output_directs,
                     doc="selects the direct output of the module")
+
+        @classmethod
+        def _relocated_attributes(cls, base):
+            """attributes to replace when the board puts this module at
+            another bus address (RedPitaya.makemodules): output_direct lives in
+            the DSP slot (0x4060_0000 + 0x10000 * n), not beside the ASG, so its
+            offset from the module changes with it (ZCU216: ASG in slot 4)"""
+            return {'output_direct': SelectRegister(
+                - base + dsp_addr_base('asg%d' % cls._CHANNEL) + 0x4,
+                options=all_output_directs,
+                doc="selects the direct output of the module")}
 
         data_length = 2 ** 14
 

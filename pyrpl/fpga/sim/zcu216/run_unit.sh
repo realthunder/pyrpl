@@ -6,6 +6,7 @@
 #   tb_axi_slave  axi_slave (the PS register bus) under back-to-back writes
 #   tb_fft_frame  zcu216_fft_frame: chirp framing against a model of the dit8 input
 #   tb_fft_avg    zcu216_fft_avg: per-bin power average, bit-exact against a model
+#   tb_bus_cdc    zcu216_bus_cdc: the system bus across two clocks, with a timeout
 # Usage: sim/zcu216/run_unit.sh tb_snap   (from fpga/)
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
@@ -18,6 +19,7 @@ case $tb in
   tb_axi_slave) rtl="axi_slave.v" ;;
   tb_fft_frame) rtl="zcu216_fft_frame.sv" ;;
   tb_fft_avg) rtl="zcu216_fft_avg.sv" ;;
+  tb_bus_cdc) rtl="zcu216_bus_cdc.sv" ;;
   *) echo "unknown testbench $tb"; exit 1 ;;
 esac
 work="$here/work/$tb"

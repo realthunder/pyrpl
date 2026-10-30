@@ -111,7 +111,8 @@ module zcu216_fft_test #(
   parameter int    SC_MIN_DEC = 2,                       // two ports: half of each at D = 2
   parameter string TWC_FILE  = "",
   parameter string TWF_FILE  = "",
-  parameter string SIN_FILE  = ""
+  parameter string SIN_FILE  = "",
+  parameter int    SYS_HZ    = 125000000              // sys_clk (the clock meters' reference)
 ) (
   // register bus (sys_clk)
   input  logic        sys_clk,
@@ -664,9 +665,11 @@ logic [23:0] s_khz [5];
 logic        s_raw_ready;
 
 for (genvar i = 0; i < 4; i++) begin : g_meter
-  zcu216_freq_meter i_meter (.clk_ref (sys_clk), .clk_meas (meas_clk[i]), .khz (s_khz[i]));
+  zcu216_freq_meter #(.GATE (SYS_HZ / 1000)) i_meter (.clk_ref (sys_clk), .clk_meas (meas_clk[i]),
+    .khz (s_khz[i]));
 end
-zcu216_freq_meter i_meter_fclk (.clk_ref (sys_clk), .clk_meas (fclk), .khz (s_khz[4]));
+zcu216_freq_meter #(.GATE (SYS_HZ / 1000)) i_meter_fclk (.clk_ref (sys_clk), .clk_meas (fclk),
+  .khz (s_khz[4]));
 
 // raw capture (debug): RAW consecutive fclk beats of one RF-ADC channel and of
 // the DAC stream, to see the converter data in the time domain
@@ -1100,10 +1103,11 @@ endmodule
 
 /**
  * Frequency of clk_meas in kHz: a Gray-coded counter in the measured domain,
- * sampled on clk_ref (100 MHz) over a 1 ms gate. 0 when clk_meas is absent.
+ * sampled on clk_ref over a 1 ms gate (GATE clk_ref cycles). 0 when clk_meas is
+ * absent.
  */
 module zcu216_freq_meter #(
-  parameter int GATE = 100000                 // clk_ref cycles per gate (1 ms at 100 MHz)
+  parameter int GATE = 125000                 // clk_ref cycles per gate (1 ms at 125 MHz)
 ) (
   input  logic        clk_ref,
   input  logic        clk_meas,
