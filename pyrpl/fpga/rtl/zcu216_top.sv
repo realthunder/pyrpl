@@ -713,7 +713,7 @@ zcu216_fmc_dac i_fmc_dac (.sys_clk (sys_clk), .clk (dac_clk), .din (dac_out), .f
 
 `ifdef ZCU216_RF
 // the hub's signals for the scope and the FFT, into fclk
-logic [13:0] sig_f [4];
+logic [127:0] sig_f [4];
 zcu216_sig_cdc #(.N (4)) i_sig_cdc (.sys_clk (sys_clk), .din (dsp_sig), .fclk (fclk), .dout (sig_f));
 
 // the scope's trigger into sys_clk, for the ASG

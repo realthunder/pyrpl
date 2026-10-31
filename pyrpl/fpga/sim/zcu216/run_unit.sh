@@ -10,6 +10,7 @@
 #   tb_dsp        zcu216_dsp: the signal hub and its modules
 #   tb_adc_dec    zcu216_adc_dec: the RF-ADC channels at 250 MS/s
 #   tb_rx         zcu216_rx: any band of an RF-ADC channel at 250 MS/s
+#   tb_sig_cdc    zcu216_sig_cdc: hub signals into eight lanes at fclk
 #   tb_fmc_dac    zcu216_fmc_dac: 250 MS/s to the card's 125 MS/s
 #   tb_bus_pipe   zcu216_bus_pipe: slots behind zcu216_bus_cdc
 # Usage: sim/zcu216/run_unit.sh tb_snap   (from fpga/)
@@ -32,6 +33,7 @@ case $tb in
                red_pitaya_saturate.v" ;;
   tb_adc_dec) rtl="zcu216_adc_dec.sv zcu216_ring.sv" ;;
   tb_rx) rtl="zcu216_rx.sv zcu216_ring.sv" ;;
+  tb_sig_cdc) rtl="zcu216_sig_cdc.sv" ;;
   tb_fmc_dac) rtl="zcu216_fmc_dac.sv" ;;
   tb_bus_pipe) rtl="zcu216_bus_cdc.sv zcu216_bus_pipe.sv" ;;
   *) echo "unknown testbench $tb"; exit 1 ;;
@@ -50,5 +52,5 @@ xelab -debug off --timescale 1ns/1ps $tb -s $tb > xelab.log 2>&1 || { grep -E "E
 import math
 for i in range(4096): print('%04x' % (round(32767 * math.sin(2 * math.pi * i / 4096)) & 0xffff))" > sin.mem
 xsim $tb -R > xsim.log 2>&1 || { tail -20 xsim.log; exit 1; }
-grep -E "^(SNAP|POINTS|SCOPE|AXI|FRAME|AVG|CDC|DSP|DEC|FMC|PIPE|RX|ERR)|^  |Error|Fatal" xsim.log || true
+grep -E "^(SNAP|POINTS|SCOPE|AXI|FRAME|AVG|CDC|DSP|DEC|FMC|PIPE|RX|SIG|ERR)|^  |Error|Fatal" xsim.log || true
 [ "$tb" != tb_rx ] || "$fpga/../../.venv/bin/python" "$here/tb_rx.py" rx.txt

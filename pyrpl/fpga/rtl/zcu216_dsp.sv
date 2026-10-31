@@ -36,8 +36,8 @@
  * an RF-ADC channel or FFT input is taken on fclk, selected there by index
  * (sc_sel: 0-3 RF-ADC, 4-5 FFT inputs, 6 + channel the hub signal; fft_sel: 0
  * tone, 1-4 RF-ADC, 5 the hub signal); any other number is selected here into
- * sig_o, which crosses to fclk through zcu216_sig_cdc (slow to fast, a sample is
- * held). A new module therefore adds nothing on fclk.
+ * sig_o, which crosses to fclk through zcu216_sig_cdc (each sample 10 lanes of the
+ * 2.5 GS/s stream). A new module therefore adds nothing on fclk.
  *
  * rx0 (zcu216_rx) is the exception to "a module on the system clock": its input is
  * an RF-ADC channel at 2.5 GS/s, which only exists on fclk, so this block only

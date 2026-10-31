@@ -141,7 +141,7 @@ module zcu216_fft_test #(
   // clocks to measure (debug)
   input  logic [3:0]   meas_clk,
   input  logic         ext_trig,             // scope external trigger (async, PMOD0_0)
-  input  logic [13:0]  sig_data [4],         // the hub's: scope 1, 2, FFT 0, 1 (fclk, latest sample)
+  input  logic [127:0] sig_data [4],         // the hub's: scope 1, 2, FFT 0, 1, in 8 lanes (fclk)
   input  logic [3:0]   asg_tog,              // ASG chirp starts, toggles (sys_clk)
   output logic         sc_trig_tog = 1'b0,   // the scope's trigger, a toggle (fclk)
   input  logic [2:0]   sc_sel [2],           // scope inputs (zcu216_dsp, quasi-static)
@@ -790,7 +790,7 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
 
   always_ff @(posedge fclk) begin
     {f_src, f_src_m} <= {f_src_m, fft_sel[c]};
-    f_sig <= {8{16'($signed(sig_data[2 + c]))}};
+    f_sig <= sig_data[2 + c];
   end
 
   // chirp framing: even channels take the up window, odd ones the down one
@@ -1013,9 +1013,9 @@ always_ff @(posedge fclk) begin
     sc_in_q[4 + c] <= sn_data[NCH + c];
   for (int c = NCH; c < 2; c++)
     sc_in_q[4 + c] <= '0;
-  // the hub's: the 14-bit sample, sign-extended, on all eight lanes
+  // the hub's (zcu216_sig_cdc)
   for (int c = 0; c < 2; c++)
-    sc_in_q[6 + c] <= {8{16'($signed(sig_data[c]))}};
+    sc_in_q[6 + c] <= sig_data[c];
   for (int c = 0; c < 2; c++) begin
     for (int g = 0; g < 2; g++)
       sc_g[c][g] <= sc_in_q[4 * g + 3'(f_sc_in[c][1:0])];

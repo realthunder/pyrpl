@@ -4,12 +4,14 @@
 // Usage: sim/zcu216/run_asg.sh   (from fpga/)
 `timescale 1ns/1ps
 module tb_asg;
-  logic sclk = 0;  always #2.0015 sclk = ~sclk;   // not a multiple of fclk: every phase
+  logic sclk = 0;  always #2.0 sclk = ~sclk;      // one MMCM, 5:4 to fclk
   logic fclk = 0;  always #1.6 fclk = ~fclk;
   logic srstn = 0;
   logic [31:0] sys_addr = 0, sys_wdata = 0, sys_rdata;
   logic        sys_wen = 0, sys_ren = 0, sys_err, sys_ack;
   logic [13:0] asg_out [4], asg_f [4];
+  logic [127:0] asg_l [4];
+  always_comb for (int c = 0; c < 4; c++) asg_f[c] = asg_l[c][13:0];
 
   red_pitaya_asg dut (
     .dac_a_o (asg_out[0]), .dac_b_o (asg_out[1]), .dac_c_o (asg_out[2]), .dac_d_o (asg_out[3]),
@@ -19,7 +21,7 @@ module tb_asg;
     .sync_rst_o (), .asg1phase_o (), .step_a_o (), .step_b_o (), .step_c_o (), .step_d_o (),
     .sys_addr, .sys_wdata, .sys_sel (4'hf), .sys_wen, .sys_ren, .sys_rdata, .sys_err, .sys_ack);
 
-  zcu216_sig_cdc #(.N (4)) cdc (.sys_clk (sclk), .din (asg_out), .fclk (fclk), .dout (asg_f));
+  zcu216_sig_cdc #(.N (4)) cdc (.sys_clk (sclk), .din (asg_out), .fclk (fclk), .dout (asg_l));
 
   task automatic wr(input logic [31:0] a, input logic [31:0] d);
     @(posedge sclk); sys_addr <= a; sys_wdata <= d; sys_wen <= 1;

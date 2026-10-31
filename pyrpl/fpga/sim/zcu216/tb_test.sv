@@ -15,6 +15,8 @@ module tb_test;
   always_ff @(posedge fclk) for (int i = 0; i < 4; i++) adc_data[i] <= dac_data;
   // the hub's signals (zcu216_dsp + zcu216_sig_cdc in zcu216_top): constants here
   logic [13:0]  sig_data [4] = '{14'(1234), 14'(-2000), 14'(77), 14'(-1)};
+  logic [127:0] sig_lanes [4];
+  always_comb for (int c = 0; c < 4; c++) sig_lanes[c] = {8{16'($signed(sig_data[c]))}};
   // the signal hub's settings (zcu216_dsp), and the ASG's chirp starts
   logic [2:0]   sc_sel [2]  = '{3'd0, 3'd1};
   logic [2:0]   fft_sel [2] = '{3'd0, 3'd0};
@@ -65,7 +67,7 @@ module tb_test;
     .sys_clk(sclk), .sys_rstn(srstn), .sys_addr, .sys_wdata, .sys_wen, .sys_ren,
     .sys_rdata, .sys_err, .sys_ack, .fclk, .frstn, .flocked(1'b1),
     .adc_data, .adc_valid(4'hf), .dac_data, .dac_valid, .spi_sdo_sel(sdo_sel),
-    .meas_clk({fclk, sclk, fclk, sclk}), .ext_trig(ext), .sig_data, .asg_tog, .sc_trig_tog,
+    .meas_clk({fclk, sclk, fclk, sclk}), .ext_trig(ext), .sig_data (sig_lanes), .asg_tog, .sc_trig_tog,
     .sc_sel, .fft_sel,
     .hp_awaddr, .hp_awlen, .hp_awsize, .hp_awburst, .hp_awcache, .hp_awprot,
     .hp_awvalid, .hp_awready, .hp_wdata, .hp_wstrb, .hp_wlast, .hp_wvalid,
