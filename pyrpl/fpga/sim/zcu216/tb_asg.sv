@@ -4,7 +4,7 @@
 // Usage: sim/zcu216/run_asg.sh   (from fpga/)
 `timescale 1ns/1ps
 module tb_asg;
-  logic sclk = 0;  always #5.0015 sclk = ~sclk;   // not a multiple of fclk: every phase
+  logic sclk = 0;  always #2.0015 sclk = ~sclk;   // not a multiple of fclk: every phase
   logic fclk = 0;  always #1.6 fclk = ~fclk;
   logic srstn = 0;
   logic [31:0] sys_addr = 0, sys_wdata = 0, sys_rdata;

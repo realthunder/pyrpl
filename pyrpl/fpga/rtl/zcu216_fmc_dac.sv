@@ -1,7 +1,10 @@
 /**
  * The Puzhi PZ-FL9767D FMC DAC card (two AD9767, four 14-bit channels up to
  * 125 MS/s) on the ZCU216's FMC+ connector J28, driven from the output
- * routing's out1-4 (zcu216_dsp) at sys_clk, 125 MS/s.
+ * routing's out1-4 (zcu216_dsp). Those run at 250 MS/s on sys_clk, faster than
+ * the card: each DAC sample, at clk = sys_clk / 2 (same MMCM), is the mean of two,
+ * so no sample is dropped, at the price of half a sys_clk of delay and -3 dB at
+ * 62.5 MHz.
  *
  * Card (schematic 3312272550PZ-FL9767D-SCH): every AD9767 port has its own 14
  * data pins, CLK and WRT on the FMC LA pins, through SN74AVC16T245 shifters
@@ -16,7 +19,7 @@
  *   ch 0  DAC1 port 1  SMB J2        ch 2  DAC2 port 1  SMB J4
  *   ch 1  DAC1 port 2  SMB J3        ch 3  DAC2 port 2  SMB J5
  *
- * The AD9767 takes straight binary (0 = most negative); din is the ASG's two's
+ * The AD9767 takes straight binary (0 = most negative); din is the hub's two's
  * complement, so the sign bit is inverted. Data leave from IOB flops on the
  * rising clock edge; CLK and WRT are the clock inverted (ODDRE1, D1 = 0, D2 =
  * 1), so their rising edges, which latch the input and update the DAC, fall
@@ -28,7 +31,8 @@
  * outputs off.
  */
 module zcu216_fmc_dac (
-  input  logic        clk,                        // sample clock
+  input  logic        sys_clk,                    // din
+  input  logic        clk,                        // the sample clock, sys_clk / 2
   input  logic [13:0] din [4],                    // two's complement
   output logic [55:0] fmc_dac_db,                 // ch * 14 + bit
   output logic [3:0]  fmc_dac_clk,
@@ -39,9 +43,18 @@ module zcu216_fmc_dac (
 // not the most negative code
 (* IOB = "TRUE" *) logic [55:0] db_q = {4{14'h2000}};
 
+// rounded up: a constant stays exact, and full scale cannot overflow
+logic [13:0] din_d [4], avg [4];
+
+always_ff @(posedge sys_clk)
+  for (int c = 0; c < 4; c++) begin
+    din_d[c] <= din[c];
+    avg[c]   <= 14'((15'(signed'(din[c])) + 15'(signed'(din_d[c])) + 15'sd1) >>> 1);
+  end
+
 always_ff @(posedge clk)
   for (int c = 0; c < 4; c++)
-    db_q[c*14 +: 14] <= {~din[c][13], din[c][12:0]};
+    db_q[c*14 +: 14] <= {~avg[c][13], avg[c][12:0]};
 
 assign fmc_dac_db = db_q;
 

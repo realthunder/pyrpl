@@ -29,7 +29,7 @@
  * Red Pitaya, 4 and 8 are out3 and out4. Every mask is 0 after reset, so the DACs
  * sit at 0 V until something is routed to them.
  *
- * Everything here runs on the system clock, 125 MS/s. in1-4 are the RF-ADC
+ * Everything here runs on the system clock, 250 MS/s. in1-4 are the RF-ADC
  * channels decimated to that rate (zcu216_adc_dec); only the scope and the FFT
  * see them at 2.5 GS/s, by the fclk path. So a scope or FFT sink has two routes:
  * an RF-ADC channel or FFT input is taken on fclk, selected there by index
@@ -48,7 +48,7 @@ module zcu216_dsp #(
 ) (
   input  logic        clk,
   input  logic        rstn,
-  input  logic [13:0] in  [4],                    // RF-ADC 0-3, 125 MS/s
+  input  logic [13:0] in  [4],                    // RF-ADC 0-3, 250 MS/s
   input  logic [13:0] asg [4],                    // asg0-3, two's complement
   output logic [13:0] out [4],                    // out1-4, saturated sums
   output logic [2:0]  sc_sel [2],                 // scope channel inputs

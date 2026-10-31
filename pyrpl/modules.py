@@ -757,11 +757,14 @@ class HardwareModule(Module):
     @property
     def _frequency_correction(self):
         """
-        factor to manually compensate 125 MHz oscillator frequency error
-        real_frequency = 125 MHz * _frequency_correction
+        factor between the real clock of the module and the Red Pitaya's 125 MHz
+        that the registers' scaling assumes: real_frequency = 125 MHz *
+        _frequency_correction. The configured correction of the oscillator's
+        error, times the bus clock the FPGA reports (rp.caps), which differs by
+        board (250 MHz on the ZCU216).
         """
         try:
-            return self._rp.frequency_correction
+            return self._rp.frequency_correction * self._rp.caps.sys_hz / 125e6
         except AttributeError:
             self._logger.warning("Warning: Parent of %s has no attribute "
                                  "'frequency_correction'. ", self.name)

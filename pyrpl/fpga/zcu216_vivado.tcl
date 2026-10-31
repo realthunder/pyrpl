@@ -99,6 +99,7 @@ read_verilog                      $path_rtl/red_pitaya_adv_trigger.v
 read_verilog                      $path_rtl/red_pitaya_prng.v
 read_verilog -sv                  $path_rtl/zcu216_top.sv
 read_verilog -sv                  $path_rtl/zcu216_bus_cdc.sv
+read_verilog -sv                  $path_rtl/zcu216_bus_pipe.sv
 read_verilog -sv                  $path_rtl/zcu216_dsp.sv
 # the hub's modules, the Red Pitaya's as they are
 foreach f {pid_block iq_block iq_fgen_block iq_demodulator_block iq_modulator_block
@@ -173,12 +174,14 @@ if {$fmc_dac} { read_xdc          $path_sdc/zcu216_fmc_dac.xdc }
 set synth_defines [expr {$fft_en ? {-verilog_define ZCU216_RF} : {}}]
 if {$fmc_dac} { lappend synth_defines -verilog_define ZCU216_FMC_DAC }
 if {$dsp_iir} { lappend synth_defines -verilog_define ZCU216_IIR }
+# the Red Pitaya blocks' own input and output registers, for 250 MHz
+lappend synth_defines -verilog_define MODULE_FB_PIPELINE
 synth_design -top zcu216_top -flatten_hierarchy none {*}$synth_defines \
     -generic FFT_NFFT=$fft_nfft -generic FFT_NCH=$fft_ch
 
 # pl_clk0 (the AXI front end, the RF Data Converter's registers), sys_clk
-# (125 MHz, the register bus modules and the FMC DAC, with its forwarded
-# clocks), fclk (the FFT and the RF streams; sys_clk and fclk come from one
+# (250 MHz, the register bus modules), dac_clk (sys_clk / 2, the FMC DAC, with
+# its forwarded clocks), fclk (the FFT and the RF streams; sys_clk and fclk come from one
 # MMCM, but every crossing between them was built for unrelated clocks) and the
 # CLK104 clocks: every crossing is zcu216_bus_cdc, a quasi-static setting, a
 # per-frame toggle handshake, the dual-clock window RAM, or inside the RF Data
@@ -194,9 +197,14 @@ if {$fft_en} {
     set_clock_groups -asynchronous \
         -group [get_clocks clk_pl_0] \
         -group [get_clocks -include_generated_clocks pl_clk] \
-        -group [get_clocks -include_generated_clocks -of_objects [get_pins i_mmcm/CLKOUT1]] \
+        -group [get_clocks -include_generated_clocks -of_objects [get_pins {i_mmcm/CLKOUT1 i_mmcm/CLKOUT2}]] \
         -group [get_clocks -of_objects [get_pins {i_rfdc/clk_adc0 i_mmcm/CLKOUT0}]] \
         -group [get_clocks -of_objects [get_pins {i_rfdc/clk_dac0 i_rfdc/clk_dac2}]]
+    # the Gray pointers between sys_clk and fclk now step every 3.2 / 4 ns: their
+    # bits must arrive within one step of each other (the clock groups above do
+    # not override this)
+    set_bus_skew -from [get_cells {i_adc_dec/wg_reg[*]}] -to [get_cells {i_adc_dec/wg_m_reg[*]}] 3.0
+    set_bus_skew -from [get_cells {i_sig_cdc/wg_reg[*]}] -to [get_cells {i_sig_cdc/wg_m_reg[*]}] 3.0
 }
 
 write_checkpoint         -force   $path_out/post_synth

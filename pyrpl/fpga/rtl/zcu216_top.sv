@@ -18,7 +18,7 @@
  *                        output_direct, and the PID, IQ and IIR modules;
  *                        out1-4 = the FMC DAC's channels
  *   slot 4  0x8080_0000  ASG (red_pitaya_asg, the Red Pitaya's slot-2 registers):
- *                        four channels on sys_clk (125 MS/s), signals 8-11 of
+ *                        four channels on sys_clk (250 MS/s), signals 8-11 of
  *                        the hub
  *   slot 5-7             not built yet: reads return 0, writes are ignored
  *
@@ -35,7 +35,7 @@
  * [FMC_DAC] (define ZCU216_FMC_DAC, set by zcu216_vivado.tcl unless FMC_DAC=0):
  * the PZ-FL9767D DAC card on FMC+ J28, fed by the output routing on sys_clk.
  *
- * Clocks: the modules on the register bus run on sys_clk, 125 MHz from the RF
+ * Clocks: the modules on the register bus run on sys_clk, 250 MHz from the RF
  * clock as the Red Pitaya's run on its ADC clock (pl_clk0, 100 MHz, without
  * RF); the AXI front end, slot 2 and the LED heartbeat on pl_clk0, the bus
  * crossing through zcu216_bus_cdc. LEDs 0-6 are hk's LED register (0x30);
@@ -301,21 +301,23 @@ always_ff @(posedge clk)
   a_rstn <= ps_rstn;
 
 ////////////////////////////////////////////////////////////////////////////////
-// clocks: sys_clk = the system clock, 125 MHz from the RF clock
+// clocks: sys_clk = the system clock, 250 MHz from the RF clock
 ////////////////////////////////////////////////////////////////////////////////
 
-// As on the Red Pitaya, where everything on the register bus runs on the ADC's
-// 125 MHz: sys_clk = 1250 MHz / 10 from the MMCM that makes fclk (1250 / 4)
-// out of the RF-ADC tile clock, so the ASG, the FMC DAC and the RF converters
-// share one reference. hk, the ASG, the output routing, the FMC DAC and the
-// FFT block's registers run on it. It only runs once the CLK104 is programmed
-// and the tiles are up, so the PS reaches it through zcu216_bus_cdc (reads
-// return 0 while it is down); the AXI front end and the RF Data Converter's
-// registers (slot 2) stay on pl_clk0. Without RF, sys_clk = pl_clk0 (100 MHz).
-logic sys_clk, sys_rstn;
+// As on the Red Pitaya, where everything on the register bus runs on one clock,
+// but twice as fast: sys_clk = 1250 MHz / 5 from the MMCM that makes fclk
+// (1250 / 4) out of the RF-ADC tile clock, so the ASG, the FMC DAC and the RF
+// converters share one reference. The FMC DAC card takes 125 MS/s at most, so it
+// has dac_clk = 1250 / 10 and the means of two samples (zcu216_fmc_dac). hk, the
+// ASG, the output routing and the FFT block's registers run on sys_clk. It only
+// runs once the CLK104 is programmed and the tiles are up, so the PS reaches it
+// through zcu216_bus_cdc (reads return 0 while it is down); the AXI front end and
+// the RF Data Converter's registers (slot 2) stay on pl_clk0. Without RF, sys_clk
+// = dac_clk = pl_clk0 (100 MHz).
+logic sys_clk, sys_rstn, dac_clk;
 
 `ifdef ZCU216_RF
-logic pl_clk_ibuf, pl_clk_bufg, clk_adc0, adc_clk_bufg, fb, fb_buf, fclk_mmcm, sys_mmcm, locked;
+logic pl_clk_ibuf, pl_clk_bufg, clk_adc0, adc_clk_bufg, fb, fb_buf, fclk_mmcm, sys_mmcm, dac_mmcm, locked;
 
 IBUFDS i_pl_clk_ibuf (.I (pl_clk_p), .IB (pl_clk_n), .O (pl_clk_ibuf));
 BUFG   i_pl_clk_bufg (.I (pl_clk_ibuf), .O (pl_clk_bufg));
@@ -333,13 +335,14 @@ always_ff @(posedge clk) begin
   mmcm_rst <= !locked_s[1] && lock_cnt[16:4] == '0;   // 16 cycles every 2^17
 end
 
-// clk_adc0 (312.5 MHz) x 4 = VCO 1250 MHz; / 4 = fclk, / 10 = sys_clk
+// clk_adc0 (312.5 MHz) x 4 = VCO 1250 MHz; / 4 = fclk, / 5 = sys_clk, / 10 = dac_clk
 MMCME4_BASE #(
   .CLKIN1_PERIOD    (3.2  ),
   .DIVCLK_DIVIDE    (1    ),
   .CLKFBOUT_MULT_F  (4.0  ),
   .CLKOUT0_DIVIDE_F (4.0  ),
-  .CLKOUT1_DIVIDE   (10   )
+  .CLKOUT1_DIVIDE   (5    ),
+  .CLKOUT2_DIVIDE   (10   )
 ) i_mmcm (
   .CLKIN1    (adc_clk_bufg),
   .CLKFBIN   (fb_buf    ),
@@ -348,7 +351,7 @@ MMCME4_BASE #(
   .CLKOUT0   (fclk_mmcm ),
   .CLKOUT0B  (          ),
   .CLKOUT1   (sys_mmcm  ),  .CLKOUT1B  (          ),
-  .CLKOUT2   (          ),  .CLKOUT2B  (          ),
+  .CLKOUT2   (dac_mmcm  ),  .CLKOUT2B  (          ),
   .CLKOUT3   (          ),  .CLKOUT3B  (          ),
   .CLKOUT4   (          ),  .CLKOUT5   (          ),
   .CLKOUT6   (          ),
@@ -360,6 +363,7 @@ MMCME4_BASE #(
 BUFG i_fb_buf  (.I (fb       ), .O (fb_buf ));
 BUFG i_clk_buf (.I (fclk_mmcm), .O (fclk   ));
 BUFG i_sys_buf (.I (sys_mmcm ), .O (sys_clk));
+BUFG i_dac_buf (.I (dac_mmcm ), .O (dac_clk));
 
 // fclk and sys_clk resets: held while the MMCM is unlocked or the PS is in reset
 (* ASYNC_REG = "TRUE" *) logic [2:0] frst_s, srst_s;
@@ -374,6 +378,7 @@ always_ff @(posedge sys_clk or negedge locked)
 always_ff @(posedge sys_clk) sys_rstn <= srst_s[2];
 `else
 assign sys_clk = clk;
+assign dac_clk = clk;
 always_ff @(posedge clk)
   sys_rstn <= ps_rstn;
 `endif
@@ -476,6 +481,26 @@ assign sys_cs  = 8'h01 << bk_addr[23:21];
 assign sys_wen = sys_cs & {8{bk_wen}};
 assign sys_ren = sys_cs & {8{bk_ren}};
 
+// each module's own stretch of the bus and of the reset (zcu216_bus_pipe)
+logic [32-1:0] sl_addr [8], sl_wdata [8];
+logic [ 4-1:0] sl_sel [8];
+logic [8-1:0]  sl_wen, sl_ren, sl_rstn, mod_err, mod_ack;
+logic [8*32-1:0] mod_rdata;
+
+for (genvar i = 0; i < 8; i++) begin : g_pipe
+  if (i == 0 || i == 1 || i == 3 || i == 4) begin : g_slot
+    zcu216_bus_pipe i_pipe (
+      .clk     (sys_clk            ), .rstn_i  (sys_rstn           ), .rstn_o  (sl_rstn[i]         ),
+      .addr_i  (bk_addr            ), .wdata_i (bk_wdata           ), .sel_i   (bk_sel             ),
+      .wen_i   (sys_wen[i]         ), .ren_i   (sys_ren[i]         ),
+      .rdata_o (sys_rdata[i*32+:32]), .err_o   (sys_err[i]         ), .ack_o   (sys_ack[i]         ),
+      .addr_o  (sl_addr[i]         ), .wdata_o (sl_wdata[i]        ), .sel_o   (sl_sel[i]          ),
+      .wen_o   (sl_wen[i]          ), .ren_o   (sl_ren[i]          ),
+      .rdata_i (mod_rdata[i*32+:32]), .err_i   (mod_err[i]         ), .ack_i   (mod_ack[i]         )
+    );
+  end
+end
+
 assign bk_rdata = sys_rdata[bk_addr[23:21]*32+:32];
 assign bk_err   = |(sys_cs & sys_err);
 assign bk_ack   = |(sys_cs & sys_ack);
@@ -536,7 +561,7 @@ localparam logic [31:0] HK_MODULES = HK_ASG;
 `endif
 
 `ifdef ZCU216_RF
-localparam logic [31:0] SYS_HZ = 32'd125000000;
+localparam logic [31:0] SYS_HZ = 32'd250000000;
 `else
 localparam logic [31:0] SYS_HZ = 32'd100000000;
 `endif
@@ -551,7 +576,7 @@ red_pitaya_hk #(
   .MODULES (HK_MODULES)
 ) i_hk (
   .clk_i         (sys_clk           ),
-  .rstn_i        (sys_rstn          ),
+  .rstn_i        (sl_rstn[0]        ),
   .led_o         (hk_led            ),
   .digital_loop  (                  ),
   .exp_p_dat_i   (exp_p_s           ),
@@ -565,14 +590,14 @@ red_pitaya_hk #(
   .scan_x_step_i ('0                ),
   .scan_y_i      ('0                ),
   .scan_y_step_i ('0                ),
-  .sys_addr      (bk_addr           ),
-  .sys_wdata     (bk_wdata          ),
-  .sys_sel       (bk_sel            ),
-  .sys_wen       (sys_wen[0]        ),
-  .sys_ren       (sys_ren[0]        ),
-  .sys_rdata     (sys_rdata[0*32+:32]),
-  .sys_err       (sys_err[0]        ),
-  .sys_ack       (sys_ack[0]        )
+  .sys_addr      (sl_addr[0]        ),
+  .sys_wdata     (sl_wdata[0]       ),
+  .sys_sel       (sl_sel[0]         ),
+  .sys_wen       (sl_wen[0]         ),
+  .sys_ren       (sl_ren[0]         ),
+  .sys_rdata     (mod_rdata[0*32+:32]),
+  .sys_err       (mod_err[0]        ),
+  .sys_ack       (mod_ack[0]        )
 );
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -581,7 +606,7 @@ red_pitaya_hk #(
 
 // red_pitaya_asg as on the Red Pitaya: four channels, 16k-sample tables, the
 // same registers (Red Pitaya slot 2, here slot 4: slot 2 is the RF Data
-// Converter). It runs on sys_clk, 125 MS/s as on the Red Pitaya (100 without
+// Converter). It runs on sys_clk, 250 MS/s (100 without
 // RF; hk 0x54 tells pyrpl). Its outputs are the hub's signals 8-11 (slot 3), which
 // takes them to the modules, the scope and the FMC DAC card. The external trigger
 // is PMOD0_0, as DIO0_P is on the Red Pitaya.
@@ -598,7 +623,7 @@ red_pitaya_asg i_asg (
   .dac_c_o       (asg_out[2]          ),
   .dac_d_o       (asg_out[3]          ),
   .dac_clk_i     (sys_clk             ),
-  .dac_rstn_i    (sys_rstn            ),
+  .dac_rstn_i    (sl_rstn[4]          ),
   .trig_a_i      (exp_p_s[0]          ),
   .trig_b_i      (exp_p_s[0]          ),
   .trig_c_i      (exp_p_s[0]          ),
@@ -614,14 +639,14 @@ red_pitaya_asg i_asg (
   .step_b_o      (                    ),
   .step_c_o      (                    ),
   .step_d_o      (                    ),
-  .sys_addr      (bk_addr             ),
-  .sys_wdata     (bk_wdata            ),
-  .sys_sel       (bk_sel              ),
-  .sys_wen       (sys_wen[4]          ),
-  .sys_ren       (sys_ren[4]          ),
-  .sys_rdata     (sys_rdata[4*32+:32] ),
-  .sys_err       (sys_err[4]          ),
-  .sys_ack       (sys_ack[4]          )
+  .sys_addr      (sl_addr[4]          ),
+  .sys_wdata     (sl_wdata[4]         ),
+  .sys_sel       (sl_sel[4]           ),
+  .sys_wen       (sl_wen[4]           ),
+  .sys_ren       (sl_ren[4]           ),
+  .sys_rdata     (mod_rdata[4*32+:32] ),
+  .sys_err       (mod_err[4]          ),
+  .sys_ack       (mod_ack[4]          )
 );
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -631,33 +656,33 @@ red_pitaya_asg i_asg (
 // the signal hub: the Red Pitaya DSP's addresses and modules; each ASG channel
 // and module adds into any of out1-4 (saturated, all off after reset), and every
 // module's, the scope's and the FFT's inputs take any signal
-logic [13:0] adc_in [4];                          // RF-ADC at 125 MS/s
+logic [13:0] adc_in [4];                          // RF-ADC at 250 MS/s
 logic [13:0] dac_out [4];
 logic [13:0] dsp_sig [4];                         // scope 1, 2 and FFT 0, 1's signals
 logic [2:0]  sc_sel [2], fft_sel [2];
 
 zcu216_dsp #(.PIDS (DSP_PIDS), .IQS (DSP_IQS), .IIR (DSP_IIR)) i_dsp (
   .clk       (sys_clk            ),
-  .rstn      (sys_rstn           ),
+  .rstn      (sl_rstn[3]         ),
   .in        (adc_in             ),
   .asg       (asg_out            ),
   .out       (dac_out            ),
   .sc_sel,
   .fft_sel,
   .sig_o     (dsp_sig            ),
-  .sys_addr  (bk_addr            ),
-  .sys_wdata (bk_wdata           ),
-  .sys_wen   (sys_wen[3]         ),
-  .sys_ren   (sys_ren[3]         ),
-  .sys_rdata (sys_rdata[3*32+:32]),
-  .sys_err   (sys_err[3]         ),
-  .sys_ack   (sys_ack[3]         )
+  .sys_addr  (sl_addr[3]         ),
+  .sys_wdata (sl_wdata[3]        ),
+  .sys_wen   (sl_wen[3]          ),
+  .sys_ren   (sl_ren[3]          ),
+  .sys_rdata (mod_rdata[3*32+:32]),
+  .sys_err   (mod_err[3]         ),
+  .sys_ack   (mod_ack[3]         )
 );
 
 `ifdef ZCU216_FMC_DAC
-// the FMC DAC card: out1-4 -> DAC channels 0-3 (SMB J2-J5), one sample per
-// sys_clk (125 MS/s, the AD9767's maximum)
-zcu216_fmc_dac i_fmc_dac (.clk (sys_clk), .din (dac_out), .fmc_dac_db, .fmc_dac_clk,
+// the FMC DAC card: out1-4 -> DAC channels 0-3 (SMB J2-J5), means of two at
+// dac_clk (125 MS/s, the AD9767's maximum)
+zcu216_fmc_dac i_fmc_dac (.sys_clk (sys_clk), .clk (dac_clk), .din (dac_out), .fmc_dac_db, .fmc_dac_clk,
   .fmc_dac_wrt);
 `endif
 
@@ -707,7 +732,7 @@ zcu216_axil_bridge #(.AW (18)) i_rf_bridge (
 logic [127:0] adc_data [4];
 logic [3:0]   adc_valid;
 
-// the RF-ADC channels for the hub's modules: 125 MS/s on sys_clk
+// the RF-ADC channels for the hub's modules: 250 MS/s on sys_clk
 zcu216_adc_dec #(.N (4)) i_adc_dec (.fclk (fclk), .adc (adc_data), .sys_clk (sys_clk),
   .dout (adc_in));
 
@@ -772,14 +797,14 @@ zcu216_fft_test #(
   .SYS_HZ   (SYS_HZ        )
 ) i_fft (
   .sys_clk     (sys_clk            ),
-  .sys_rstn    (sys_rstn           ),
-  .sys_addr    (bk_addr            ),
-  .sys_wdata   (bk_wdata           ),
-  .sys_wen     (sys_wen[1]         ),
-  .sys_ren     (sys_ren[1]         ),
-  .sys_rdata   (sys_rdata[1*32+:32]),
-  .sys_err     (sys_err[1]         ),
-  .sys_ack     (sys_ack[1]         ),
+  .sys_rstn    (sl_rstn[1]         ),
+  .sys_addr    (sl_addr[1]         ),
+  .sys_wdata   (sl_wdata[1]        ),
+  .sys_wen     (sl_wen[1]          ),
+  .sys_ren     (sl_ren[1]          ),
+  .sys_rdata   (mod_rdata[1*32+:32]),
+  .sys_err     (mod_err[1]         ),
+  .sys_ack     (mod_ack[1]         ),
   .fclk        (fclk               ),
   .frstn       (frstn              ),
   .flocked     (locked             ),

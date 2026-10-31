@@ -140,7 +140,7 @@ do what they are supposed to.
 
 import numpy as np
 from qtpy import QtCore
-from ..attributes import FloatProperty, BoolRegister, FloatRegister, GainRegister, SelectRegister
+from ..attributes import FloatProperty, BoolRegister, FloatRegister, GainRegister, ClockGainRegister, SelectRegister
 from .dsp import PauseRegister
 from ..modules import SignalLauncher
 from . import FilterModule
@@ -270,10 +270,10 @@ class Pid(FilterModule):
 
     p = GainRegister(0x108, bits=_GAINBITS, norm= 2 **_PSR,
                       doc="pid proportional gain [1]")
-    i = GainRegister(0x10C, bits=_GAINBITS, norm= 2 **_ISR * 2.0 * np.pi *
+    i = ClockGainRegister(0x10C, bits=_GAINBITS, norm= 2 **_ISR * 2.0 * np.pi *
                                                   8e-9,
                       doc="pid integral unity-gain frequency [Hz]")
-    d = GainRegister(0x110, bits=_GAINBITS, norm= 2 ** _DSR * 2.0 *np. pi *
+    d = ClockGainRegister(0x110, bits=_GAINBITS, norm= 2 ** _DSR * 2.0 *np. pi *
                                                           8e-9,
                     doc="pid derivative unity-gain frequency [Hz]. Off when 0.")
 
@@ -445,7 +445,7 @@ class Pid(FilterModule):
         frequencies = np.array(frequencies, dtype=complex)
         # integrator with one cycle of extra delay
         tf = i / (frequencies * 1j) \
-            * np.exp(-1j * 8e-9 * frequency_correction *
+            * np.exp(-1j * 8e-9 / frequency_correction *
                   frequencies * 2 * np.pi)
         # proportional (delay in self._delay included)
         tf += p

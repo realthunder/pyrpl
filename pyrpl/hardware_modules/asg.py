@@ -316,14 +316,6 @@ def make_asg(channel=0):
             except Exception:
                 pass
 
-        @property
-        def _register_clock_hz(self):
-            """the ASG runs on the bus clock: 125 MHz on the Red Pitaya and
-            the ZCU216 (100 MHz on ZCU216 images before the system clock moved
-            to the RF clock): the capability block's bus clock"""
-            caps = getattr(self._rp, 'caps', None)
-            return caps.sys_hz if caps is not None else 125e6
-
         _loading_attributes = False
         def _load_setup_attributes(self):
             try:
@@ -473,8 +465,7 @@ def make_asg(channel=0):
 
         @property
         def _noise_V2_per_Hz(self):
-            return self._rmsamplitude**2/(self._register_clock_hz
-                                          *self._frequency_correction/2)
+            return self._rmsamplitude**2/(125e6*self._frequency_correction/2)
 
         waveforms = ['sin', 'cos', 'ramp', 'halframp', 'halframp2', 'square', 'dc',
                      'noise', 'sqrt', 'halfsin', 'halfcos', 'halfcos2', 'custom']
@@ -612,7 +603,7 @@ def make_asg(channel=0):
             self.advanced_trigger_autorearm = autorearm
             self.advanced_trigger_invert = invert
             self.advanced_trigger_delay = int(np.round(
-                duration * self._register_clock_hz))
+                duration * 125e6 * self._frequency_correction))
             self.setup(
                 waveform="sin",
                 frequency=frequency,

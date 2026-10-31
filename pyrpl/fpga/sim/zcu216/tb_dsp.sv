@@ -7,7 +7,7 @@
 // out1 and back into its own input (demodulated DC), iir in bypass, chained
 // pid0 -> iir -> out; sync; every number's signal at +0x10.
 module tb_dsp;
-  logic clk = 0;  always #4 clk = ~clk;
+  logic clk = 0;  always #2 clk = ~clk;
   logic rstn = 0;
   logic signed [13:0] in [4], asg [4];
   logic [13:0] out [4], sig_o [4];

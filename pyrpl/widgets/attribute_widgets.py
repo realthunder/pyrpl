@@ -401,7 +401,7 @@ class NumberAttributeWidget(BaseAttributeWidget):
         self.widget = self.SpinBox(None)
         self.widget.value_changed.connect(self.write_widget_value_to_attribute)
         self.widget.setSingleStep(self.attribute_descriptor.increment)
-        self.widget.setMaximum(self.attribute_descriptor.max)
+        self.widget.setMaximum(self.attribute_descriptor.max_value(self.module))
         self.widget.setMinimum(self.attribute_descriptor.min)
         if self.attribute_descriptor.log_increment:
             self.widget.set_log_increment()

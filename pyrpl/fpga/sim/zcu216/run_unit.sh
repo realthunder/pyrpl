@@ -8,7 +8,9 @@
 #   tb_fft_avg    zcu216_fft_avg: per-bin power average, bit-exact against a model
 #   tb_bus_cdc    zcu216_bus_cdc: the system bus across two clocks, with a timeout
 #   tb_dsp        zcu216_dsp: the signal hub and its modules
-#   tb_adc_dec    zcu216_adc_dec: the RF-ADC channels at 125 MS/s
+#   tb_adc_dec    zcu216_adc_dec: the RF-ADC channels at 250 MS/s
+#   tb_fmc_dac    zcu216_fmc_dac: 250 MS/s to the card's 125 MS/s
+#   tb_bus_pipe   zcu216_bus_pipe: slots behind zcu216_bus_cdc
 # Usage: sim/zcu216/run_unit.sh tb_snap   (from fpga/)
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
@@ -28,6 +30,8 @@ case $tb in
                red_pitaya_iq_hpf_block.v red_pitaya_iir_block.v red_pitaya_product_sat.v
                red_pitaya_saturate.v" ;;
   tb_adc_dec) rtl="zcu216_adc_dec.sv" ;;
+  tb_fmc_dac) rtl="zcu216_fmc_dac.sv" ;;
+  tb_bus_pipe) rtl="zcu216_bus_cdc.sv zcu216_bus_pipe.sv" ;;
   *) echo "unknown testbench $tb"; exit 1 ;;
 esac
 work="$here/work/$tb"
@@ -35,10 +39,10 @@ mkdir -p "$work"
 source /tools/Xilinx/2025.2/Vivado/settings64.sh
 cd "$work"
 # the Red Pitaya's .v files are Verilog, and some use a name before declaring it
-xvlog -sv $(for f in $rtl; do case $f in *.sv) echo "$fpga/rtl/$f" ;; esac; done) "$here/$tb.sv" > xvlog.log 2>&1 \
+xvlog -sv -d MODULE_FB_PIPELINE $(for f in $rtl; do case $f in *.sv) echo "$fpga/rtl/$f" ;; esac; done) "$here/$tb.sv" > xvlog.log 2>&1 \
     || { grep -E "ERROR|WARNING" xvlog.log; exit 1; }
 v=$(for f in $rtl; do case $f in *.v) echo "$fpga/rtl/$f" ;; esac; done)
-[ -z "$v" ] || xvlog --relax $v >> xvlog.log 2>&1 || { grep -E "ERROR" xvlog.log; exit 1; }
+[ -z "$v" ] || xvlog --relax -d MODULE_FB_PIPELINE $v >> xvlog.log 2>&1 || { grep -E "ERROR" xvlog.log; exit 1; }
 xelab -debug off --timescale 1ns/1ps $tb -s $tb > xelab.log 2>&1 || { grep -E "ERROR" xelab.log; exit 1; }
 xsim $tb -R > xsim.log 2>&1 || { tail -20 xsim.log; exit 1; }
-grep -E "^(SNAP|POINTS|SCOPE|AXI|FRAME|AVG|CDC|DSP|DEC|ERR)|^  |Error|Fatal" xsim.log || true
+grep -E "^(SNAP|POINTS|SCOPE|AXI|FRAME|AVG|CDC|DSP|DEC|FMC|PIPE|ERR)|^  |Error|Fatal" xsim.log || true

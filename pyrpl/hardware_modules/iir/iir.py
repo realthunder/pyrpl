@@ -497,7 +497,7 @@ class IIR(FilterModule):
                                                   poles=self.poles,
                                                   gain=self.gain,
                                                   loops=self.loops,
-                                                  dt=8e-9 * self._frequency_correction,
+                                                  dt=8e-9 / self._frequency_correction,
                                                   minloops=self._minloops,
                                                   maxloops=self._maxloops,
                                                   iirstages=self._IIRSTAGES,

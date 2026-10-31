@@ -2,7 +2,7 @@
  * The Red Pitaya system bus across two clocks, with a timeout.
  *
  * Front (clk_a): axi_slave's side, on a clock that always runs (the PS's
- * pl_clk0). Back (clk_b): the modules, on the system clock (125 MHz from the RF
+ * pl_clk0). Back (clk_b): the modules, on the system clock (250 MHz from the RF
  * clock), which only runs once the CLK104 and the RF tiles are up and stops
  * whenever a tile restarts or the CLK104 is reprogrammed. A register access
  * while it is down must not hang the PS, so the front answers every access

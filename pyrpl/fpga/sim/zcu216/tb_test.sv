@@ -2,7 +2,7 @@
 module tb_test;
   `include "simdir.svh"   // localparam string SIMDIR, written by run_sim.sh
   localparam int SUB = 5, NB = SUB + 3, WIN = 64;
-  logic sclk = 0;  always #5.0 sclk = ~sclk;
+  logic sclk = 0;  always #2.0 sclk = ~sclk;
   logic fclk = 0;  always #1.6 fclk = ~fclk;
   logic srstn = 0, frstn = 0;
   logic [31:0] sys_addr = 0, sys_wdata = 0, sys_rdata;
@@ -129,7 +129,7 @@ module tb_test;
 
   logic [31:0] v, f0, f1;
   initial begin
-    repeat (10) @(posedge sclk);
+    repeat (25) @(posedge sclk);
     srstn = 1;  frstn = 1;
     rd(32'h0, v);  $display("ID %h", v);
     do begin rd(32'h8, v); end while (!v[0]);
@@ -140,7 +140,7 @@ module tb_test;
     wr(32'h88, 32'd101 << (32 - NB));  wr(32'h8c, 8000);   wr(32'h90, 4);
     wr(32'h0c, 2);                 // min_bin
     wr(32'h04, 1);                 // run
-    repeat (400) @(posedge sclk);  // ~12 frames of 256 samples
+    repeat (1000) @(posedge sclk);  // ~12 frames of 256 samples
     for (int c = 0; c < 2; c++) begin
       logic [31:0] fr, pb, pm, ev;
       rd(32'h60 + 32'h40*c, fr); rd(32'h64 + 32'h40*c, pb);
@@ -158,9 +158,9 @@ module tb_test;
     // loopback: DAC tone on bin 50 (+ bin 51 at a quarter), ch1 now takes ADC channel 2
     wr(32'h200, 32'd50 << (32 - NB));  wr(32'h204, 12000);
     wr(32'h208, 32'd51 << (32 - NB));  wr(32'h20c, 3000);   wr(32'h214, 1);
-    fft_sel[1] = 3'd3;  repeat (20) @(posedge sclk);       // ch1 source = ADC ch 2
+    fft_sel[1] = 3'd3;  repeat (50) @(posedge sclk);       // ch1 source = ADC ch 2
     wr(32'h24, 2);  rd(32'h24, v);
-    repeat (400) @(posedge sclk);
+    repeat (1000) @(posedge sclk);
     begin
       logic [31:0] pb, pm, ev, sr;
       rd(32'h94, sr); rd(32'ha4, pb); rd(32'ha8, pm); rd(32'hb0, ev);
@@ -173,7 +173,7 @@ module tb_test;
     fft_sel[1] = 3'd0;
     wr(32'h100, 16); wr(32'h104, 2); wr(32'h108, 127); wr(32'h10c, 0);
     wr(32'h110, 2);  wr(32'h114, 8); wr(32'h118, 0);
-    repeat (2000) @(posedge sclk);
+    repeat (5000) @(posedge sclk);
     for (int c = 0; c < 2; c++) begin
       logic [31:0] lo, hi, n, d, o;
       rd(32'h58 + 32'h40*c, lo); rd(32'h5c + 32'h40*c, hi);
@@ -219,7 +219,7 @@ module tb_test;
       wr(32'h18c, 1);
       do rd(32'h190, pk); while (pk < 2);
       wr(32'h18c, 0);
-      repeat (200) @(posedge sclk);
+      repeat (500) @(posedge sclk);
       rd(32'h180, ptr); rd(32'h194, dr); rd(32'h198, er);
       for (int p = 0; p < 2; p++) begin
         logic [63:0] h = ring[p * (1 + dw)];
@@ -250,7 +250,7 @@ module tb_test;
       logic signed [15:0] y [$], y2max;
       int zc = 0, bad = 0;
       rd(32'h1001e0, ln); rd(32'h1001e4, base); rd(32'h1001e8, rl); rd(32'h1001ec, fmt);
-      sc_sel = '{3'd4, 3'd5};  repeat (20) @(posedge sclk);
+      sc_sel = '{3'd4, 3'd5};  repeat (50) @(posedge sclk);
       wr(32'h100014, 2);  wr(32'h100028, 0);  wr(32'h100008, 0);  wr(32'h100020, 20);
       wr(32'h100000, 2);                                    // reset
       wr(32'h100010, ln / 2);
@@ -277,7 +277,7 @@ module tb_test;
       logic [31:0] st, wt, dl, base, rl, ln;
       int bad1 = 0, bad2 = 0;
       rd(32'h1001e0, ln); rd(32'h1001e4, base); rd(32'h1001e8, rl);
-      sc_sel = '{3'd6, 3'd7};  repeat (20) @(posedge sclk);
+      sc_sel = '{3'd6, 3'd7};  repeat (50) @(posedge sclk);
       rd(32'h1001f0, v);
       wr(32'h100000, 2);                                    // reset
       wr(32'h100010, ln);
@@ -302,7 +302,7 @@ module tb_test;
       int bad1 = 0, bad2 = 0;
       logic tg0;
       rd(32'h1001e0, ln); rd(32'h1001e4, base); rd(32'h1001e8, rl);
-      sig_data[0] = 14'(500);  sig_data[1] = 14'(-800);  repeat (20) @(posedge sclk);
+      sig_data[0] = 14'(500);  sig_data[1] = 14'(-800);  repeat (50) @(posedge sclk);
       wr(32'h100000, 2);                                    // reset
       wr(32'h100010, ln / 2);
       wr(32'h100000, 1);                                    // arm
@@ -324,7 +324,7 @@ module tb_test;
       $display("SCOPE out1/out4, triggered by asg3: %0d samples, ch1 != 500: %0d, ch2 != -800: %0d, trigger toggle %b -> %b",
                ln, bad1, bad2, tg0, sc_trig_tog);
       if (bad1 || bad2 || tg0 == sc_trig_tog) $display("ERR SCOPE OUT / ASG3");
-      sc_sel = '{3'd0, 3'd1};  repeat (20) @(posedge sclk);
+      sc_sel = '{3'd0, 3'd1};  repeat (50) @(posedge sclk);
 
       wr(32'h1001c8, 12 << 4);                              // FFT sync from asg3
       repeat (10) @(posedge fclk);
@@ -361,9 +361,9 @@ module tb_test;
       wr(32'h1001a0, 0);                                    // delay
       ext_on = 1;
       wr(32'h1001c8, 1);                                    // framing on, rising edge
-      repeat (300) @(posedge sclk);                         // settle (~10 periods)
+      repeat (750) @(posedge sclk);                         // settle (~10 periods)
       rd(32'h60, fa0); rd(32'ha0, fb0); rd(32'h1001cc, sy0);
-      repeat (1600) @(posedge sclk);                        // ~50 periods
+      repeat (4000) @(posedge sclk);                        // ~50 periods
       rd(32'h60, fa1); rd(32'ha0, fb1); rd(32'h1001cc, sy1);
       rd(32'h1001d0, per); rd(32'h1001d4, sk); rd(32'h10008c, n);
       rd(32'h100058, w1);  rd(32'h100064, a2); rd(32'h1001c8, ctl);
@@ -377,9 +377,9 @@ module tb_test;
       // power average over 4 frames: a quarter of the frames come out, the
       // tones still on their bins
       wr(32'h1001d8, 2);
-      repeat (200) @(posedge sclk);
+      repeat (500) @(posedge sclk);
       rd(32'h60, fa0); rd(32'ha0, fb0); rd(32'h1001cc, sy0);
-      repeat (1600) @(posedge sclk);
+      repeat (4000) @(posedge sclk);
       rd(32'h60, fa1); rd(32'ha0, fb1); rd(32'h1001cc, sy1);
       rd(32'h64, pa); rd(32'ha4, pb); rd(32'h1001d8, n);
       $display("FRAMING average m %0d: syncs %0d, frames out up %0d down %0d (a quarter), peaks %0d/%0d",
@@ -391,8 +391,8 @@ module tb_test;
       wr(32'h1001d8, 0);
       wr(32'h1001c8, 0);                                    // free-running again
       ext_on = 0;
-      repeat (100) @(posedge sclk);
-      rd(32'h60, fa0);  repeat (200) @(posedge sclk);  rd(32'h60, fa1);
+      repeat (250) @(posedge sclk);
+      rd(32'h60, fa0);  repeat (500) @(posedge sclk);  rd(32'h60, fa1);
       $display("FRAMING off: %0d frames in 200 bus clocks (free-running: 2 us / 102.4 ns = ~19.5)", fa1 - fa0);
       if (fa1 - fa0 < 18) $display("ERR FRAMING off");
     end
@@ -406,7 +406,7 @@ module tb_test;
       $display("RAW adc[0]=%h dac[0]=%h", w0, w1);
     end
     wr(32'h04, 0);
-    repeat (200) @(posedge sclk);
+    repeat (500) @(posedge sclk);
     $display("TB_DONE");
     $finish;
   end

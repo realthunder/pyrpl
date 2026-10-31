@@ -419,6 +419,10 @@ class NumberProperty(BaseProperty):
             value = self.get_value(obj)
         return max(min(value, self.max), self.min)
 
+    def max_value(self, obj):
+        """ the upper limit for obj: for the GUI, where limits depend on it """
+        return self.max
+
 
 class IntProperty(NumberProperty):
     def __init__(self,
@@ -645,6 +649,22 @@ class GainRegister(FloatRegister):
         return rounded_value
 
 
+class ClockGainRegister(GainRegister):
+    """
+    A gain that is a frequency [Hz] and accumulates once per clock (a PID's
+    integral and derivative gains): norm assumes the Red Pitaya's clock.
+    """
+    def to_python(self, obj, value):
+        return GainRegister.to_python(self, obj, value) * obj._frequency_correction
+
+    def from_python(self, obj, value):
+        return GainRegister.from_python(self, obj, float(value) / obj._frequency_correction)
+
+    def validate_and_normalize(self, obj, value):
+        correction = obj._frequency_correction
+        return correction * GainRegister.validate_and_normalize(self, obj, float(value) / correction)
+
+
 class FrequencyProperty(FloatProperty):
     """
     An attribute for frequency values
@@ -661,15 +681,6 @@ class FrequencyRegister(FloatRegister, FrequencyProperty):
     # attention: no bitmask can be defined for frequencyregisters
     CLOCK_FREQUENCY = 125e6
 
-    def _clock(self, obj):
-        """the clock the register's phase step counts in: the module's own
-        _register_clock_hz where it has one (the ASG: the bus clock, which
-        differs by board), else CLOCK_FREQUENCY"""
-        try:
-            return float(obj._register_clock_hz) or self.CLOCK_FREQUENCY
-        except AttributeError:
-            return self.CLOCK_FREQUENCY
-
     def __init__(self, address, **kwargs):
         FloatRegister.__init__(self, address, **kwargs)
         self.min = 0
@@ -684,20 +695,26 @@ class FrequencyRegister(FloatRegister, FrequencyProperty):
         else:
             # round and normalize
             value = int(round(
-                value / self._clock(obj) * 2 ** self.bits))  # Seems correct (should not be 2**bits -1): 125 MHz
+                value / self.CLOCK_FREQUENCY * 2 ** self.bits))  # Seems correct (should not be 2**bits -1): 125 MHz
             # out of reach because 2**bits is out of reach
         return value
 
     def to_python(self, obj, value):
-        return self._clock(obj) / 2 ** self.bits * float(
+        return self.CLOCK_FREQUENCY / 2 ** self.bits * float(
             value) * obj._frequency_correction
 
     def validate_and_normalize(self, obj, value):
         """
-        Same as FloatRegister, except the value should be positive.
+        Same as FloatRegister, except the value should be positive, and the
+        limits follow the module's clock.
         """
-        return FrequencyProperty.validate_and_normalize(self, obj,
+        correction = obj._frequency_correction
+        value = abs(float(value)) / correction
+        return correction * FrequencyProperty.validate_and_normalize(self, obj,
                         FloatRegister.validate_and_normalize(self, obj, value))
+
+    def max_value(self, obj):
+        return self.max * obj._frequency_correction
 
 
 class PhaseProperty(FloatProperty):
@@ -875,7 +892,7 @@ class FilterRegister(BaseRegister, FilterProperty):
                 # old formula
                 #bandwidth = alpha * 125e6 / 2 / np.pi
                 # new, more correct formula (from Oppenheim-Schafer p. 70)
-                bandwidth = -np.log(1.0-alpha)/2.0/np.pi*125e6
+                bandwidth = -np.log(1.0-alpha)/2.0/np.pi*125e6*obj._frequency_correction
                 # here comes a nasty bugfix to make it work (see issue 242)
                 if alpha in self.correction_factors:
                     bandwidth *= self.correction_factors[alpha]
@@ -906,10 +923,11 @@ class FilterRegister(BaseRegister, FilterProperty):
                 # old formula
                 #alpha = np.abs(bandwidth)*2*np.pi/125e6
                 # new formula
-                alpha = 1.0 - np.exp(-np.abs(bandwidth)*2.0*np.pi/125e6)
+                clock = 125e6 * obj._frequency_correction
+                alpha = 1.0 - np.exp(-np.abs(bandwidth)*2.0*np.pi/clock)
                 if alpha in self.correction_factors:
                     bandwidth /= self.correction_factors[alpha]
-                    alpha = 1.0 - np.exp(-np.abs(bandwidth)*2.0*np.pi/125e6)
+                    alpha = 1.0 - np.exp(-np.abs(bandwidth)*2.0*np.pi/clock)
                 shift = int(np.round(np.log2(alpha*(2**self._MAXSHIFT(obj)))))
                 if shift < 0:
                     shift = 0
