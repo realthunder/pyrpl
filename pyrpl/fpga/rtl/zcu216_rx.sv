@@ -64,10 +64,14 @@ initial $readmemh(SIN_FILE, rom);
 
 // phase of lane j = acc + j * step; acc advances 8 * step per fclk. The offsets
 // settle in a few clocks (quasi-static); 16 bits are enough for a 12-bit address.
+// Step 0 clears the phase: the low-pass is x cos(0), not x at wherever the phase
+// stopped.
 logic [31:0] acc = '0;
 logic [31:0] off [8];
+logic        stopped = 1'b1;
 always_ff @(posedge fclk) begin
-  acc    <= acc + {step_f[28:0], 3'b0};
+  stopped <= step_f == '0;
+  acc    <= stopped ? '0 : acc + {step_f[28:0], 3'b0};
   off[0] <= '0;
   off[1] <= step_f;
   off[2] <= {step_f[30:0], 1'b0};

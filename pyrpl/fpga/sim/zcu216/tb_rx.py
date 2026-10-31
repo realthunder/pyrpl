@@ -60,4 +60,7 @@ real_case(5, 'real 62.5 + 23 MHz', 1024 + 377)
 real_case(6, 'real 62.5 - 23 MHz', 1024 - 377)
 reject(7, 'real, 160 MHz above', -70)
 real_case(8, 'real, ADC channel 2', 1024 + 377)
+real_case(9, 'low-pass after a band', 492)
+r = d[d[:, 0] == 9]
+check('low-pass after: Q is 0', abs(r[:, 2]).max() == 0, 'max |Q| %d' % abs(r[:, 2]).max())
 print('RX checks done, %d errors' % errs)

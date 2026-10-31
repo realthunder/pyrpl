@@ -63,6 +63,8 @@ module tb_rx;
     run(6, fo,      fo -  377.0 * BIN, 1'b1);     // real: 62.5 - 23 MHz
     run(7, fo,      fo + 2622.0 * BIN, 1'b1);     // 160 MHz above: out of the band
     run(8, fo,      fo +  377.0 * BIN, 1'b1, 2);  // ADC channel 2
+    repeat (37) @(posedge fclk);                   // the oscillator stops anywhere
+    run(9, 0.0,      492.0 * BIN, 1'b0);          // low-pass again: its phase cleared
     $fclose(fd);
     $display("RX done");
     $finish;
