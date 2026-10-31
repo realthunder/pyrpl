@@ -537,7 +537,7 @@ end
 
 // hk capabilities (red_pitaya_hk.v 0x48..0x5C): RF-ADC/DAC 2.5 GS/s, 14 bits,
 // four channels each (ADC tile 224, DAC tile 228); the bus modules on sys_clk.
-// Modules: asg0-3, the sampler (hub +0x10) and the hub's PID, IQ and IIR always;
+// Modules: asg0-3, the sampler (hub +0x10) and the hub's PID, IQ, IIR and rx0 always;
 // the scope (DDR ring) and the RF FFT block with RF; bit 28 = the ASG drives the
 // FMC DAC card, 29 = the signal hub.
 localparam int DSP_PIDS = 1, DSP_IQS = 1;         // more: Red Pitaya numbers, up to 3, 2
@@ -546,9 +546,15 @@ localparam bit DSP_IIR = 1;
 `else
 localparam bit DSP_IIR = 0;
 `endif
+`ifdef ZCU216_RX
+localparam bit DSP_RX = 1;
+`else
+localparam bit DSP_RX = 0;
+`endif
 localparam logic [31:0] HK_DSP = (((32'h1 << DSP_IQS) - 1) << 11)
                                | (((32'h1 << DSP_PIDS) - 1) << 14)
-                               | (32'(DSP_IIR) << 18);
+                               | (32'(DSP_IIR) << 18)
+                               | (32'(DSP_RX) << 19);
 `ifdef ZCU216_FMC_DAC
 localparam logic [31:0] HK_ASG = (32'hF << 3) | (32'h1 << 2) | HK_DSP | (32'h1 << 28) | (32'h1 << 29);
 `else
@@ -661,10 +667,25 @@ logic [13:0] dac_out [4];
 logic [13:0] dsp_sig [4];                         // scope 1, 2 and FFT 0, 1's signals
 logic [2:0]  sc_sel [2], fft_sel [2];
 
-zcu216_dsp #(.PIDS (DSP_PIDS), .IQS (DSP_IQS), .IIR (DSP_IIR)) i_dsp (
+logic [1:0]  rx_sel;
+logic [31:0] rx_step;
+logic        rx_real, rx_gain2;
+`ifdef ZCU216_RX
+logic [13:0] rx_i, rx_q;
+`else
+logic [13:0] rx_i = '0, rx_q = '0;
+`endif
+
+zcu216_dsp #(.PIDS (DSP_PIDS), .IQS (DSP_IQS), .IIR (DSP_IIR), .RX (DSP_RX)) i_dsp (
   .clk       (sys_clk            ),
   .rstn      (sl_rstn[3]         ),
   .in        (adc_in             ),
+  .rx_sel,
+  .rx_step,
+  .rx_real,
+  .rx_gain2,
+  .rx_i,
+  .rx_q,
   .asg       (asg_out            ),
   .out       (dac_out            ),
   .sc_sel,
@@ -735,6 +756,12 @@ logic [3:0]   adc_valid;
 // the RF-ADC channels for the hub's modules: 250 MS/s on sys_clk
 zcu216_adc_dec #(.N (4)) i_adc_dec (.fclk (fclk), .adc (adc_data), .sys_clk (sys_clk),
   .dout (adc_in));
+
+// one RF-ADC channel, any band, filtered: signals 17, 18 of the hub
+`ifdef ZCU216_RX
+zcu216_rx #(.SIN_FILE (SIN_FILE)) i_rx (.fclk (fclk), .adc (adc_data), .sel (rx_sel), .step (rx_step),
+  .real_mode (rx_real), .gain2 (rx_gain2), .sys_clk (sys_clk), .dout_i (rx_i), .dout_q (rx_q));
+`endif
 
 // the converters' output clocks: clk_adc0 makes fclk; all are measured (debug)
 logic         clk_adc2, clk_dac0, clk_dac2;

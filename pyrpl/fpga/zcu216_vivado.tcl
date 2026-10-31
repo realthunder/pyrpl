@@ -74,6 +74,10 @@ puts "INFO: FMC_DAC=$fmc_dac"
 # the Red Pitaya, which leaves it out too) or 1.
 set dsp_iir [expr {[info exists env(DSP_IIR)] ? $env(DSP_IIR) : 0}]
 puts "INFO: DSP_IIR=$dsp_iir"
+# DSP_RX: rx0, any band of an RF-ADC channel, filtered (rtl/zcu216_rx.sv). 1
+# (default) or 0 = without, about 100 DSPs less on fclk. Needs RF.
+set dsp_rx [expr {[info exists env(DSP_RX)] ? $env(DSP_RX) : 1}]
+puts "INFO: DSP_RX=$dsp_rx"
 
 set zcu216_hp $fft_en               ;# snapshot DMA ports (S_AXI_HP0/HP1) in RF builds
 source                            $path_ip/system_bd_zcu216.tcl
@@ -155,7 +159,9 @@ if {$fft_en} {
     read_verilog -sv              $path_rtl/zcu216_points.sv
     read_verilog -sv              $path_rtl/zcu216_scope.sv
     read_verilog -sv              $path_rtl/zcu216_sig_cdc.sv
+    read_verilog -sv              $path_rtl/zcu216_ring.sv
     read_verilog -sv              $path_rtl/zcu216_adc_dec.sv
+    if {$dsp_rx} { read_verilog -sv $path_rtl/zcu216_rx.sv }
     read_verilog -sv              $path_rtl/zcu216_fft_frame.sv
     read_verilog -sv              $path_rtl/zcu216_fft_avg.sv
     read_verilog -sv              $path_rtl/zcu216_fft_test.sv
@@ -174,6 +180,7 @@ if {$fmc_dac} { read_xdc          $path_sdc/zcu216_fmc_dac.xdc }
 set synth_defines [expr {$fft_en ? {-verilog_define ZCU216_RF} : {}}]
 if {$fmc_dac} { lappend synth_defines -verilog_define ZCU216_FMC_DAC }
 if {$dsp_iir} { lappend synth_defines -verilog_define ZCU216_IIR }
+if {$dsp_rx && $fft_en} { lappend synth_defines -verilog_define ZCU216_RX }
 # the Red Pitaya blocks' own input and output registers, for 250 MHz
 lappend synth_defines -verilog_define MODULE_FB_PIPELINE
 synth_design -top zcu216_top -flatten_hierarchy none {*}$synth_defines \
@@ -203,7 +210,10 @@ if {$fft_en} {
     # the Gray pointers between sys_clk and fclk now step every 3.2 / 4 ns: their
     # bits must arrive within one step of each other (the clock groups above do
     # not override this)
-    set_bus_skew -from [get_cells {i_adc_dec/wg_reg[*]}] -to [get_cells {i_adc_dec/wg_m_reg[*]}] 3.0
+    set_bus_skew -from [get_cells {i_adc_dec/i_ring/wg_reg[*]}] -to [get_cells {i_adc_dec/i_ring/wg_m_reg[*]}] 3.0
+    if {$dsp_rx} {
+        set_bus_skew -from [get_cells {i_rx/i_ring/wg_reg[*]}] -to [get_cells {i_rx/i_ring/wg_m_reg[*]}] 3.0
+    }
     set_bus_skew -from [get_cells {i_sig_cdc/wg_reg[*]}] -to [get_cells {i_sig_cdc/wg_m_reg[*]}] 3.0
 }
 

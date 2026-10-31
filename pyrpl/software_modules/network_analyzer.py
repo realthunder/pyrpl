@@ -563,7 +563,7 @@ class NetworkAnalyzer(AcquisitionModule, SignalModule):
 
     def _get_frequencies(self):
         if self.is_zero_span():
-            return self.iq.__class__.frequency.validate_and_normalize(self,
+            return self.iq.__class__.frequency.validate_and_normalize(self.iq,
                                                 self.start_freq)*np.ones(
                                                                 self.points)
 
@@ -581,7 +581,7 @@ class NetworkAnalyzer(AcquisitionModule, SignalModule):
         values = np.zeros(len(raw_values))
         for index, val in enumerate(raw_values):
             values[index] = self.iq.__class__.frequency. \
-                validate_and_normalize(self, val)  # retrieve the real freqs...
+                validate_and_normalize(self.iq, val)  # retrieve the real freqs...
         return values
 
     def _remaining_time(self):

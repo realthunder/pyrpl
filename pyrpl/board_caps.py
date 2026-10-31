@@ -26,7 +26,7 @@ MODULE_BITS = {'ams': 0, 'scope': 1, 'sampler': 2,
                'pwm0': 7, 'pwm1': 8, 'pwm2': 9, 'pwm3': 10,
                'iq0': 11, 'iq1': 12, 'iq2': 13,
                'pid0': 14, 'pid1': 15, 'pid2': 16,
-               'trig': 17, 'iir': 18}
+               'trig': 17, 'iir': 18, 'rx0': 19, 'rx1': 20}
 FEATURE_BITS = {'scope_fft': 24,   # FFT / peak / CFAR inside the scope (Red Pitaya)
                 'scope_dma': 25,   # the scope's DMA point stream (Red Pitaya)
                 'rf_fft': 26,      # the RF FFT block (ZCU216 slot 1)
@@ -54,7 +54,7 @@ def _bits(names, table):
 LEGACY = {
     0: dict(adc_hz=125e6, dac_hz=125e6, sys_hz=125e6, adc_bits=14, adc_ch=2,
             dac_bits=14, dac_ch=2,
-            modules=_bits(MODULE_BITS, MODULE_BITS)
+            modules=_bits([n for n in MODULE_BITS if n[:2] != 'rx'], MODULE_BITS)
             | _bits(('scope_fft', 'scope_dma'), FEATURE_BITS)),
     1: dict(adc_hz=2.5e9, dac_hz=2.5e9, sys_hz=100e6, adc_bits=14, adc_ch=4,
             dac_bits=14, dac_ch=4,

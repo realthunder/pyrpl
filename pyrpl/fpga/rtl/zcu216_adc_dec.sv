@@ -16,15 +16,7 @@
  * next with its tail t(p). A 10-sample mean nulls the multiples of 250 MHz and is -3.9 dB at
  * 125 MHz. Lanes 0-7 are time order (lane 0 oldest).
  *
- * The sums cross to sys_clk through a 16-entry ring in distributed RAM: the
- * write pointer, Gray coded, moves once per output through two flops (a set_bus_skew
- * in zcu216_vivado.tcl keeps its bits within one fclk). The clocks come from
- * one MMCM, so the reader runs freely at the writer's rate, DIST entries behind
- * the pointer it sees, and only realigns when that distance leaves GAP_MIN to
- * GAP_MAX (at the start, after the MMCM relocks). The pointer it sees moves unevenly
- * (0-2 per sys_clk, the 4:5 pattern of the two clocks and the synchroniser), which
- * the window must allow. A held pointer holds the output. No reset, so it needs
- * neither clock running first.
+ * The sums cross to sys_clk through zcu216_ring.
  *
  * Latency: about 7 fclk + 8 sys_clk after the last sample of a mean. The sums
  * are scaled on sys_clk, where a multiplier has time: mean / 4 (16-bit samples
@@ -40,7 +32,6 @@ module zcu216_adc_dec #(
 );
 
 localparam int SW = 20;                           // sum of 10 16-bit samples
-localparam logic [3:0] DIST = 4'd3, GAP_MIN = 4'd1, GAP_MAX = 4'd5;
 
 ////////////////////////////////////////////////////////////////////////////////
 // fclk: the sums
@@ -94,31 +85,11 @@ end
 // the ring
 ////////////////////////////////////////////////////////////////////////////////
 
-(* ram_style = "distributed" *) logic [N*SW-1:0] ring [16];
-logic [3:0]    wp = '0, wg = '0;
-logic [N*SW-1:0] w;
+logic [N*SW-1:0] w, q;
 always_comb
   for (int c = 0; c < N; c++) w[SW*c +: SW] = sum[c];
 
-always_ff @(posedge fclk)
-  if (emit) begin
-    ring[wp] <= w;
-    wp <= wp + 1'b1;
-    wg <= (wp + 1'b1) ^ ((wp + 1'b1) >> 1);
-  end
-
-(* ASYNC_REG = "TRUE" *) logic [3:0] wg_m = '0, wg_s = '0;
-logic [3:0]      wb = '0, rp = '0, gap;
-logic [N*SW-1:0] q = '0;
-assign gap = wb - rp;
-
-always_ff @(posedge sys_clk) begin
-  wg_m <= wg;
-  wg_s <= wg_m;
-  wb   <= {wg_s[3], ^wg_s[3:2], ^wg_s[3:1], ^wg_s[3:0]};
-  rp   <= (gap >= GAP_MIN && gap <= GAP_MAX) ? rp + 1'b1 : wb - DIST;
-  q    <= ring[rp];
-end
+zcu216_ring #(.W (N*SW)) i_ring (.fclk, .we (emit), .din (w), .sys_clk, .q);
 
 ////////////////////////////////////////////////////////////////////////////////
 // sys_clk: 16 bits to 14, the mean of 10

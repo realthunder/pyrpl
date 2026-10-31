@@ -14,6 +14,7 @@
  *   12, 13  in1, in2           28, 29  FFT channel 0, 1
  *           (RF-ADC 0, 1)
  *   14, 15  out1, out2
+ *   17, 18  rx0_i, rx0_q       17      rx0 (register +0x0: which of in1-4)
  *   21      off
  *   22, 23  in3, in4 (RF-ADC 2, 3)
  *   24, 25  out3, out4
@@ -38,17 +39,29 @@
  * sig_o, which crosses to fclk through zcu216_sig_cdc (slow to fast, a sample is
  * held). A new module therefore adds nothing on fclk.
  *
+ * rx0 (zcu216_rx) is the exception to "a module on the system clock": its input is
+ * an RF-ADC channel at 2.5 GS/s, which only exists on fclk, so this block only
+ * holds its registers (+0x100 oscillator step, per 2.5 GHz / 2^32, +0x104 bit 0
+ * real_mode, bit 1 gain2) and takes its outputs as signals 17, 18. No output_direct.
+ *
  * Latency: none from a signal to a module's input, as on the Red Pitaya; two
  * clocks from a module's or ASG's output to out.
  */
 module zcu216_dsp #(
   parameter int PIDS = 1,                         // 0..3
   parameter int IQS  = 1,                         // 0..2
-  parameter bit IIR  = 0
+  parameter bit IIR  = 0,
+  parameter bit RX   = 0
 ) (
   input  logic        clk,
   input  logic        rstn,
   input  logic [13:0] in  [4],                    // RF-ADC 0-3, 250 MS/s
+  output logic [1:0]  rx_sel,
+  output logic [31:0] rx_step,
+  output logic        rx_real,
+  output logic        rx_gain2,
+  input  logic [13:0] rx_i,
+  input  logic [13:0] rx_q,
   input  logic [13:0] asg [4],                    // asg0-3, two's complement
   output logic [13:0] out [4],                    // out1-4, saturated sums
   output logic [2:0]  sc_sel [2],                 // scope channel inputs
@@ -65,7 +78,7 @@ module zcu216_dsp #(
 );
 
 localparam int N_PID = 0, N_IIR = 4, N_IQ = 5, N_ASG = 8, N_SC = 8;
-localparam int N_IN1 = 12, N_OUT1 = 14, N_IN3 = 22, N_OUT3 = 24, N_FFT = 28, N_TONE = 30;
+localparam int N_IN1 = 12, N_OUT1 = 14, N_RX = 17, N_IN3 = 22, N_OUT3 = 24, N_FFT = 28, N_TONE = 30;
 
 // which numbers exist
 localparam logic [31:0] M_PID = ((32'd1 << PIDS) - 32'd1) << N_PID;
@@ -73,7 +86,8 @@ localparam logic [31:0] M_IQ  = ((32'd1 << IQS)  - 32'd1) << N_IQ;
 localparam logic [31:0] M_IIR = 32'(IIR) << N_IIR;
 localparam logic [31:0] M_MOD = M_PID | M_IQ | M_IIR;     // modules
 localparam logic [31:0] M_ASG = 32'hF << N_ASG;
-localparam logic [31:0] M_IN  = M_MOD | (32'h3 << N_SC) | (32'h3 << N_FFT);   // sinks
+localparam logic [31:0] M_RX  = 32'(RX) << N_RX;
+localparam logic [31:0] M_IN  = M_MOD | M_RX | (32'h3 << N_SC) | (32'h3 << N_FFT);   // sinks
 localparam logic [31:0] M_OD  = M_MOD | M_ASG;            // sources of output_direct
 
 function automatic logic [2:0] sc_index(logic [4:0] n, bit c);
@@ -96,6 +110,15 @@ function automatic logic [2:0] fft_index(logic [4:0] n);
     5'd22:   return 3'd3;
     5'd23:   return 3'd4;
     default: return 3'd5;
+  endcase
+endfunction
+
+function automatic logic [1:0] rx_index(logic [4:0] n);
+  case (n)
+    5'd13:   return 2'd1;
+    5'd22:   return 2'd2;
+    5'd23:   return 2'd3;
+    default: return 2'd0;
   endcase
 endfunction
 
@@ -144,11 +167,16 @@ always_ff @(posedge clk)
     input_select[N_FFT]     <= 5'(N_TONE);
     input_select[N_FFT + 1] <= 5'(N_TONE);
     sync <= '1;
+    rx_step  <= '0;
+    rx_real  <= 1'b0;
+    rx_gain2 <= 1'b0;
   end else if (sys_wen)
     case (sys_addr[15:0])
       16'h00: if (M_IN[num]) input_select[num]  <= sys_wdata[4:0];
       16'h04: if (M_OD[num]) output_select[num] <= sys_wdata[3:0];
       16'h0C: sync <= sys_wdata[7:0];
+      16'h100: if (M_RX[num]) rx_step <= sys_wdata;
+      16'h104: if (M_RX[num]) {rx_gain2, rx_real} <= sys_wdata[1:0];
       default: ;
     endcase
 
@@ -166,6 +194,9 @@ always_ff @(posedge clk) begin
       if (M_MOD[num]) begin
         sys_ack   <= mod_ack[num];
         sys_rdata <= mod_rdata[num];
+      end else if (M_RX[num]) begin
+        if (sys_addr[15:0] == 16'h100) sys_rdata <= rx_step;
+        if (sys_addr[15:0] == 16'h104) sys_rdata <= 32'({rx_gain2, rx_real});
       end
   endcase
 end
@@ -205,6 +236,7 @@ always_ff @(posedge clk) begin
   sc_sel[1]  <= sc_index(input_select[N_SC + 1], 1'b1);
   fft_sel[0] <= fft_index(input_select[N_FFT]);
   fft_sel[1] <= fft_index(input_select[N_FFT + 1]);
+  rx_sel     <= rx_index(input_select[N_RX]);
   sig_o[0]   <= input_signal[N_SC];
   sig_o[1]   <= input_signal[N_SC + 1];
   sig_o[2]   <= input_signal[N_FFT];
@@ -267,6 +299,16 @@ for (genvar n = 0; n < 32; n++) begin : g_mod
       .wdata  (sys_wdata           )
     );
     assign mod_sig[n] = mod_od[n];
+  end else if (RX && n == N_RX) begin : g_rx_i
+    assign mod_sig[n]   = rx_i;
+    assign mod_od[n]    = 14'h0;
+    assign mod_ack[n]   = 1'b0;
+    assign mod_rdata[n] = 32'h0;
+  end else if (RX && n == N_RX + 1) begin : g_rx_q
+    assign mod_sig[n]   = rx_q;
+    assign mod_od[n]    = 14'h0;
+    assign mod_ack[n]   = 1'b0;
+    assign mod_rdata[n] = 32'h0;
   end else begin : g_none
     assign mod_sig[n]   = 14'h0;
     assign mod_od[n]    = 14'h0;

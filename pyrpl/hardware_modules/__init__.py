@@ -28,6 +28,7 @@ from .scope import Scope
 from .zcu216_scope import Zcu216Scope
 from .asg import Asg0, Asg1, Asg2, Asg3
 from .pid import Pid
+from .rx import Rx
 from .sampler import Sampler
 from .pwm import Pwm
 from .iq import Iq

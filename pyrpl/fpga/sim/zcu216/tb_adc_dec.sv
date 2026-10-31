@@ -51,10 +51,10 @@ module tb_adc_dec;
   logic [3:0] rp_q = '0;
   logic gap_on = 0;
   always @(negedge sys_clk) if (gap_on) begin
-    if (int'(dut.gap) < gap_min) gap_min = dut.gap;
-    if (int'(dut.gap) > gap_max) gap_max = dut.gap;
-    if (dut.rp != 4'(rp_q + 1)) realigns++;
-    rp_q = dut.rp;
+    if (int'(dut.i_ring.gap) < gap_min) gap_min = dut.i_ring.gap;
+    if (int'(dut.i_ring.gap) > gap_max) gap_max = dut.i_ring.gap;
+    if (dut.i_ring.rp != 4'(rp_q + 1)) realigns++;
+    rp_q = dut.i_ring.rp;
   end
 
   int  dc_t [] = '{0, 4000, -4000, 32767, -32768, 2, -2};
@@ -81,7 +81,7 @@ module tb_adc_dec;
     mode = MODE_RAMP;
     repeat (60) @(posedge sys_clk);
     jumps = 0;  vals = 0;
-    rp_q = dut.rp;  gap_on = 1;
+    rp_q = dut.i_ring.rp;  gap_on = 1;
     #0.1;
     p = $signed(dout[0]);
     for (int i = 0; i < 4000; i++) begin

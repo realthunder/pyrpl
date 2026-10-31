@@ -70,7 +70,8 @@ class Zcu216Scope(Scope):
                            "adc0": 12, "adc1": 13, "adc2": 22, "adc3": 23,
                            "out1": 14, "out2": 15, "out3": 24, "out4": 25,
                            "fft0": 26, "fft1": 27, "off": 21,
-                           "pid0": 0, "iir": 4, "iq0": 5},
+                           "pid0": 0, "iir": 4, "iq0": 5,
+                           "rx0_i": 17, "rx0_q": 18},
                           sort_by_values=False)  # adc0 first: the default
     inputs = _inputs.keys()
     input1 = SelectRegister(dsp_addr_base('asg0') - addr_base, options=_inputs,

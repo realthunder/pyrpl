@@ -12,9 +12,14 @@ module tb_dsp;
   logic signed [13:0] in [4], asg [4];
   logic [13:0] out [4], sig_o [4];
   logic [2:0]  sc_sel [2], fft_sel [2];
+  logic [1:0]  rx_sel;
+  logic [31:0] rx_step;
+  logic        rx_real, rx_gain2;
+  logic [13:0] rx_i = '0, rx_q = '0;
   logic [31:0] addr = 0, wdata = 0, rdata;
   logic        wen = 0, ren = 0, err, ack;
-  zcu216_dsp #(.PIDS (1), .IQS (1), .IIR (1)) dut (.clk, .rstn, .in, .asg, .out, .sc_sel, .fft_sel,
+  zcu216_dsp #(.PIDS (1), .IQS (1), .IIR (1), .RX (1)) dut (.clk, .rstn, .in, .asg, .out, .sc_sel, .fft_sel,
+    .rx_sel, .rx_step, .rx_real, .rx_gain2, .rx_i, .rx_q,
     .sig_o, .sys_addr (addr), .sys_wdata (wdata), .sys_wen (wen), .sys_ren (ren),
     .sys_rdata (rdata), .sys_err (err), .sys_ack (ack));
   int errs = 0;
@@ -162,6 +167,27 @@ module tb_dsp;
       if (peak < 500) begin errs++; $display("ERR iq0 quadrature size"); end
     end
     wr(5, 4, 0);
+
+    // rx0: registers, which channel, its outputs as signals, no output_direct
+    rx_i = 14'sd1234;  rx_q = -14'sd777;
+    rd(17, 'h0, v);    chkv("rx0 input reset", v, 12);
+    @(negedge clk);    chkv("rx0 sel reset", rx_sel, 0);
+    wr(17, 'h100, 32'h1234_5678);  rd(17, 'h100, v);  chkv("rx0 step", v, 32'h1234_5678);
+    wr(17, 'h104, 3);  rd(17, 'h104, v);  chkv("rx0 ctrl", v, 3);
+    chkv("rx0 real", rx_real, 1);  chkv("rx0 gain2", rx_gain2, 1);
+    wr(17, 'h104, 2);  chkv("rx0 real off", rx_real, 0);
+    wr(17, 'h0, 13);  repeat (2) @(negedge clk);  chkv("rx0 in2", rx_sel, 1);
+    wr(17, 'h0, 22);  repeat (2) @(negedge clk);  chkv("rx0 in3", rx_sel, 2);
+    wr(17, 'h0, 23);  repeat (2) @(negedge clk);  chkv("rx0 in4", rx_sel, 3);
+    rd(17, 'h10, v);   chkv("rx0_i signal", int'($signed(v[13:0])), 1234);
+    rd(18, 'h10, v);   chkv("rx0_q signal", int'($signed(v[13:0])), -777);
+    wr(8, 0, 17);  repeat (3) @(negedge clk);
+    chkv("scope 1 on rx0_i: hub route", sc_sel[0], 6);
+    chkv("rx0_i at the scope", int'($signed(sig_o[0])), 1234);
+    wr(8, 0, 12);
+    wr(17, 'h4, 1);    rd(17, 'h4, v);   chkv("rx0 no output_direct", v, 0);
+    wr(0, 'h0, 17);    rd(0, 'h0, v);    chkv("pid0 on rx0_i", v, 17);
+    wr(0, 'h0, 12);
 
     // numbers with no module
     rd(20, 0, v);    chkv("unused sink", v, 0);

@@ -39,6 +39,8 @@ HUB_INPUTS = OrderedDict([
     ('out3', 24),
     ('out4', 25)])
 HUB_SIGNALS = ('in1', 'in2', 'out1', 'out2', 'off')
+# hub modules of their own: each number is the module and its first signal
+RX_NUMBERS = {'rx0': 17, 'rx1': 19}
 
 
 def board_caps(instance):
@@ -61,6 +63,10 @@ def dsp_inputs(instance):
     signals = OrderedDict((k, v) for k, v in DSP_INPUTS.items()
                           if k in HUB_SIGNALS or caps.has(k))
     signals.update(HUB_INPUTS)
+    for name, number in RX_NUMBERS.items():
+        if caps.has(name):
+            signals[name + '_i'] = number
+            signals[name + '_q'] = number + 1
     return signals
 
 
