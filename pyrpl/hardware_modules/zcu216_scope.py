@@ -298,6 +298,10 @@ class Zcu216Scope(Scope):
         else: its tone generator), and the block runs"""
         self._client.writes(DSP_FFT_SEL + 0x10000 * ch,
                             [self._inputs.get(source, DSP_TONE)])
+        # images before the signal hub (zcu216_avg_v1 and older) pick the
+        # source here instead, 1-4 = adc0-3 and 0 the tone; read-only since
+        self._client.writes(FFT_BASE + 0x54 + 0x40 * ch,
+                            [{"adc0": 1, "adc1": 2, "adc2": 3, "adc3": 4}.get(source, 0)])
         self._client.writes(FFT_BASE + 0x04, [1])
 
     @property
