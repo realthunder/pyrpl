@@ -33,10 +33,15 @@
  *   0x100 +   CFAR detector settings (all channels; hls/peak_detector_cfar.cpp
  *             semantics, taken at each frame start):
  *             +0x00 k^2 (16 bits)  +0x04 start_index  +0x08 end_index (bins,
- *             inclusive)  +0x0c data_min  +0x10 guard cells (<= 16)
+ *             inclusive, for zcu216_peak_wide too; 0 = no far limit)  +0x0c
+ *             data_min  +0x10 guard cells (<= 16)
  *             +0x14 training cells per side (<= 64)  +0x18 [0] one-sided edge
  *             fallback, [1] SO-CFAR  +0x1c ramp_d0  +0x20 ramp_step (Q3.20)
  *             +0x24 RO {FRAC, TMAX, GMAX} = [19:16], [15:8], [7:0]
+ *             +0x28 [0] 1: results from zcu216_peak_wide, not zcu216_cfar
+ *             +0x2c zcu216_peak_wide's threshold, log2 of the magnitude, Q8.8
+ *             +0x30 its shape: [3:0] log2 bins per cell (5-9), [6:4] log2 cells
+ *             in P (0-5), [13:8] guard cells, [18:16] log2 cells in L and R (0-6)
  *   0x140 +   snapshot of whole frames into DDR (zcu216_snap):
  *             +0x00 W  arm: capture from the next frame start (ignored while a
  *                      capture is pending; bit 31 set only drops the pending flag)
@@ -237,6 +242,9 @@ logic [GW-1:0] cf_g;
 logic [TW-1:0] cf_t;
 logic [1:0]    cf_flags;
 logic [22:0]   cf_d0, cf_step;
+logic          pw_on;
+logic [15:0]   pw_thr;
+logic [18:0]   pw_shape;
 // snapshot
 logic          sn_arm, sn_pending, sn_done_edge;
 logic [4:0]    sn_src;
@@ -293,13 +301,16 @@ always_ff @(posedge sys_clk)
     d_nbits   <= '0;  d_run   <= 1'b0;
     cf_ksq    <= 16'd16;
     cf_lo     <= (BW+1)'(16);
-    cf_hi     <= (BW+1)'((1 << BW) - 1);
+    cf_hi     <= '0;
     cf_min    <= '0;
     cf_g      <= GW'(4);
     cf_t      <= TW'(16);
     cf_flags  <= '0;
     cf_d0     <= '0;
     cf_step   <= '0;
+    pw_on     <= 1'b0;
+    pw_thr    <= 16'd170;                    // 4 dB
+    pw_shape  <= {3'd5, 2'd0, 6'd16, 1'b0, 3'd3, 4'd5};
     sn_arm    <= 1'b0;
     sn_pending <= 1'b0;
     sn_src    <= '0;
@@ -339,6 +350,9 @@ always_ff @(posedge sys_clk)
       20'h00118: cf_flags  <= sys_wdata[1:0];
       20'h0011c: cf_d0     <= sys_wdata[22:0];
       20'h00120: cf_step   <= sys_wdata[22:0];
+      20'h00128: pw_on     <= sys_wdata[0];
+      20'h0012c: pw_thr    <= sys_wdata[15:0];
+      20'h00130: pw_shape  <= sys_wdata[18:0];
       20'h00140: if (sys_wdata[31]) sn_pending <= 1'b0;
                  else if (!sn_pending) begin
                    sn_arm     <= !sn_arm;
@@ -434,6 +448,9 @@ function automatic logic [31:0] reg_read(input logic [19:0] ad);
     20'h0011c: v = 32'(cf_d0);
     20'h00120: v = 32'(cf_step);
     20'h00124: v = {12'h0, 4'(FRAC), 8'(TMAX), 8'(GMAX)};
+    20'h00128: v = 32'(pw_on);
+    20'h0012c: v = 32'(pw_thr);
+    20'h00130: v = 32'(pw_shape);
     20'h00144: v = 32'(sn_src);
     20'h00148: v = 32'(sn_nf);
     20'h0014c: v = {16'h0, s_sn_cnt, 4'h0, s_sn_err, s_sn_ovf, s_sn_busy, sn_pending};
@@ -565,6 +582,10 @@ logic [GW-1:0] f_cf_g, f_cf_g_m;
 logic [TW-1:0] f_cf_t, f_cf_t_m;
 logic [1:0]    f_cf_flags, f_cf_flags_m;
 logic [22:0]   f_cf_d0, f_cf_d0_m, f_cf_step, f_cf_step_m;
+logic          f_pw_on, f_pw_on_m;
+logic [15:0]   f_pw_thr, f_pw_thr_m;
+logic [18:0]   f_pw_shape, f_pw_shape_m;
+logic [BW:0]   f_cf_end;
 logic [4:0]    f_sn_src, f_sn_src_m;
 logic [7:0]    f_sn_nf, f_sn_nf_m;
 (* ASYNC_REG = "TRUE" *) logic f_sn_arm_m, f_sn_arm;
@@ -580,6 +601,10 @@ always_ff @(posedge fclk) begin
   {f_cf_flags, f_cf_flags_m} <= {f_cf_flags_m, cf_flags};
   {f_cf_d0,    f_cf_d0_m}    <= {f_cf_d0_m,    cf_d0};
   {f_cf_step,  f_cf_step_m}  <= {f_cf_step_m,  cf_step};
+  {f_pw_on,    f_pw_on_m}    <= {f_pw_on_m,    pw_on};
+  {f_pw_thr,   f_pw_thr_m}   <= {f_pw_thr_m,   pw_thr};
+  {f_pw_shape, f_pw_shape_m} <= {f_pw_shape_m, pw_shape};
+  f_cf_end <= (f_cf_hi == '0) ? (BW+1)'((1 << BW) - 1) : f_cf_hi;
   {f_sn_src,   f_sn_src_m}   <= {f_sn_src_m,   sn_src};
   {f_sn_nf,    f_sn_nf_m}    <= {f_sn_nf_m,    sn_nf};
   {f_sn_arm,   f_sn_arm_m}   <= {f_sn_arm_m,   sn_arm};
@@ -905,6 +930,13 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
   logic [31:0] f_cf_cnt, f_cf_det, f_cf_ovr;
   logic        f_cf_upd;
 
+  // the result of the detector in use
+  logic        cc_valid, cc_ovr, pw_valid;
+  logic [63:0] cc_word, pw_word;
+  assign cf_valid = f_pw_on ? pw_valid : cc_valid;
+  assign cf_word  = f_pw_on ? pw_word : cc_word;
+  assign cf_ovr   = !f_pw_on && cc_ovr;
+
   assign pt_valid[c] = cf_valid;
   assign pt_word[c]  = cf_word;
   if (c == 0) begin : g_tick
@@ -914,11 +946,19 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
   zcu216_cfar #(.SUB(SUB), .DW(32), .GMAX(GMAX), .TMAX(TMAX), .FRAC(FRAC)) i_cfar (
     .clk (fclk), .rstn (frstn),
     .n_mag, .n_t, .n_valid, .n_first, .n_last,
-    .k_sq (f_cf_ksq), .start_index (f_cf_lo), .end_index (f_cf_hi),
+    .k_sq (f_cf_ksq), .start_index (f_cf_lo), .end_index (f_cf_end),
     .data_min (f_cf_min), .guard (f_cf_g), .train (f_cf_t),
     .onesided (f_cf_flags[0]), .so_mode (f_cf_flags[1]),
     .ramp_d0 (f_cf_d0), .ramp_step (f_cf_step),
-    .r_valid (cf_valid), .r_word (cf_word), .r_overrun (cf_ovr));
+    .r_valid (cc_valid), .r_word (cc_word), .r_overrun (cc_ovr));
+
+  zcu216_peak_wide #(.SUB(SUB), .DW(32), .FRAC(FRAC)) i_wide (
+    .clk (fclk), .rstn (frstn),
+    .n_mag, .n_t, .n_valid, .n_first, .n_last,
+    .cell_log (f_pw_shape[3:0]), .peak_log (f_pw_shape[6:4]), .guard (f_pw_shape[13:8]),
+    .train_log (f_pw_shape[18:16]), .thr (f_pw_thr), .start_index (f_cf_lo),
+    .end_index (f_cf_end), .data_min (f_cf_min),
+    .r_valid (pw_valid), .r_word (pw_word));
 
   always_ff @(posedge fclk)
     if (!frstn) begin

@@ -184,6 +184,32 @@ module tb_test;
                c, lo, hi[0], hi[31:1] >> 8, (hi[8:1] * 1000) >> 8, hi[31:1], n, d, o);
       if (hi[0] !== 1'b1 || (hi[31:1] >> 8) != (c ? 100 : 37)) $display("ERR CFAR ch%0d", c);
     end
+    // the far limit: 0 is none, and a limit below ch1's tone hides it
+    begin
+      logic [31:0] lo, hi, n0, n1, sh;
+      rd(32'h130, sh);
+      if (sh != 32'h51035) $display("ERR WIDE default shape %h", sh);
+      wr(32'h108, 0);
+      repeat (5000) @(posedge sclk);
+      rd(32'h98, lo); rd(32'h9c, hi);
+      if (hi[0] !== 1'b1 || (hi[31:1] >> 8) != 100) $display("ERR CFAR no far limit, k %0d", hi[31:1] >> 8);
+      wr(32'h108, 50);
+      repeat (5000) @(posedge sclk);
+      rd(32'h98, lo); rd(32'h9c, hi);
+      if (hi[0] !== 1'b0 && (hi[31:1] >> 8) == 100) $display("ERR CFAR far limit ignored");
+      // zcu216_peak_wide in the result path: at this FFT length a frame is
+      // shorter than its window, so it reports nothing, once per frame
+      wr(32'h108, 0); wr(32'h128, 1);
+      repeat (2000) @(posedge sclk);
+      rd(32'h6c, n0);
+      repeat (5000) @(posedge sclk);
+      rd(32'h6c, n1);
+      rd(32'h58, lo); rd(32'h5c, hi);
+      $display("CFAR wide: results %0d -> %0d, word %h %h", n0, n1, hi, lo);
+      if (n1 == n0 || hi !== '0 || lo !== '0) $display("ERR WIDE result path");
+      wr(32'h128, 0);
+      repeat (2000) @(posedge sclk);
+    end
     // snapshots: two frames of ch0's |X|, then one frame of ch1's input samples
     begin
       logic [31:0] st, nb, base, fb, pm, best, bbin;

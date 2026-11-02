@@ -300,6 +300,47 @@ class Zcu216Scope(Scope):
                             [self._inputs.get(source, DSP_TONE)])
         self._client.writes(FFT_BASE + 0x04, [1])
 
+    @property
+    def fft_wide_available(self):
+        """the bitstream has the far limit and zcu216_peak_wide (read once)"""
+        v = getattr(self, '_fft_wide_cache', None)
+        if v is None:
+            v = self._fft_wide_cache = \
+                int(self._client.reads(FFT_BASE + 0x130, 1)[0]) != 0
+        return v
+
+    FFT_RAMP_FRAC = 20                        # zcu216_cfar's ramp, Q3.20
+
+    def fft_raw_magnitude(self, amplitude):
+        """a bin's amplitude (as _fft_fetch gives it) in the detectors' units"""
+        return amplitude / self._fft_mag_scale()
+
+    def fft_detector_setup(self, start, end, data_min, k_sq, guard, train,
+                           onesided, so_mode, ramp_d0, ramp_step, wide,
+                           wide_thr, cell_log, peak_log, wide_guard, train_log):
+        """the FFT block's peak detectors, every channel, from the next frame.
+        start, end: bins, inclusive, end = 0 no far limit; wide: results from
+        zcu216_peak_wide rather than zcu216_cfar; wide_thr: its threshold,
+        log2 of the magnitude, Q8.8"""
+        shape = cell_log | peak_log << 4 | wide_guard << 8 | train_log << 16
+        for off, v in ((0x100, k_sq), (0x104, start), (0x108, end),
+                       (0x10C, data_min), (0x110, guard), (0x114, train),
+                       (0x118, int(onesided) | int(so_mode) << 1),
+                       (0x11C, ramp_d0), (0x120, ramp_step),
+                       (0x12C, wide_thr), (0x130, shape), (0x128, int(wide))):
+            self._client.writes(FFT_BASE + off, [int(v)])
+
+    def fft_peaks(self):
+        """the latest result of FFT channels 0 and 1 (up and down with chirp
+        framing), each (bin, detected, raw magnitude); bin is fractional"""
+        c = self._client
+        out = []
+        for ch in range(2):
+            lo = int(c.reads(FFT_BASE + 0x58 + 0x40 * ch, 1)[0])   # latches hi
+            hi = int(c.reads(FFT_BASE + 0x5C + 0x40 * ch, 1)[0])
+            out.append(((hi >> 1) / 256.0, bool(hi & 1), lo))
+        return out
+
     def _fft_arm(self, ch):
         """arm a one-frame snapshot of channel ch's magnitudes (taken at the
         next frame start)"""
@@ -322,12 +363,16 @@ class Zcu216Scope(Scope):
         if d is None:
             return None
         mag = np.frombuffer(bytes(d), dtype='<u4').astype(float)
+        return mag * self._fft_mag_scale()
+
+    def _fft_mag_scale(self):
+        """a raw magnitude to a tone's amplitude"""
         # mag = K |X'| / 2, X' = X / 2**cut (the sub-FFT outputs cut to FFT_DW
         # bits); |X| of a tone of amplitude A (2**13 = full scale) is
         # A 2**13 N / 2
         lg = self._fft_id()[0]
         cut = max(0, FFT_IN_W + (lg - 3) - FFT_DW)
-        return mag * (2.0 * 2 ** cut / FFT_CORDIC_K / 2 ** 13 / (1 << lg))
+        return 2.0 * 2 ** cut / FFT_CORDIC_K / 2 ** 13 / (1 << lg)
 
     def fft_frame(self, ch=0, timeout=0.5):
         """One whole frame of FFT channel ch, waiting for it: arm, poll, fetch
