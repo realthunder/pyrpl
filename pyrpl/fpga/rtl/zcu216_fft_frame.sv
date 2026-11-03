@@ -46,8 +46,10 @@ logic [SUB:0]  k, k_d;                           // beats accepted in this frame
 logic          running, running_d, framed_d;
 logic [CW-1:0] cd;                                // countdown to the frame start
 logic          pend;                              // countdown running
-logic [SUB:0]  kp;                                // beats presented in this frame
+logic [SUB:0]  kp, kp_n;                          // beats presented in this frame
 logic          pv;                                // a beat presented now
+logic          z0, z1;                            // kp >= acq, kp + 1 >= acq (registered)
+logic          fstart;                            // a frame starts (no acc in it)
 
 wire [SUB:0] k_acc = k + (SUB+1)'(acc);
 wire         go    = pend && cd == '0;
@@ -88,10 +90,15 @@ always_comb begin
   end
 end
 
-// the next beat's index in the frame is kp + pv (all accepted but the one drop)
+// the next beat's index in the frame is kp + pv (all accepted but the one
+// drop); both outcomes of pv are compared a clock ahead, so zero_d is a mux of
+// registers
+assign fstart = framed && !running && en && go && !hold;
+assign kp_n   = fstart ? '0 : kp + (SUB+1)'(pv);
+
 always_comb
   if (!framed || (!running && !en)) zero_d = 1'b0;            // free-running data
-  else if (running)                 zero_d = kp + (SUB+1)'(pv) >= acq_c;
+  else if (running)                 zero_d = pv ? z1 : z0;
   else                              zero_d = !(go && !hold) || acq_c == '0;
 
 assign bnd = framed ? !running : k_acc[SUB-1:0] == '0;
@@ -103,6 +110,8 @@ always_ff @(posedge clk)
     k       <= '0;
     kp      <= '0;
     pv      <= 1'b0;
+    z0      <= 1'b0;
+    z1      <= 1'b0;
     pend    <= 1'b0;
     cd      <= '0;
     skip    <= 1'b0;
@@ -111,7 +120,9 @@ always_ff @(posedge clk)
     running <= running_d;
     k       <= k_d;
     pv      <= valid_d;
-    kp      <= (!running && running_d) ? '0 : kp + (SUB+1)'(pv);
+    kp      <= kp_n;
+    z0      <= kp_n >= acq_c;
+    z1      <= kp_n + 1'b1 >= acq_c;
     // countdown from each sync
     if (sync && framed) begin
       pend <= 1'b1;

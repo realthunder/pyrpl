@@ -863,15 +863,16 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
     .hold (d_want), .valid_d (fr_valid_d), .zero_d (fr_zero_d), .framed (fr_framed),
     .skip (fr_skip), .bnd (fr_bnd));
 
-  // the decimator takes the source as it comes (no framing)
+  // the decimator takes the source as it comes (no framing). The RF-ADC words
+  // come from sc_in_q (registered near the converter, 14 bits): taken straight
+  // from the tile, its pins fed four more 128-bit loads and missed fclk
   always_ff @(posedge fclk)
     if (f_src == 0)
       r_data <= g_data;
     else if (f_src > 3'd4)
       r_data <= f_sig;
     else
-      for (int j = 0; j < 8; j++)
-        r_data[16*j +: 16] <= 16'($signed(adc_data[2'(f_src - 3'd1)][16*j +: 16]) >>> 2);
+      r_data <= sc_in_q[2'(f_src - 3'd1)];
 
   zcu216_fft_dec #(.SUB(SUB), .CW(FCW), .KMAX(DEC_KMAX)) i_dec (
     .clk (fclk), .rstn (frstn), .k (f_dk), .en (f_fr_ctl[0]), .sync (f_sync),
@@ -898,9 +899,7 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
       s_data  <= fr_zero_d ? '0 : f_sig;
       s_valid <= fr_valid_d;
     end else begin
-      for (int j = 0; j < 8; j++)
-        s_data[16*j +: 16] <= fr_zero_d ? 16'h0
-                              : 16'($signed(adc_data[2'(f_src - 3'd1)][16*j +: 16]) >>> 2);
+      s_data  <= fr_zero_d ? '0 : sc_in_q[2'(f_src - 3'd1)];
       s_valid <= fr_valid_d && adc_valid[2'(f_src - 3'd1)];
     end
   logic signed [XW-1:0] x_re [4], x_im [4];
