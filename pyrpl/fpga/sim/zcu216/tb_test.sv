@@ -417,6 +417,32 @@ module tb_test;
           || pa != 37 || pb != 100)
         $display("ERR FRAMING average");
       wr(32'h1001d8, 0);
+      // the FFT span, D = 2 (0x30 = 1): each window decimated (80 samples),
+      // then played into its engine; the tones on twice their bins (37 -> 74,
+      // 100 -> 200, which folds to 56), a frame per sync, none skipped; then
+      // D = 1 again, the tones back on 37 and 100
+      begin
+        logic [31:0] km, kr;
+        wr(32'h30, 1);
+        repeat (500) @(posedge sclk);
+        rd(32'h60, fa0); rd(32'ha0, fb0); rd(32'h1001cc, sy0);
+        repeat (4000) @(posedge sclk);
+        rd(32'h60, fa1); rd(32'ha0, fb1); rd(32'h1001cc, sy1);
+        rd(32'h64, pa); rd(32'ha4, pb); rd(32'h1001d4, sk); rd(32'h30, kr); rd(32'h34, km);
+        $display("SPAN D 2 (k %0d of %0d): syncs %0d, frames up %0d down %0d, skipped %h, peaks %0d/%0d (74/56)",
+                 kr, km, sy1 - sy0, fa1 - fa0, fb1 - fb0, sk, pa, pb);
+        if (kr != 1 || km != 8 || sy1 - sy0 < 40 || (fa1 - fa0) - (sy1 - sy0) + 1 > 2
+            || (fb1 - fb0) - (sy1 - sy0) + 1 > 2 || sk != 0
+            || pa < 73 || pa > 75 || pb < 55 || pb > 57)
+          $display("ERR SPAN");
+        wr(32'h30, 0);
+        repeat (500) @(posedge sclk);
+        rd(32'h60, fa0); rd(32'h1001cc, sy0);
+        repeat (2000) @(posedge sclk);
+        rd(32'h60, fa1); rd(32'h1001cc, sy1); rd(32'h64, pa); rd(32'ha4, pb);
+        $display("SPAN D 1 again: syncs %0d, frames up %0d, peaks %0d/%0d", sy1 - sy0, fa1 - fa0, pa, pb);
+        if ((fa1 - fa0) - (sy1 - sy0) + 1 > 2 || pa != 37 || pb != 100) $display("ERR SPAN back");
+      end
       wr(32'h1001c8, 0);                                    // free-running again
       ext_on = 0;
       repeat (250) @(posedge sclk);

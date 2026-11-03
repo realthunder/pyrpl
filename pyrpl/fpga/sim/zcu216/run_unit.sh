@@ -5,6 +5,7 @@
 #   tb_scope   zcu216_scope through its own writer: triggered traces, free run
 #   tb_axi_slave  axi_slave (the PS register bus) under back-to-back writes
 #   tb_fft_frame  zcu216_fft_frame: chirp framing against a model of the dit8 input
+#   tb_fft_dec    zcu216_fft_dec: the FFT span, decimated windows played into the engine
 #   tb_fft_avg    zcu216_fft_avg: per-bin power average, bit-exact against a model
 #   tb_bus_cdc    zcu216_bus_cdc: the system bus across two clocks, with a timeout
 #   tb_dsp        zcu216_dsp: the signal hub and its modules
@@ -24,6 +25,7 @@ case $tb in
   tb_scope) rtl="zcu216_scope.sv zcu216_snap.sv" ;;   # the writer is zcu216_snap_wr
   tb_axi_slave) rtl="axi_slave.v" ;;
   tb_fft_frame) rtl="zcu216_fft_frame.sv" ;;
+  tb_fft_dec) rtl="zcu216_fft_dec.sv" ;;
   tb_fft_avg) rtl="zcu216_fft_avg.sv" ;;
   tb_bus_cdc) rtl="zcu216_bus_cdc.sv" ;;
   tb_dsp) rtl="zcu216_dsp.sv red_pitaya_pid_block.v red_pitaya_iq_block.v red_pitaya_iq_fgen_block.v

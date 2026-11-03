@@ -15,7 +15,8 @@ module tb_fft_frame;
 
   logic          en = 0, sync = 0;
   logic [CW-1:0] off = 10, acq = 20;
-  logic          valid_d, zero_d, framed, skip;
+  logic          valid_d, zero_d, framed, skip, bnd, hold = 0;
+  int unsigned   n_acc = 0;
 
   // ADC: beat number, the source register as in zcu216_fft_test
   int unsigned adc = 0;
@@ -41,7 +42,8 @@ module tb_fft_frame;
   end
 
   zcu216_fft_frame #(.SUB(SUB), .CW(CW)) dut (.clk, .rstn, .en, .sync, .off, .acq,
-    .acc (accept), .valid_d, .zero_d, .framed, .skip);
+    .acc (accept), .hold, .valid_d, .zero_d, .framed, .skip, .bnd);
+  always @(posedge clk) if (accept) n_acc++;
 
   // record every accepted beat: (time, engine beat index, data)
   int errs = 0, skips = 0;
@@ -133,6 +135,24 @@ module tb_fft_frame;
       repeat (4 * NB) @(posedge clk);
       $display("FRAME free again: %0d frames in 4 NB clocks", eng_frames - e0);
       if (eng_frames - e0 < 3) begin $display("ERR free again"); errs++; end
+    end
+    // hold: stops at the next boundary, presents nothing, bnd high; then on
+    begin
+      int unsigned a0;
+      @(negedge clk) hold = 1;
+      repeat (2 * NB) @(posedge clk);
+      a0 = n_acc;
+      if (beat != 0 || !bnd) begin $display("ERR hold: beat %0d, bnd %0d", beat, bnd); errs++; end
+      repeat (3 * NB) @(posedge clk);
+      if (n_acc != a0 || !bnd) begin $display("ERR hold: %0d beats in", n_acc - a0); errs++; end
+      @(negedge clk) en = 1;                        // framed, syncs: still nothing
+      repeat (NB) @(posedge clk);
+      for (int i = 0; i < 3; i++) begin pulse_sync(); repeat (2 * NB) @(posedge clk); end
+      if (n_acc != a0 || !bnd) begin $display("ERR hold framed: %0d beats in", n_acc - a0); errs++; end
+      @(negedge clk) hold = 0;
+      for (int i = 0; i < 3; i++) begin pulse_sync(); repeat (2 * NB) @(posedge clk); end
+      $display("FRAME hold: free and framed held at a boundary, then %0d beats after release", n_acc - a0);
+      if (n_acc - a0 != 3 * NB || beat != 0) begin $display("ERR hold release"); errs++; end
     end
     $display("FRAME done, %0d errors", errs);
     $finish;

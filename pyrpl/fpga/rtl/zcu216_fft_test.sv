@@ -26,6 +26,10 @@
  *   0x28  W   any write: capture the next RAW beats of the raw ADC source and
  *             of the DAC stream (status [16] = done since the last arm)
  *   0x2c      raw capture ADC source: RF-ADC tile 224 channel 0-3
+ *   0x30      FFT span: the input decimated by D = 2^k, k = 0 .. DEC_KMAX (each
+ *             output the mean of D samples; zcu216_fft_dec): 0 = the full rate.
+ *             The window settings stay in ADC samples (acq up to N x D)
+ *   0x34  RO  DEC_KMAX (0 on images without the decimator)
  *   0x300 +   RO clock meters, kHz (1 ms gate on the bus clock): +0x0 + 4*i
  *             meas_clk[i] (clk_adc0, CLK104 PL_CLK, clk_dac0, clk_dac2), +0x10 fclk
  *   0x200 +   DAC tone generator: +0x00 inc_a  +0x04 amp_a  +0x08 inc_b
@@ -117,6 +121,7 @@ module zcu216_fft_test #(
   parameter int    SC_L      = 1 << 18,                  // scope trace length (samples)
   parameter logic [39:0] SC_BASE = 40'h1FE0_0000,         // scope ring: 2 SC_L samples x 2 x 16 bit
   parameter int    SC_MIN_DEC = 2,                       // two ports: half of each at D = 2
+  parameter int    DEC_KMAX  = 8,                         // FFT span: D = 2^k, k <= DEC_KMAX
   parameter string TWC_FILE  = "",
   parameter string TWF_FILE  = "",
   parameter string SIN_FILE  = "",
@@ -234,6 +239,7 @@ logic [4:0]    d_nbits;
 logic          d_run;
 logic          rarm;
 logic [1:0]    raw_src;
+logic [3:0]    fd_k;                          // FFT span: log2 of the decimation
 // CFAR settings
 logic [15:0]   cf_ksq;
 logic [BW:0]   cf_lo, cf_hi;
@@ -296,6 +302,7 @@ always_ff @(posedge sys_clk)
     spi_sdo_sel <= '0;
     rarm      <= 1'b0;
     raw_src   <= '0;
+    fd_k      <= '0;
     d_inc_a   <= '0;  d_amp_a <= '0;
     d_inc_b   <= '0;  d_amp_b <= '0;
     d_nbits   <= '0;  d_run   <= 1'b0;
@@ -335,6 +342,7 @@ always_ff @(posedge sys_clk)
       20'h00024: spi_sdo_sel <= sys_wdata[1:0];
       20'h00028: rarm      <= !rarm;
       20'h0002c: raw_src   <= sys_wdata[1:0];
+      20'h00030: fd_k      <= (sys_wdata[3:0] > 4'(DEC_KMAX)) ? 4'(DEC_KMAX) : sys_wdata[3:0];
       20'h00200: d_inc_a   <= sys_wdata;
       20'h00204: d_amp_a   <= sys_wdata[15:0];
       20'h00208: d_inc_b   <= sys_wdata;
@@ -427,6 +435,8 @@ function automatic logic [31:0] reg_read(input logic [19:0] ad);
     20'h00020: v = 32'(WIN);
     20'h00024: v = 32'(spi_sdo_sel);
     20'h0002c: v = 32'(raw_src);
+    20'h00030: v = 32'(fd_k);
+    20'h00034: v = 32'(DEC_KMAX);
     20'h00300: v = 32'(s_khz[0]);
     20'h00304: v = 32'(s_khz[1]);
     20'h00308: v = 32'(s_khz[2]);
@@ -627,6 +637,7 @@ localparam int FCW = 21;                        // beats (2^21 x 3.2 ns = 6.7 ms
 logic [23:0]    f_fr_w1, f_fr_w1_m, f_fr_w2, f_fr_w2_m, f_fr_a1, f_fr_a1_m;
 logic [23:0]    f_fr_a2, f_fr_a2_m, f_fr_dly, f_fr_dly_m;
 logic [7:0]     f_fr_ctl, f_fr_ctl_m;
+logic [3:0]     f_dk, f_dk_m;                   // FFT span: log2 D
 logic [FCW-1:0] f_off [2], f_acq [2];           // [0] up, [1] down
 (* ASYNC_REG = "TRUE" *) logic [1:0] f_fx_m;
 logic           f_fx_d, f_sync, f_ext_edge, f_sc_trig;
@@ -645,6 +656,7 @@ always_ff @(posedge fclk) begin
   {f_fr_a2,  f_fr_a2_m}  <= {f_fr_a2_m,  fr_a2};
   {f_fr_dly, f_fr_dly_m} <= {f_fr_dly_m, fr_dly};
   {f_fr_ctl, f_fr_ctl_m} <= {f_fr_ctl_m, fr_ctl};
+  {f_dk,     f_dk_m}     <= {f_dk_m,     fd_k};
   {f_av_m,   f_av_m_m}   <= {f_av_m_m,   av_m};
   {f_av_rs,  f_av_rs_m}  <= {f_av_rs_m,  av_rs};
   // samples -> beats: up = delay + wait1, down = up + acq1 + wait2
@@ -819,24 +831,66 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
   end
 
   // chirp framing: even channels take the up window, odd ones the down one
-  logic fr_valid_d, fr_zero_d, fr_framed, fr_skip;
+  logic fr_valid_d, fr_zero_d, fr_framed, fr_skip, fr_bnd;
   logic in_accept, in_first;
 
+  // The FFT span: D = 1 is the framer's (the full rate), D > 1 the decimator's
+  // (zcu216_fft_dec, each window captured, then played at a beat per clock).
+  // The source changes hands at a frame boundary in accepted beats: the leaving
+  // one holds there (presents nothing: the framer's hold, the decimator's
+  // en_play), and a clock after it reports the boundary f_dsel switches, so no
+  // beat is in flight and the select is a register. The framer is held in
+  // reset while the decimator has the engine, so it comes back at a frame start.
+  logic         f_dsel, f_swq, d_want;
+  logic [127:0] r_data, dd_data;
+  logic         dd_valid_d, dd_bnd, dd_skip;
+
+  assign d_want = f_dk != '0;
+
+  always_ff @(posedge fclk)
+    if (!frstn) begin
+      f_dsel <= 1'b0;
+      f_swq  <= 1'b0;
+    end else begin
+      f_swq <= d_want != f_dsel && (f_dsel ? dd_bnd : fr_bnd);
+      if (f_swq && d_want != f_dsel) f_dsel <= d_want;
+    end
+
   zcu216_fft_frame #(.SUB(SUB), .CW(FCW)) i_frame (
-    .clk (fclk), .rstn (frstn), .en (f_fr_ctl[0]), .sync (f_sync),
-    .off (f_off[c % 2]), .acq (f_acq[c % 2]), .acc (in_accept),
-    .valid_d (fr_valid_d), .zero_d (fr_zero_d), .framed (fr_framed), .skip (fr_skip));
+    .clk (fclk), .rstn (frstn && !f_dsel), .en (f_fr_ctl[0]), .sync (f_sync),
+    .off (f_off[c % 2]), .acq (f_acq[c % 2]), .acc (in_accept && !f_dsel),
+    .hold (d_want), .valid_d (fr_valid_d), .zero_d (fr_zero_d), .framed (fr_framed),
+    .skip (fr_skip), .bnd (fr_bnd));
+
+  // the decimator takes the source as it comes (no framing)
+  always_ff @(posedge fclk)
+    if (f_src == 0)
+      r_data <= g_data;
+    else if (f_src > 3'd4)
+      r_data <= f_sig;
+    else
+      for (int j = 0; j < 8; j++)
+        r_data[16*j +: 16] <= 16'($signed(adc_data[2'(f_src - 3'd1)][16*j +: 16]) >>> 2);
+
+  zcu216_fft_dec #(.SUB(SUB), .CW(FCW), .KMAX(DEC_KMAX)) i_dec (
+    .clk (fclk), .rstn (frstn), .k (f_dk), .en (f_fr_ctl[0]), .sync (f_sync),
+    .off (f_off[c % 2]), .acq ((c % 2 == 0) ? f_fr_a1 : f_fr_a2), .din (r_data),
+    .en_play (f_dsel && d_want), .acc (in_accept && f_dsel),
+    .data_d (dd_data), .valid_d (dd_valid_d), .bnd (dd_bnd), .skip (dd_skip));
 
   always_ff @(posedge fclk)
     if (!frstn) f_skip[c] <= '0;
-    else if (fr_skip && f_skip[c] != '1) f_skip[c] <= f_skip[c] + 1'b1;
+    else if ((fr_skip || dd_skip) && f_skip[c] != '1) f_skip[c] <= f_skip[c] + 1'b1;
 
   // source: the tone generator, an RF-ADC channel (14 bits at the top of 16), or
   // the hub's signal (zcu216_dsp), as the framer presents it: zeros as padding and
   // between frames, so the scope's "FFT input" (4 + c) shows exactly what the
-  // engine transforms
+  // engine transforms; or the decimator's playback
   always_ff @(posedge fclk)
-    if (f_src == 0) begin
+    if (f_dsel) begin
+      s_data  <= dd_data;
+      s_valid <= dd_valid_d;
+    end else if (f_src == 0) begin
       s_data  <= (fr_zero_d || !fr_valid_d) ? '0 : g_data;
       s_valid <= fr_valid_d && g_valid;
     end else if (f_src > 3'd4) begin

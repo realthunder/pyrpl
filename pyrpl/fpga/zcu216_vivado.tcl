@@ -164,6 +164,7 @@ if {$fft_en} {
     read_verilog -sv              $path_rtl/zcu216_adc_dec.sv
     if {$dsp_rx} { read_verilog -sv $path_rtl/zcu216_rx.sv }
     read_verilog -sv              $path_rtl/zcu216_fft_frame.sv
+    read_verilog -sv              $path_rtl/zcu216_fft_dec.sv
     read_verilog -sv              $path_rtl/zcu216_fft_avg.sv
     read_verilog -sv              $path_rtl/zcu216_fft_test.sv
 }

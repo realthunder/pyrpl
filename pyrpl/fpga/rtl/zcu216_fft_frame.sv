@@ -15,7 +15,8 @@
  * beat presented now): a beat the engine drops (its cores' first-frame config)
  * is made up by the next one, so the engine's frame count and this one never
  * part. Mode changes wait for a frame boundary in that count, so the engine
- * never gets a partial frame.
+ * never gets a partial frame. hold: stop at the next boundary (start nothing,
+ * present nothing) and stay there, bnd high, so another source may take over.
  */
 module zcu216_fft_frame #(
   parameter int  SUB = 13,                        // 2^SUB beats per frame
@@ -28,10 +29,12 @@ module zcu216_fft_frame #(
   input  logic [CW-1:0] off,                      // sync -> frame start (beats)
   input  logic [CW-1:0] acq,                      // input beats per frame
   input  logic          acc,                      // the beat presented now was accepted
+  input  logic          hold,                     // stop at the next frame boundary
   output logic          valid_d,                  // present a beat next clock
   output logic          zero_d,                   // ... as zeros (padding)
   output logic          framed,                   // in framed mode
-  output logic          skip                      // a frame skipped: engine busy
+  output logic          skip,                     // a frame skipped: engine busy
+  output logic          bnd                       // at a frame boundary
 );
 
 localparam logic [SUB:0] NB = (SUB+1)'(1) << SUB;
@@ -58,7 +61,7 @@ always_comb begin
     if (en && k_acc[SUB-1:0] == '0) begin
       framed_d = 1'b1;
       k_d      = '0;
-    end else
+    end else if (!(hold && k_acc[SUB-1:0] == '0))
       valid_d = 1'b1;
   end else if (running) begin
     // a frame: ACQ beats of input, then zeros, NB beats accepted in all
@@ -74,14 +77,16 @@ always_comb begin
     // back to free-running, from a boundary
     framed_d = 1'b0;
     k_d      = '0;
-    valid_d  = 1'b1;
-  end else if (go) begin
+    valid_d  = !hold;
+  end else if (go && !hold) begin
     running_d = 1'b1;
     k_d       = '0;
     valid_d   = 1'b1;
     zero_d    = acq_c == '0;
   end
 end
+
+assign bnd = framed ? !running : k_acc[SUB-1:0] == '0;
 
 always_ff @(posedge clk)
   if (!rstn) begin

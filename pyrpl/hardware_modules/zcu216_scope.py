@@ -27,7 +27,10 @@ on the laser's chirp sync: channel 0 transforms the up window, channel 1 the
 down window, set with the Red Pitaya scope's fft window registers
 (fft_wait1_cnt .. fft_acq2_cnt, fft_trig_delay: here in ADC samples) and
 fft_framing; older ones frame free-running. With fft_average = n each
-channel's frames are the RMS of 2**n frames' power (zcu216_fft_avg).
+channel's frames are the RMS of 2**n frames' power (zcu216_fft_avg). With
+fft_decimation = D (bitstreams with zcu216_fft_dec) the FFT's input is the mean
+of each D samples: the span is the RF-ADC rate / D, the transform D times
+longer in time (fft_sample_time).
 """
 import numpy as np
 
@@ -290,8 +293,47 @@ class Zcu216Scope(Scope):
 
     @property
     def fft_sample_time(self):
-        """the FFT's sample period [s]: the RF-ADC rate, not decimated"""
-        return self._base_sampling_time
+        """the FFT's sample period [s]: the RF-ADC's times fft_decimation (the
+        window settings stay in RF-ADC samples, _base_sampling_time)"""
+        return self._base_sampling_time * self.fft_decimation
+
+    # the FFT span (zcu216_fft_dec): 0x30 log2 of the decimation, 0x34 the
+    # largest the image takes (0, or an unmapped read on older images: none)
+    @property
+    def fft_decimation_max(self):
+        """the largest fft_decimation the bitstream takes (1: none), read once"""
+        v = getattr(self, '_fft_dec_max_cache', None)
+        if v is None:
+            try:
+                k = int(self._client.reads(FFT_BASE + 0x34, 1)[0])
+            except Exception:
+                k = 0
+            v = self._fft_dec_max_cache = 1 << k if 0 <= k <= 15 else 1
+        return v
+
+    @property
+    def fft_decimation(self):
+        """The FFT's input decimated by this power of 2, each sample the mean
+        of as many (as the Red Pitaya's averaging scope decimation, which its
+        FFT took), so the transform covers that many times the time at that
+        much less span; 1 = the full RF-ADC rate. Each window is captured,
+        then played into the engine (zcu216_fft_dec). Cached: only this
+        object writes it."""
+        v = getattr(self, '_fft_dec_cache', None)
+        if v is None:
+            v = 1
+            if self.fft_decimation_max > 1:
+                v = 1 << int(self._client.reads(FFT_BASE + 0x30, 1)[0])
+            self._fft_dec_cache = v
+        return v
+
+    @fft_decimation.setter
+    def fft_decimation(self, d):
+        dmax = self.fft_decimation_max
+        k = min(max(0, int(d).bit_length() - 1), dmax.bit_length() - 1)
+        if dmax > 1:
+            self._client.writes(FFT_BASE + 0x30, [k])
+        self._fft_dec_cache = 1 << k
 
     def fft_setup(self, ch, source):
         """FFT channel ch transforms `source`, a scope input name (anything
