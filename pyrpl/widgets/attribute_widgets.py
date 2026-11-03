@@ -14,6 +14,29 @@ from ..curvedb import CurveDB
 
 import os
 import sys
+import textwrap
+
+TOOLTIP_WIDTH = 79
+
+
+def wrap_tooltip(doc):
+    """doc wrapped at TOOLTIP_WIDTH columns, its own line breaks kept: Qt shows
+    a plain-text tooltip unwrapped, one screen-wide line per paragraph. A
+    bullet ('* ', '- ') continues indented under its text."""
+    if not doc:
+        return doc
+    out = []
+    for line in doc.replace('\r\n', '\n').split('\n'):
+        stripped = line.lstrip()
+        lead = line[:len(line) - len(stripped)]
+        if stripped[:2] in ('* ', '- '):
+            lead2 = lead + '  '
+        else:
+            lead2 = lead
+        out.append(textwrap.fill(line, TOOLTIP_WIDTH, subsequent_indent=lead2)
+                   if len(line) > TOOLTIP_WIDTH else line)
+    return '\n'.join(out)
+
 
 # TODO: try to remove widget_name from here (again)
 class BaseAttributeWidget(QtWidgets.QWidget):
@@ -42,7 +65,7 @@ class BaseAttributeWidget(QtWidgets.QWidget):
             self.widget_name = self.attribute_name
         else:
             self.widget_name = widget_name
-        self.setToolTip(self.attribute_descriptor.__doc__)
+        self.setToolTip(wrap_tooltip(self.attribute_descriptor.__doc__))
         self.layout_v = QtWidgets.QVBoxLayout()
         self.layout = self.layout_v
         if self.widget_name != "":
