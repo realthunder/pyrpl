@@ -148,7 +148,7 @@ int newsockfd = -1;
 #define MAX_CLIENTS 8
 static pthread_mutex_t g_reg_lock    = PTHREAD_MUTEX_INITIALIZER;  /* register accesses */
 static pthread_mutex_t g_client_lock = PTHREAD_MUTEX_INITIALIZER;
-static int             g_clients     = 0;
+static volatile int    g_clients     = 0;  /* also read by the DMA thread */
 static void *client_thread(void *arg);
 
 /* total rate of all bulk reads ('b'), MB/s (10^6 B/s); 0: unpaced */
@@ -375,6 +375,8 @@ static void *dma_poll_thread(void *arg)
     rd_ptr = dma_align(dma_buf, dma_reg, pkt_words, &poll_sleep);
 
     uint32_t wr_prev = (uint32_t)-1;   /* fresh-edge guard: writer-idle detector */
+    int idle = 0;                      /* no client: stream paused */
+    const struct timespec idle_sleep = { .tv_sec = 0, .tv_nsec = 10000000 }; /* 10 ms */
     while (1) {
         /* Pick up host registration datagrams (NAT hole-punch). Any datagram on
          * this port re-points the unicast stream at its post-NAT source — for a
@@ -390,6 +392,25 @@ static void *dma_poll_thread(void *arg)
                 g_uni_port = ntohs(src.sin_port);
                 g_uni_registered = 1;
             }
+        }
+
+        /* No register client connected (the GUI exited): the FPGA keeps
+         * scanning and filling the ring, but nobody is listening, and the
+         * multicast floods every port of a switch without IGMP snooping. Pause,
+         * and on the next client start again from fresh data. */
+        if (g_clients == 0) {
+            if (!idle)
+                fprintf(stderr, "dma: no clients, stream paused\n");
+            idle = 1;
+            nanosleep(&idle_sleep, NULL);
+            continue;
+        }
+        if (idle) {
+            idle = 0;
+            fprintf(stderr, "dma: client connected, stream resumed\n");
+            rd_ptr = dma_align(dma_buf, dma_reg, pkt_words, &poll_sleep);
+            wr_prev = (uint32_t)-1;
+            continue;
         }
 
         uint32_t wr_ptr = dma_reg[0] & (DMA_BUF_WORDS - 1);
@@ -574,7 +595,12 @@ static void *client_thread(void *arg)
     close(fd);
     free(data_buffer);
     pthread_mutex_lock(&g_client_lock);
-    g_clients--;
+    if (--g_clients == 0) {
+        /* last client gone: forget the unicast target, so the next session's
+         * host (or its registration) sets it afresh */
+        g_uni_ip = 0;
+        g_uni_registered = 0;
+    }
     pthread_mutex_unlock(&g_client_lock);
     return NULL;
 }
