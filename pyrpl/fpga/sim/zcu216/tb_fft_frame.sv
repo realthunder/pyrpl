@@ -24,7 +24,7 @@ module tb_fft_frame;
   logic        s_valid;
   always @(posedge clk) begin
     adc     <= adc + 1;
-    s_data  <= (zero_d || !valid_d) ? 32'h0 : 32'(adc) | 32'h8000_0000;
+    s_data  <= zero_d ? 32'h0 : 32'(adc) | 32'h8000_0000;      // as zcu216_fft_test
     s_valid <= valid_d;
   end
 

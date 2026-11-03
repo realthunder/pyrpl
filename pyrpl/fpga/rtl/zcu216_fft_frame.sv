@@ -14,7 +14,10 @@
  * of the cores) and counts the beats the engine ACCEPTED (acc: in_accept of the
  * beat presented now): a beat the engine drops (its cores' first-frame config)
  * is made up by the next one, so the engine's frame count and this one never
- * part. Mode changes wait for a frame boundary in that count, so the engine
+ * part. zero_d (data zero: padding, and between frames) comes from the beats
+ * PRESENTED instead, registers only: the accepted count reaches the 128 data
+ * flops through the cores' ready, a path fclk does not close, and the two
+ * differ only by the one dropped beat. Mode changes wait for a frame boundary in that count, so the engine
  * never gets a partial frame. hold: stop at the next boundary (start nothing,
  * present nothing) and stay there, bnd high, so another source may take over.
  */
@@ -43,6 +46,8 @@ logic [SUB:0]  k, k_d;                           // beats accepted in this frame
 logic          running, running_d, framed_d;
 logic [CW-1:0] cd;                                // countdown to the frame start
 logic          pend;                              // countdown running
+logic [SUB:0]  kp;                                // beats presented in this frame
+logic          pv;                                // a beat presented now
 
 wire [SUB:0] k_acc = k + (SUB+1)'(acc);
 wire         go    = pend && cd == '0;
@@ -53,7 +58,6 @@ always_comb begin
   running_d = running;
   k_d       = k;
   valid_d   = 1'b0;
-  zero_d    = 1'b0;
   if (!framed) begin
     // free-running: every beat; switch at a frame boundary (the beat
     // presented next would be a frame's first)
@@ -71,7 +75,6 @@ always_comb begin
     end else begin
       k_d     = k_acc;
       valid_d = 1'b1;
-      zero_d  = k_acc >= acq_c;
     end
   end else if (!en) begin
     // back to free-running, from a boundary
@@ -82,9 +85,14 @@ always_comb begin
     running_d = 1'b1;
     k_d       = '0;
     valid_d   = 1'b1;
-    zero_d    = acq_c == '0;
   end
 end
+
+// the next beat's index in the frame is kp + pv (all accepted but the one drop)
+always_comb
+  if (!framed || (!running && !en)) zero_d = 1'b0;            // free-running data
+  else if (running)                 zero_d = kp + (SUB+1)'(pv) >= acq_c;
+  else                              zero_d = !(go && !hold) || acq_c == '0;
 
 assign bnd = framed ? !running : k_acc[SUB-1:0] == '0;
 
@@ -93,6 +101,8 @@ always_ff @(posedge clk)
     framed  <= 1'b0;
     running <= 1'b0;
     k       <= '0;
+    kp      <= '0;
+    pv      <= 1'b0;
     pend    <= 1'b0;
     cd      <= '0;
     skip    <= 1'b0;
@@ -100,6 +110,8 @@ always_ff @(posedge clk)
     framed  <= framed_d;
     running <= running_d;
     k       <= k_d;
+    pv      <= valid_d;
+    kp      <= (!running && running_d) ? '0 : kp + (SUB+1)'(pv);
     // countdown from each sync
     if (sync && framed) begin
       pend <= 1'b1;

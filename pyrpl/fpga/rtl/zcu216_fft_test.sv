@@ -841,6 +841,7 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
   // en_play), and a clock after it reports the boundary f_dsel switches, so no
   // beat is in flight and the select is a register. The framer is held in
   // reset while the decimator has the engine, so it comes back at a frame start.
+  // Both take in_accept as it is: the one not presenting is idle or in reset.
   logic         f_dsel, f_swq, d_want;
   logic [127:0] r_data, dd_data;
   logic         dd_valid_d, dd_bnd, dd_skip;
@@ -858,7 +859,7 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
 
   zcu216_fft_frame #(.SUB(SUB), .CW(FCW)) i_frame (
     .clk (fclk), .rstn (frstn && !f_dsel), .en (f_fr_ctl[0]), .sync (f_sync),
-    .off (f_off[c % 2]), .acq (f_acq[c % 2]), .acc (in_accept && !f_dsel),
+    .off (f_off[c % 2]), .acq (f_acq[c % 2]), .acc (in_accept),
     .hold (d_want), .valid_d (fr_valid_d), .zero_d (fr_zero_d), .framed (fr_framed),
     .skip (fr_skip), .bnd (fr_bnd));
 
@@ -875,7 +876,7 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
   zcu216_fft_dec #(.SUB(SUB), .CW(FCW), .KMAX(DEC_KMAX)) i_dec (
     .clk (fclk), .rstn (frstn), .k (f_dk), .en (f_fr_ctl[0]), .sync (f_sync),
     .off (f_off[c % 2]), .acq ((c % 2 == 0) ? f_fr_a1 : f_fr_a2), .din (r_data),
-    .en_play (f_dsel && d_want), .acc (in_accept && f_dsel),
+    .en_play (f_dsel && d_want), .acc (in_accept),
     .data_d (dd_data), .valid_d (dd_valid_d), .bnd (dd_bnd), .skip (dd_skip));
 
   always_ff @(posedge fclk)
@@ -891,14 +892,14 @@ for (genvar c = 0; c < NCH; c++) begin : g_ch
       s_data  <= dd_data;
       s_valid <= dd_valid_d;
     end else if (f_src == 0) begin
-      s_data  <= (fr_zero_d || !fr_valid_d) ? '0 : g_data;
+      s_data  <= fr_zero_d ? '0 : g_data;
       s_valid <= fr_valid_d && g_valid;
     end else if (f_src > 3'd4) begin
-      s_data  <= (fr_zero_d || !fr_valid_d) ? '0 : f_sig;
+      s_data  <= fr_zero_d ? '0 : f_sig;
       s_valid <= fr_valid_d;
     end else begin
       for (int j = 0; j < 8; j++)
-        s_data[16*j +: 16] <= (fr_zero_d || !fr_valid_d) ? 16'h0
+        s_data[16*j +: 16] <= fr_zero_d ? 16'h0
                               : 16'($signed(adc_data[2'(f_src - 3'd1)][16*j +: 16]) >>> 2);
       s_valid <= fr_valid_d && adc_valid[2'(f_src - 3'd1)];
     end
