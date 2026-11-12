@@ -178,6 +178,9 @@ static volatile uint16_t g_uni_port = DMA_DEFAULT_UNI_PORT;  /* dest, host order
  * is what makes the NAT hole-punch work — the board replies to a NAT'd host
  * along the exact mapping that host's registration opened. */
 static volatile uint16_t g_uni_listen_port = DMA_DEFAULT_UNI_PORT;
+/* A register client is connected: set by the main thread on accept(), cleared
+ * when that client is done; the DMA thread pauses the stream while it is 0. */
+static volatile int g_client_on = 0;
 
 /* Find the ring offset of the next packet start and return it as the new
  * rd_ptr. Starts from the write pointer (fresh data) and scans candidate
@@ -331,6 +334,8 @@ static void *dma_poll_thread(void *arg)
     rd_ptr = dma_align(dma_buf, dma_reg, pkt_words, &poll_sleep);
 
     uint32_t wr_prev = (uint32_t)-1;   /* fresh-edge guard: writer-idle detector */
+    int idle = 0;                      /* no client: stream paused */
+    const struct timespec idle_sleep = { .tv_sec = 0, .tv_nsec = 10000000 }; /* 10 ms */
     while (1) {
         /* Pick up host registration datagrams (NAT hole-punch). Any datagram on
          * this port re-points the unicast stream at its post-NAT source — for a
@@ -345,6 +350,25 @@ static void *dma_poll_thread(void *arg)
                 g_uni_ip   = src.sin_addr.s_addr;
                 g_uni_port = ntohs(src.sin_port);
             }
+        }
+
+        /* No register client connected (the GUI exited): the FPGA keeps
+         * scanning and filling the ring, but nobody is listening, and the
+         * multicast floods every port of a switch without IGMP snooping. Pause,
+         * and on the next client start again from fresh data. */
+        if (!g_client_on) {
+            if (!idle)
+                fprintf(stderr, "dma: no clients, stream paused\n");
+            idle = 1;
+            nanosleep(&idle_sleep, NULL);
+            continue;
+        }
+        if (idle) {
+            idle = 0;
+            fprintf(stderr, "dma: client connected, stream resumed\n");
+            rd_ptr = dma_align(dma_buf, dma_reg, pkt_words, &poll_sleep);
+            wr_prev = (uint32_t)-1;
+            continue;
         }
 
         uint32_t wr_ptr = dma_reg[0] & (DMA_BUF_WORDS - 1);
@@ -578,6 +602,7 @@ int main(int argc, char *argv[])
          fprintf(stderr, "dma: unicast fallback target %s:%d (until host registers)\n",
                  inet_ntoa(cli_addr.sin_addr), (int)g_uni_port);
          fprintf(stderr, "Incoming client connection accepted!\n");
+         g_client_on = 1;
 
          /* service loop for the currently-connected client */
          while (0==0) {
@@ -616,6 +641,10 @@ int main(int argc, char *argv[])
          //this client is done; close its socket and wait for the next one
          close(newsockfd);
          newsockfd = -1;
+         /* client gone: pause the stream and forget the unicast target, so the
+          * next session's host (or its registration) sets it afresh */
+         g_client_on = 0;
+         g_uni_ip = 0;
      }
      //not reached in normal operation (the accept loop above never exits)
      close(sockfd);
