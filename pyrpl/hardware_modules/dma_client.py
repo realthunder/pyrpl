@@ -386,6 +386,11 @@ class DmaUdpClient:
 
         self._sock = None
         self._running = False
+        # close() is final: a trace still in flight on a worker thread at GUI
+        # exit re-armed the scope, which restarted the client the shutdown had
+        # just stopped, and its threads then cost the exit a 5 s join.
+        self._closed = False
+        self._life_lock = threading.Lock()
         self._next_parse_t = 0.0   # deadline-pacing target for the parser worker
 
         # Proactor receiver: a dedicated recv thread fills a ring of pre-allocated
@@ -684,9 +689,19 @@ class DmaUdpClient:
         self._notify_tap()
 
     def start(self):
-        """Start the background receive thread."""
-        if self._running:
-            return
+        """Start the background receive thread (a no-op after close())."""
+        with self._life_lock:
+            if self._running or self._closed:
+                return
+            self._start()
+
+    def close(self):
+        """stop() for good: later start() calls do nothing."""
+        with self._life_lock:
+            self._closed = True
+        self.stop()
+
+    def _start(self):
         # Fresh counters per session (the socket is recreated below, so the
         # rates/drops reflect the current run only).
         self._pkt_count = 0
